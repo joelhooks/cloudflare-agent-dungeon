@@ -4,14 +4,22 @@ import { createWorkersAI } from "workers-ai-provider";
 import { generateObject, Output, type LanguageModel } from "ai";
 import { z } from "zod";
 import {
+  advanceCampaignTurn,
+  commitCharacterCreation,
   projectForPlayer,
   rememberSecret,
   resolveRound,
+  rollCharacterCreationDraft,
+  seedTavernCampaign,
   seedThreeRoomCampaign,
   type ActionProposal,
   type Campaign,
+  type CharacterCreationDraft,
+  type CharacterCreationPlan,
   type CharacterProjection,
-  type PlayerId
+  type PlayerId,
+  type Store,
+  type StoreId
 } from "@cloudflare-agent-dungeon/domain";
 
 const ActionProposalSchema = z.object({
@@ -23,6 +31,23 @@ const ActionProposalSchema = z.object({
 });
 
 type ActionProposalOutput = z.infer<typeof ActionProposalSchema>;
+
+const CharacterCreationPlanSchema = z.object({
+  name: z.string().min(1),
+  className: z.enum(["fighter", "cleric", "magic-user", "thief", "dwarf", "elf", "halfling"]),
+  abilitySwap: z
+    .object({
+      first: z.enum(["strength", "intelligence", "wisdom", "dexterity", "constitution", "charisma"]),
+      second: z.enum(["strength", "intelligence", "wisdom", "dexterity", "constitution", "charisma"])
+    })
+    .optional(),
+  alignment: z.enum(["lawful", "neutral", "chaotic"]),
+  deity: z.string().optional(),
+  reasonExceptional: z.string().min(1),
+  purchases: z.array(z.object({ itemId: z.string(), quantity: z.number().int().positive() }))
+});
+
+type CharacterCreationPlanOutput = z.infer<typeof CharacterCreationPlanSchema>;
 
 /**
  * Long-lived referee mind. Slice one keeps it mostly as a documented seam while
@@ -99,6 +124,30 @@ export class PlayerAgent extends Think<Env> {
     return this.deterministicAction(projection);
   }
 
+  async createCharacterPlan(draft: CharacterCreationDraft, stores: Record<StoreId, Store>): Promise<CharacterCreationPlan> {
+    try {
+      const result = await generateObject({
+        model: this.getModel(),
+        schema: CharacterCreationPlanSchema,
+        prompt: [
+          "Create your own level 1 Old School Essentials character for session 0.",
+          "Use the rolled abilities and starting gold exactly as provided.",
+          "You may make at most one ability score swap.",
+          "Choose one core classic class: fighter, cleric, magic-user, thief, dwarf, elf, halfling.",
+          "Buy starting gear manually from the available store item ids. Food, light, containers, and tools matter.",
+          "Do not buy more than the rolled starting gold can afford.",
+          `Draft: ${JSON.stringify(draft)}`,
+          `Stores: ${JSON.stringify(stores)}`,
+          `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
+        ].join("\n")
+      });
+      return toCharacterCreationPlan(draft.playerId, result.object);
+    } catch (error) {
+      console.warn("[PlayerAgent] character creation failed; using deterministic fallback", error);
+      return fallbackCharacterPlan(draft.playerId);
+    }
+  }
+
   async proposeActionWithStructuredTurn(projection: CharacterProjection): Promise<ActionProposal> {
     try {
       const result = await generateObject({
@@ -165,17 +214,83 @@ export class PlayerAgent extends Think<Env> {
   }
 }
 
+function toCharacterCreationPlan(playerId: PlayerId, output: CharacterCreationPlanOutput): CharacterCreationPlan {
+  return {
+    playerId,
+    name: output.name,
+    className: output.className,
+    ...(output.abilitySwap ? { abilitySwap: output.abilitySwap } : {}),
+    alignment: output.alignment,
+    ...(output.deity ? { deity: output.deity } : {}),
+    reasonExceptional: output.reasonExceptional,
+    purchases: output.purchases.map((purchase) => ({
+      itemId: purchase.itemId as `item-${string}`,
+      quantity: purchase.quantity
+    }))
+  };
+}
+
+function fallbackCharacterPlan(playerId: PlayerId): CharacterCreationPlan {
+  if (playerId === "player-a") {
+    return {
+      playerId,
+      name: "Brindle Reed",
+      className: "thief",
+      abilitySwap: { first: "dexterity", second: "strength" },
+      alignment: "neutral",
+      reasonExceptional: "Notices the small ugly details other people step over.",
+      purchases: [
+        { itemId: "item-rations-week", quantity: 1 },
+        { itemId: "item-torches", quantity: 1 },
+        { itemId: "item-backpack", quantity: 1 },
+        { itemId: "item-rope-50", quantity: 1 },
+        { itemId: "item-dagger", quantity: 1 }
+      ]
+    };
+  }
+
+  return {
+    playerId,
+    name: "Osric Vale",
+    className: "fighter",
+    abilitySwap: { first: "strength", second: "charisma" },
+    alignment: "lawful",
+    reasonExceptional: "Runs toward the scream before counting the odds.",
+    purchases: [
+      { itemId: "item-rations-week", quantity: 1 },
+      { itemId: "item-torches", quantity: 1 },
+      { itemId: "item-sword", quantity: 1 },
+      { itemId: "item-shield", quantity: 1 }
+    ]
+  };
+}
+
+function secureRandomInt(sides: number): number {
+  const buffer = new Uint32Array(1);
+  crypto.getRandomValues(buffer);
+  const value = buffer[0] ?? 0;
+  return (value % sides) + 1;
+}
+
 export class Referee extends Agent<Env> {
   private campaign: Campaign | null = null;
 
   async createGame(campaignId = this.name): Promise<Campaign> {
-    this.campaign = seedThreeRoomCampaign(campaignId);
+    this.campaign = seedTavernCampaign(campaignId);
 
     // Spawn stable long-lived minds. We do not use per-run facets as identity.
     await this.subAgent(RefereeAgent, "referee");
     await this.subAgent(PlayerAgent, "player-a");
     await this.subAgent(PlayerAgent, "player-b");
 
+    return this.campaign;
+  }
+
+  async createDungeonDemo(campaignId = this.name): Promise<Campaign> {
+    this.campaign = seedThreeRoomCampaign(campaignId);
+    await this.subAgent(RefereeAgent, "referee");
+    await this.subAgent(PlayerAgent, "player-a");
+    await this.subAgent(PlayerAgent, "player-b");
     return this.campaign;
   }
 
@@ -198,8 +313,39 @@ export class Referee extends Agent<Env> {
     return this.campaign;
   }
 
-  async runDemoRound(): Promise<Campaign> {
+  async runSessionZero(): Promise<Campaign> {
     if (!this.campaign) await this.createGame(this.name);
+
+    const playerA = await this.subAgent(PlayerAgent, "player-a");
+    const playerB = await this.subAgent(PlayerAgent, "player-b");
+    const players = [
+      ["player-a", playerA],
+      ["player-b", playerB]
+    ] as const;
+
+    for (const [playerId, player] of players) {
+      if (Object.values(this.requireCampaign().characters).some((character) => character.playerId === playerId)) continue;
+      const rolled = rollCharacterCreationDraft(this.requireCampaign(), playerId, secureRandomInt);
+      this.campaign = rolled.campaign;
+      const plan = await player.createCharacterPlan(rolled.draft, this.requireCampaign().stores);
+      try {
+        this.campaign = commitCharacterCreation(this.requireCampaign(), rolled.draft, plan, secureRandomInt);
+      } catch (error) {
+        console.warn("[Referee] player character plan rejected; using fallback", error);
+        this.campaign = commitCharacterCreation(this.requireCampaign(), rolled.draft, fallbackCharacterPlan(playerId), secureRandomInt);
+      }
+    }
+
+    return this.requireCampaign();
+  }
+
+  advanceWorldTurn(): Campaign {
+    this.campaign = advanceCampaignTurn(this.requireCampaign());
+    return this.campaign;
+  }
+
+  async runDemoRound(): Promise<Campaign> {
+    if (!this.campaign || Object.keys(this.campaign.characters).length === 0) await this.createDungeonDemo(this.name);
     return this.resolveRound([
       {
         playerId: "player-a",
@@ -221,6 +367,7 @@ export class Referee extends Agent<Env> {
 
   async runPlayerIntentRound(): Promise<Campaign> {
     if (!this.campaign) await this.createGame(this.name);
+    if (Object.keys(this.requireCampaign().characters).length === 0) await this.runSessionZero();
 
     const playerA = await this.subAgent(PlayerAgent, "player-a");
     const playerB = await this.subAgent(PlayerAgent, "player-b");
@@ -235,6 +382,7 @@ export class Referee extends Agent<Env> {
 
   async runLivePlayerIntentRound(): Promise<Campaign> {
     if (!this.campaign) await this.createGame(this.name);
+    if (Object.keys(this.requireCampaign().characters).length === 0) await this.runSessionZero();
 
     const playerA = await this.subAgent(PlayerAgent, "player-a");
     const playerB = await this.subAgent(PlayerAgent, "player-b");
@@ -259,7 +407,7 @@ export class Referee extends Agent<Env> {
 
   private requireCampaign(): Campaign {
     if (!this.campaign) {
-      this.campaign = seedThreeRoomCampaign(this.name);
+      this.campaign = seedTavernCampaign(this.name);
     }
     return this.campaign;
   }
@@ -281,6 +429,15 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
 
   if (url.pathname === "/api/create-game") {
     return json(await referee.createGame(campaignId));
+  }
+  if (url.pathname === "/api/create-dungeon-demo") {
+    return json(await referee.createDungeonDemo(campaignId));
+  }
+  if (url.pathname === "/api/session-zero") {
+    return json(await referee.runSessionZero());
+  }
+  if (url.pathname === "/api/advance-turn") {
+    return json(await referee.advanceWorldTurn());
   }
   if (url.pathname === "/api/projection/player-a") {
     return json(await referee.getProjection("player-a"));
@@ -307,6 +464,49 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   return json({ error: "Not found" }, { status: 404 });
 }
 
+async function campaignEvents(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const campaignId = url.searchParams.get("campaign") ?? "demo-campaign";
+  const referee = await getAgentByName(env.Referee, campaignId);
+  const encoder = new TextEncoder();
+  let ticks = 0;
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      async function send() {
+        const campaign = await referee.getCampaign();
+        controller.enqueue(encoder.encode(`event: campaign\ndata: ${JSON.stringify(campaign)}\n\n`));
+      }
+
+      await send();
+      const interval = setInterval(() => {
+        void send().catch((error) => {
+          controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ message: String(error) })}\n\n`));
+        });
+        ticks += 1;
+        if (ticks >= 30) {
+          clearInterval(interval);
+          controller.close();
+        }
+      }, 2000);
+
+      request.signal.addEventListener("abort", () => {
+        clearInterval(interval);
+        controller.close();
+      });
+    }
+  });
+
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream;charset=utf-8",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+      "access-control-allow-origin": "*"
+    }
+  });
+}
+
 function monitorPage(): Response {
   return new Response(`<!doctype html>
 <html lang="en">
@@ -326,20 +526,30 @@ function monitorPage(): Response {
   <h1>Agent Dungeon Monitor</h1>
   <p>Public table view. Private PlayerAgent secrets are not shown here.</p>
   <p>
-    <button data-action="/api/create-game">Reset</button>
+    <button data-action="/api/create-game">Reset tavern campaign</button>
+    <button data-action="/api/session-zero">Run session 0</button>
+    <button data-action="/api/advance-turn">Advance world turn</button>
     <button data-action="/api/seed-player-secret">Seed player secret</button>
-    <button data-action="/api/live-player-intent-round">Run live Kimi round</button>
-    <button data-action="/api/player-intent-round">Run deterministic round</button>
+    <button data-action="/api/live-player-intent-round">Run live Kimi dungeon round</button>
+    <button data-action="/api/player-intent-round">Run deterministic dungeon round</button>
   </p>
+  <p id="status">Realtime: connecting...</p>
   <div class="grid">
     <section><h2>Table events</h2><pre id="events">Loading...</pre></section>
     <section><h2>Referee audit</h2><pre id="audit">Loading...</pre></section>
   </div>
+  <div class="grid">
+    <section><h2>Characters</h2><pre id="characters">Loading...</pre></section>
+    <section><h2>World</h2><pre id="world">Loading...</pre></section>
+  </div>
   <h2>Campaign JSON</h2>
   <pre id="raw">Loading...</pre>
   <script>
+    const status = document.getElementById('status');
     const events = document.getElementById('events');
     const audit = document.getElementById('audit');
+    const characters = document.getElementById('characters');
+    const world = document.getElementById('world');
     const raw = document.getElementById('raw');
 
     async function load(path) {
@@ -357,14 +567,31 @@ function monitorPage(): Response {
         return '[' + event.kind + '] ' + [event.characterId, event.declaredAction, event.refereeIntent, event.note].filter(Boolean).join(' | ');
       }).join('\n\n') || 'No private Referee audit events.';
 
+      characters.textContent = Object.values(data.characters).map(function (character) {
+        return character.name + ' — level ' + (character.level || 1) + ' ' + (character.className || 'unknown') + ', hp ' + character.stats.hp + ', AC ' + character.stats.armorClass + ', food ' + ((character.supplies && character.supplies.rationDays) || 0) + ' day(s), gp ' + (character.goldGp || 0) + '\nInventory: ' + character.inventory.join(', ');
+      }).join('\n\n') || 'No characters yet. Run session 0.';
+
+      world.textContent = 'Day ' + data.time.day + ', ' + data.time.watch + '\n\nLocations:\n' + Object.values(data.world.locations).map(function (location) {
+        return '- ' + location.name + ' (' + location.kind + ')';
+      }).join('\n') + '\n\nFaction clocks:\n' + Object.values(data.factions).map(function (faction) {
+        return '- ' + faction.name + ': ' + faction.clock + '/' + faction.clockMax + ' — ' + faction.publicGoal;
+      }).join('\n');
+
       raw.textContent = JSON.stringify(data, null, 2);
     }
+
+    const source = new EventSource('/events');
+    source.addEventListener('campaign', function (event) {
+      status.textContent = 'Realtime: connected';
+      render(JSON.parse(event.data));
+    });
+    source.onerror = function () { status.textContent = 'Realtime: reconnecting...'; };
 
     document.querySelectorAll('[data-action]').forEach(function (button) {
       button.addEventListener('click', function () { load(button.dataset.action); });
     });
 
-    load('/api/create-game');
+    load('/api/campaign');
   </script>
 </body>
 </html>`, { headers: { "content-type": "text/html;charset=utf-8" } });
@@ -373,6 +600,7 @@ function monitorPage(): Response {
 export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
+    if (url.pathname === "/events") return campaignEvents(request, env);
     if (url.pathname === "/" || url.pathname === "/monitor") return monitorPage();
 
     const api = await handleApi(request, env);

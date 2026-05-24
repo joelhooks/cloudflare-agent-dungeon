@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  advanceCampaignTurn,
+  commitCharacterCreation,
   projectForPlayer,
   rememberSecret,
   resolveRound,
+  rollCharacterCreationDraft,
+  seedTavernCampaign,
   seedThreeRoomCampaign,
+  startingTownStores,
   type ActionProposal
 } from "./index";
 
@@ -89,7 +94,7 @@ describe("Cloudflare Agent Dungeon domain prototype", () => {
     expect(JSON.stringify(resolved.diceLedger)).toContain("Crossing the moss-crowned threshold without checking");
   });
 
-  it("uses refereeIntent when detecting threshold crossings from terse model actions", () => {
+  it("uses typed movement semantics when detecting threshold crossings from terse model actions", () => {
     const campaign = seedThreeRoomCampaign();
     const resolved = resolveRound(campaign, [
       {
@@ -105,4 +110,78 @@ describe("Cloudflare Agent Dungeon domain prototype", () => {
 
     expect(JSON.stringify(resolved.publicEvents)).toContain("copper tripwire snaps tight");
   });
+
+  it("creates characters from 3d6 down the line, one swap, rolled gold, and bought supplies", () => {
+    const campaign = seedTavernCampaign();
+    const random = fixedRandom([3, 3, 3, 4, 4, 4, 2, 2, 2, 5, 5, 5, 1, 1, 1, 6, 6, 6, 3, 3, 3, 4]);
+    const rolled = rollCharacterCreationDraft(campaign, "player-a", random);
+    const committed = commitCharacterCreation(
+      rolled.campaign,
+      rolled.draft,
+      {
+        playerId: "player-a",
+        name: "Nara Reed",
+        className: "fighter",
+        abilitySwap: { first: "strength", second: "dexterity" },
+        alignment: "neutral",
+        reasonExceptional: "Keeps standing up when smarter folk run.",
+        purchases: [
+          { itemId: "item-rations-week", quantity: 1 },
+          { itemId: "item-torches", quantity: 1 },
+          { itemId: "item-backpack", quantity: 1 },
+          { itemId: "item-leather-armor", quantity: 1 },
+          { itemId: "item-sword", quantity: 1 }
+        ]
+      },
+      random
+    );
+
+    const character = committed.characters["character-nara-reed"];
+    expect(character?.abilities?.strength).toBe(15);
+    expect(character?.abilities?.dexterity).toBe(9);
+    expect(character?.goldGp).toBe(49);
+    expect(character?.supplies?.rationDays).toBe(7);
+    expect(character?.inventory).toContain("Rations (standard, 7 days)");
+    expect(committed.diceLedger).toHaveLength(8);
+  });
+
+  it("keeps the starting town stocked with basic stores and OSE-grounded mundane gear", () => {
+    const stores = startingTownStores();
+    expect(Object.values(stores).map((store) => store.kind).sort()).toEqual([
+      "armorer_weaponsmith",
+      "general_store",
+      "healer_apothecary",
+      "hireling_board",
+      "market_food",
+      "stable_feed",
+      "tavern_inn",
+      "temple_shrine"
+    ]);
+    expect(JSON.stringify(stores)).toContain("Lantern");
+    expect(JSON.stringify(stores)).toContain("Rations (standard, 7 days)");
+    expect(JSON.stringify(stores)).toContain("Leather armor");
+  });
+
+  it("advances faction clocks and applies hunger when characters have no food", () => {
+    const campaign = seedThreeRoomCampaign();
+    const brindle = campaign.characters["character-brindle"];
+    if (!brindle) throw new Error("missing Brindle");
+    brindle.supplies = { rationDays: 0 };
+    const next = advanceCampaignTurn(advanceCampaignTurn(campaign));
+
+    expect(next.time).toEqual({ day: 2, watch: "morning" });
+    expect(next.characters["character-brindle"]?.stats.hp).toBe(4);
+    expect(Object.values(next.factions).every((faction) => faction.clock > 0)).toBe(true);
+    expect(JSON.stringify(next.publicEvents)).toContain("goes hungry");
+  });
 });
+
+function fixedRandom(values: number[]) {
+  let index = 0;
+  return (sides: number) => {
+    const value = values[index] ?? 1;
+    index += 1;
+    return Math.min(Math.max(1, value), sides);
+  };
+}
+

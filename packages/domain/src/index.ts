@@ -406,8 +406,8 @@ export function startingTownStores(): Record<StoreId, Store> {
       name: "Old Archmarket Food Stalls",
       kind: "market_food",
       items: [
-        { id: "item-rations-day", name: "Rations, one day", category: "food", costGp: 1, supplyDays: 1 },
-        { id: "item-rations-week", name: "Rations, one week", category: "food", costGp: 5, supplyDays: 7 }
+        { id: "item-rations-week", name: "Rations (standard, 7 days)", category: "food", costGp: 5, supplyDays: 7 },
+        { id: "item-iron-rations-week", name: "Rations (iron, 7 days)", category: "food", costGp: 15, supplyDays: 7 }
       ]
     }
   };
