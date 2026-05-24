@@ -1,6 +1,5 @@
 export type PlayerId = `player-${string}`;
 export type CharacterId = `character-${string}`;
-export type RoomId = `room-${string}`;
 export type LocationId = `location-${string}`;
 export type FactionId = `faction-${string}`;
 export type HookId = `hook-${string}`;
@@ -30,7 +29,6 @@ export type Character = {
   };
   inventory: string[];
   knowledge: string[];
-  roomId: RoomId;
   locationId?: LocationId;
   abilities?: AbilityScores;
   className?: OseClass;
@@ -43,15 +41,7 @@ export type Character = {
   supplies?: {
     rationDays: number;
   };
-  creationSource?: "kimi" | "repaired_kimi" | "fallback" | "unknown";
-};
-
-export type Room = {
-  id: RoomId;
-  title: string;
-  hiddenDescription: string;
-  publicDescription?: string;
-  exits: RoomId[];
+  creationSource?: "kimi" | "repaired_kimi" | "unknown";
 };
 
 export type Location = {
@@ -86,6 +76,10 @@ export type AdventureChoice = {
   playerId: PlayerId;
   hookId: HookId;
   approach: "cautious" | "bold" | "social" | "stealthy" | "mystic" | "other";
+  tableSpeech?: string;
+  innerMonologue?: string;
+  goal?: string;
+  fear?: string;
   reason?: string;
 };
 
@@ -128,23 +122,16 @@ export type CharacterCreationPlan = {
   deity?: string;
   reasonExceptional: string;
   purchases: Purchase[];
-  planSource?: "kimi" | "repaired_kimi" | "fallback" | "unknown";
-};
-
-export type ActionProposal = {
-  playerId: PlayerId;
-  characterId: CharacterId;
-  tableSpeech?: string;
-  declaredAction: string;
-  actionKind: "inspect_area" | "move_to_location" | "hold_position" | "interact" | "other";
-  targetRoomId?: RoomId;
-  refereeIntent?: string;
+  innerMonologue?: string;
+  goal?: string;
+  fear?: string;
+  planSource?: "kimi" | "repaired_kimi" | "unknown";
 };
 
 export type PublicEvent = {
   id: EventId;
   visibility: "public";
-  kind: "scene_revealed" | "table_action" | "outcome" | "dice_roll" | "world_event" | "faction_clock" | "session_zero" | "player_choice" | "travel";
+  kind: "scene_revealed" | "table_action" | "outcome" | "dice_roll" | "world_event" | "faction_clock" | "session_zero" | "player_choice" | "travel" | "referee_narration";
   text: string;
   actor?: CharacterId;
   createdAt: string;
@@ -153,7 +140,7 @@ export type PublicEvent = {
 export type RefereeAuditEvent = {
   id: EventId;
   visibility: "referee";
-  kind: "action_proposed" | "adjudication_note" | "character_creation" | "world_tick" | "adventure_choice";
+  kind: "character_creation" | "world_tick" | "adventure_choice" | "referee_reasoning";
   playerId?: PlayerId;
   characterId?: CharacterId;
   declaredAction?: string;
@@ -174,18 +161,11 @@ export type DiceRoll = {
   createdAt: string;
 };
 
-export type CharacterProjection = {
-  playerId: PlayerId;
-  characterId: CharacterId;
-  characterName: string;
-  visibleRoom: {
-    id: RoomId;
-    title: string;
-    description: string;
-    exits: RoomId[];
-  };
-  characterKnowledge: string[];
-  publicEvents: PublicEvent[];
+export type RefereeOutcome = {
+  publicNarration: string;
+  pressure: string;
+  nextQuestion: string;
+  privateReasoning: string;
 };
 
 export type Campaign = {
@@ -197,7 +177,6 @@ export type Campaign = {
   };
   players: Record<PlayerId, Player>;
   characters: Record<CharacterId, Character>;
-  rooms: Record<RoomId, Room>;
   world: {
     startingLocationId: LocationId;
     locations: Record<LocationId, Location>;
@@ -506,7 +485,6 @@ export function seedTavernCampaign(id = "agent-dungeon-campaign"): Campaign {
     time: { day: 1, watch: "evening" },
     players,
     characters: {},
-    rooms: threeRoomDungeonRooms(),
     world,
     factions: startingFactions(),
     hooks: startingAdventureHooks(),
@@ -516,100 +494,6 @@ export function seedTavernCampaign(id = "agent-dungeon-campaign"): Campaign {
     refereeAuditEvents: [audit("Campaign seeded for autonomous tavern-start play.", { kind: "world_tick" })],
     diceLedger: []
   };
-}
-
-function threeRoomDungeonRooms(): Record<RoomId, Room> {
-  const entrance: Room = {
-    id: "room-entrance",
-    title: "Moss-Crowned Door",
-    hiddenDescription: "A stuck stone door hides a copper tripwire in the lower moss.",
-    publicDescription: "A moss-crowned stone door leans open into the hill. Damp air leaks from the dark beyond.",
-    exits: ["room-shrine"]
-  };
-  const shrine: Room = {
-    id: "room-shrine",
-    title: "Sunken Shrine",
-    hiddenDescription: "The cracked altar contains a silver key under a loose top stone.",
-    exits: ["room-entrance", "room-vault"]
-  };
-  const vault: Room = {
-    id: "room-vault",
-    title: "Blue-Tiled Vault",
-    hiddenDescription: "The vault has a sleeping ash-cobra curled around a clay coffer.",
-    exits: ["room-shrine"]
-  };
-  return { [entrance.id]: entrance, [shrine.id]: shrine, [vault.id]: vault };
-}
-
-export function seedThreeRoomCampaign(id = "demo-campaign"): Campaign {
-  const campaign = seedTavernCampaign(id);
-  const playerA = campaign.players["player-a"];
-  const playerB = campaign.players["player-b"];
-  if (!playerA || !playerB) throw new Error("Seed players missing");
-
-  const characterA: Character = {
-    id: "character-brindle",
-    playerId: playerA.id,
-    name: "Brindle",
-    stats: { hp: 5, armorClass: 13 },
-    inventory: ["lantern", "iron spike"],
-    knowledge: ["The door and damp entrance are visible."],
-    roomId: "room-entrance",
-    locationId: "location-moss-crowned-door",
-    className: "thief",
-    level: 1,
-    xp: 0,
-    goldGp: 3,
-    supplies: { rationDays: 2 }
-  };
-  const characterB: Character = {
-    id: "character-osric",
-    playerId: playerB.id,
-    name: "Osric",
-    stats: { hp: 6, armorClass: 12 },
-    inventory: ["torch", "10-foot pole"],
-    knowledge: ["The door and damp entrance are visible."],
-    roomId: "room-entrance",
-    locationId: "location-moss-crowned-door",
-    className: "fighter",
-    level: 1,
-    xp: 0,
-    goldGp: 2,
-    supplies: { rationDays: 2 }
-  };
-
-  return {
-    ...campaign,
-    status: "awaiting_player_intent",
-    characters: { [characterA.id]: characterA, [characterB.id]: characterB },
-    publicEvents: [event(campaign.rooms["room-entrance"]?.publicDescription ?? "The dungeon entrance is visible.", "scene_revealed")],
-    refereeAuditEvents: [],
-    diceLedger: []
-  };
-}
-
-export function projectForPlayer(campaign: Campaign, playerId: PlayerId): CharacterProjection {
-  const character = Object.values(campaign.characters).find((candidate) => candidate.playerId === playerId);
-  if (!character) throw new Error(`No character for ${playerId}`);
-  const room = campaign.rooms[character.roomId];
-  if (!room) throw new Error(`No room for ${character.roomId}`);
-  return {
-    playerId,
-    characterId: character.id,
-    characterName: character.name,
-    visibleRoom: {
-      id: room.id,
-      title: room.title,
-      description: room.publicDescription ?? "The Referee has not revealed this place yet.",
-      exits: room.exits
-    },
-    characterKnowledge: [...character.knowledge],
-    publicEvents: [...campaign.publicEvents]
-  };
-}
-
-export function rememberSecret(secrets: string[], note: string): string[] {
-  return [...secrets, note];
 }
 
 export function projectForMonitor(campaign: Campaign) {
@@ -673,6 +557,19 @@ export function projectForDevMonitor(campaign: Campaign) {
   };
 }
 
+export function commitRefereeOutcome(campaign: Campaign, outcome: RefereeOutcome): Campaign {
+  const next = cloneCampaign(campaign);
+  next.publicEvents.push(event(outcome.publicNarration, "referee_narration"));
+  next.publicEvents.push(event(`Pressure: ${outcome.pressure}`, "outcome"));
+  next.publicEvents.push(event(`Referee asks: ${outcome.nextQuestion}`, "outcome"));
+  next.refereeAuditEvents.push(
+    audit(outcome.privateReasoning, {
+      kind: "referee_reasoning"
+    })
+  );
+  return next;
+}
+
 export function commitAdventureChoice(campaign: Campaign, choices: AdventureChoice[]): Campaign {
   const next = cloneCampaign(campaign);
   const validChoices = choices.filter((choice) => next.players[choice.playerId] && next.hooks[choice.hookId]?.status !== "resolved");
@@ -682,9 +579,18 @@ export function commitAdventureChoice(campaign: Campaign, choices: AdventureChoi
     if (!hook) continue;
     const character = Object.values(next.characters).find((candidate) => candidate.playerId === choice.playerId);
     const actorName = character?.name ?? next.players[choice.playerId]?.name ?? choice.playerId;
+    if (choice.tableSpeech && character) {
+      next.publicEvents.push(event(`${actorName}: “${choice.tableSpeech}”`, "table_action", character.id));
+    }
     next.publicEvents.push(event(`${actorName} wants to pursue “${hook.title}” with a ${choice.approach} approach.`, "player_choice", character?.id));
+    const privateChoiceNotes = [
+      choice.reason ? `reason=${choice.reason}` : undefined,
+      choice.goal ? `goal=${choice.goal}` : undefined,
+      choice.fear ? `fear=${choice.fear}` : undefined,
+      choice.innerMonologue ? `inner=${choice.innerMonologue}` : undefined
+    ].filter(Boolean).join(" | ");
     next.refereeAuditEvents.push(
-      audit(choice.reason ?? "Player chose an adventure hook.", {
+      audit(privateChoiceNotes || "Player chose an adventure hook.", {
         kind: "adventure_choice",
         playerId: choice.playerId,
         ...(character ? { characterId: character.id } : {})
@@ -776,7 +682,6 @@ export function commitCharacterCreation(campaign: Campaign, draft: CharacterCrea
     stats: { hp: Math.max(1, hpRoll.result), armorClass },
     inventory: purchaseResult.inventory,
     knowledge: ["You begin in the Golden Eel Tavern with rumors of danger and coin in the air."],
-    roomId: "room-entrance",
     locationId: next.world.startingLocationId,
     abilities,
     className: plan.className,
@@ -792,8 +697,14 @@ export function commitCharacterCreation(campaign: Campaign, draft: CharacterCrea
 
   next.characters[character.id] = character;
   next.publicEvents.push(event(`${character.name}, a level 1 ${plan.className}, joins the table with ${purchaseResult.rationDays} ration day(s) and ${purchaseResult.remainingGoldGp} gp left.`, "session_zero", character.id));
+  const privateCharacterNotes = [
+    `Character created from 3d6 down the line with${plan.abilitySwap ? " one swap" : " no swap"} using ${plan.planSource ?? "unknown"} plan.`,
+    plan.goal ? `goal=${plan.goal}` : undefined,
+    plan.fear ? `fear=${plan.fear}` : undefined,
+    plan.innerMonologue ? `inner=${plan.innerMonologue}` : undefined
+  ].filter(Boolean).join(" | ");
   next.refereeAuditEvents.push(
-    audit(`Character created from 3d6 down the line with${plan.abilitySwap ? " one swap" : " no swap"} using ${plan.planSource ?? "unknown"} plan.`, {
+    audit(privateCharacterNotes, {
       kind: "character_creation",
       playerId: plan.playerId,
       characterId: character.id
@@ -910,90 +821,6 @@ export function advanceCampaignTurn(campaign: Campaign, reason = "Autonomous wor
   return next;
 }
 
-export function resolveRound(campaign: Campaign, proposals: ActionProposal[]): Campaign {
-  const next: Campaign = {
-    ...cloneCampaign(campaign),
-    status: "resolving"
-  };
-
-  const validProposals: Array<{ proposal: ActionProposal; character: Character }> = [];
-
-  for (const proposal of proposals) {
-    const character = next.characters[proposal.characterId];
-    if (!character || character.playerId !== proposal.playerId) {
-      next.refereeAuditEvents.push(
-        audit("Rejected action proposal because player/character ownership did not match.", {
-          kind: "adjudication_note",
-          playerId: proposal.playerId,
-          characterId: proposal.characterId
-        })
-      );
-      continue;
-    }
-
-    validProposals.push({ proposal, character });
-
-    next.refereeAuditEvents.push(
-      audit("Player intent received for Referee-only adjudication.", {
-        kind: "action_proposed",
-        playerId: proposal.playerId,
-        characterId: proposal.characterId,
-        declaredAction: proposal.declaredAction,
-        ...(proposal.refereeIntent ? { refereeIntent: proposal.refereeIntent } : {})
-      })
-    );
-
-    if (proposal.tableSpeech) {
-      next.publicEvents.push(event(`${character.name}: “${proposal.tableSpeech}”`, "table_action", character.id));
-    }
-    next.publicEvents.push(event(`${character.name} tries to ${proposal.declaredAction}.`, "table_action", character.id));
-  }
-
-  const entranceActions = validProposals.filter(({ character }) => character.roomId === "room-entrance");
-  const carefulProposal = entranceActions.find(({ proposal }) => isCarefulThresholdInspection(proposal));
-  const crossingProposal = entranceActions.find(({ proposal }) => isCrossingThreshold(proposal));
-
-  if (carefulProposal) {
-    const roll = addFixedRoll(next, carefulProposal.character.id, "Careful entrance inspection", "public", 2);
-    next.publicEvents.push(event(`${carefulProposal.character.name} rolls ${roll.result} on ${roll.formula} for ${roll.reason}.`, "dice_roll", carefulProposal.character.id));
-    next.publicEvents.push(event("The party spots the copper tripwire before anyone blunders through it.", "outcome"));
-    return { ...next, status: "round_committed" };
-  }
-
-  if (crossingProposal) {
-    const roll = addFixedRoll(next, crossingProposal.character.id, "Crossing the moss-crowned threshold without checking", "public", 1);
-    next.publicEvents.push(event(`${crossingProposal.character.name} rolls ${roll.result} on ${roll.formula} for ${roll.reason}.`, "dice_roll", crossingProposal.character.id));
-    next.publicEvents.push(event("The copper tripwire snaps tight across the threshold. The Referee marks the entrance hazard as triggered before the party reaches the shrine.", "outcome", crossingProposal.character.id));
-    next.refereeAuditEvents.push(
-      audit("Threshold crossing resolved against hidden copper tripwire.", {
-        kind: "adjudication_note",
-        playerId: crossingProposal.proposal.playerId,
-        characterId: crossingProposal.character.id,
-        declaredAction: crossingProposal.proposal.declaredAction
-      })
-    );
-    return { ...next, status: "round_committed" };
-  }
-
-  next.publicEvents.push(event("The party hesitates at the moss-crowned threshold. Nothing changes yet.", "outcome"));
-  return { ...next, status: "round_committed" };
-}
-
-function addFixedRoll(campaign: Campaign, actorId: CharacterId, reason: string, visibility: DiceRoll["visibility"], result: number): DiceRoll {
-  const roll: DiceRoll = {
-    id: nextId("roll"),
-    actorId,
-    formula: "1d6",
-    terms: [result],
-    result,
-    reason,
-    visibility,
-    createdAt: now()
-  };
-  campaign.diceLedger.push(roll);
-  return roll;
-}
-
 function rollAndRecord(campaign: Campaign, formula: string, randomInt: RandomInt, reason: string, visibility: DiceRoll["visibility"], playerId?: PlayerId): DiceRoll {
   const [countText, sidesText] = formula.split("d");
   const count = Number(countText);
@@ -1097,10 +924,3 @@ function slug(value: string): string {
     .replace(/^-|-$/g, "") || nextId("unnamed");
 }
 
-function isCarefulThresholdInspection(proposal: ActionProposal): boolean {
-  return proposal.actionKind === "inspect_area";
-}
-
-function isCrossingThreshold(proposal: ActionProposal): boolean {
-  return proposal.actionKind === "move_to_location" && proposal.targetRoomId === "room-shrine";
-}

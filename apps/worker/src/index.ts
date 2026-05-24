@@ -1,47 +1,36 @@
 import { Agent, getAgentByName, routeAgentRequest } from "agents";
-import { Think, type TurnConfig } from "@cloudflare/think";
+import { Think } from "@cloudflare/think";
 import { createWorkersAI } from "workers-ai-provider";
-import { generateObject, Output, type LanguageModel } from "ai";
+import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
 import {
   advanceCampaignTurn,
-  awardRecoveredTreasureXp,
   commitAdventureChoice,
   commitCharacterCreation,
+  commitRefereeOutcome,
   projectForDevMonitor,
   projectForMonitor,
-  projectForPlayer,
-  rememberSecret,
-  resolveRound,
   rollCharacterCreationDraft,
   seedTavernCampaign,
-  seedThreeRoomCampaign,
   travelToChosenHook,
-  type ActionProposal,
   type AdventureChoice,
   type Campaign,
   type CharacterCreationDraft,
   type CharacterCreationPlan,
-  type CharacterProjection,
   type HookId,
   type PlayerId,
+  type RefereeOutcome,
   type Store,
   type StoreId
 } from "@cloudflare-agent-dungeon/domain";
 
-const ActionProposalSchema = z.object({
-  tableSpeech: z.string().optional(),
-  declaredAction: z.string().min(1),
-  actionKind: z.enum(["inspect_area", "move_to_location", "hold_position", "interact", "other"]),
-  targetRoomId: z.string().optional(),
-  refereeIntent: z.string().optional()
-});
-
-type ActionProposalOutput = z.infer<typeof ActionProposalSchema>;
-
 const AdventureChoiceSchema = z.object({
   hookId: z.string().min(1),
   approach: z.enum(["cautious", "bold", "social", "stealthy", "mystic", "other"]),
+  tableSpeech: z.string().optional(),
+  innerMonologue: z.string().optional(),
+  goal: z.string().optional(),
+  fear: z.string().optional(),
   reason: z.string().optional()
 });
 
@@ -59,14 +48,25 @@ const CharacterCreationPlanSchema = z.object({
   alignment: z.enum(["lawful", "neutral", "chaotic"]),
   deity: z.string().optional(),
   reasonExceptional: z.string().min(1),
+  innerMonologue: z.string().optional(),
+  goal: z.string().optional(),
+  fear: z.string().optional(),
   purchases: z.array(z.object({ itemId: z.string(), quantity: z.number().int().positive() }))
 });
 
 type CharacterCreationPlanOutput = z.infer<typeof CharacterCreationPlanSchema>;
 
+const RefereeOutcomeSchema = z.object({
+  publicNarration: z.string().min(1),
+  pressure: z.string().min(1),
+  nextQuestion: z.string().min(1),
+  privateReasoning: z.string().min(1)
+});
+
 /**
- * Long-lived referee mind. Slice one keeps it mostly as a documented seam while
- * the deterministic Referee parent proves the data boundaries first.
+ * Long-lived referee mind. It reasons over validated player choices and dice
+ * receipts, then generates table-safe outcomes while keeping private reasoning
+ * in the Referee audit lane.
  */
 export class RefereeAgent extends Think<Env> {
   override getModel(): LanguageModel {
@@ -81,9 +81,29 @@ export class RefereeAgent extends Think<Env> {
   override getSystemPrompt(): string {
     return [
       "You are the Old School Essentials Referee mind for Cloudflare Agent Dungeon.",
-      "You advise adjudication and narration, but the Referee parent owns canonical truth.",
-      "Never reveal hidden room state or player-private secrets unless the Referee parent passes them as table-safe context."
+      "The Referee parent owns canonical truth, dice receipts, and visibility boundaries.",
+      "Your job is the fun part: gameplay reasoning, pressure, consequences, anticipation, and table-safe narration.",
+      "Never reveal hidden faction agendas, private Referee notes, rules corpus text, or player-private secrets in publicNarration. Keep that in privateReasoning."
     ].join(" ");
+  }
+
+  async generateOutcome(context: unknown): Promise<RefereeOutcome> {
+    const result = await generateObject({
+      model: this.getModel(),
+      schema: RefereeOutcomeSchema,
+      maxOutputTokens: 1200,
+      prompt: [
+        "Generate the Referee outcome for this campaign beat.",
+        "Return structured JSON only.",
+        "publicNarration: vivid table-facing result, safe for players/audience.",
+        "pressure: what got harder, closer, stranger, or more tempting because of the choice and dice.",
+        "nextQuestion: the next meaningful choice you ask the players.",
+        "privateReasoning: your actual Referee reasoning, including hidden clocks/agendas if useful. This is dev/private only.",
+        "Respect dice receipts and canonical state. Do not override rolls. Do not leak hidden/private data in publicNarration.",
+        `Context: ${JSON.stringify(context)}`
+      ].join("\n")
+    });
+    return result.object;
   }
 }
 
@@ -93,8 +113,6 @@ export class RefereeAgent extends Think<Env> {
  */
 export class PlayerAgent extends Think<Env> {
   private secrets: string[] = [];
-  private pendingActionProposal: ActionProposalOutput | null = null;
-  private structuredActionTurn = false;
 
   override getModel(): LanguageModel {
     const workersai = createWorkersAI({ binding: this.env.AI });
@@ -114,41 +132,12 @@ export class PlayerAgent extends Think<Env> {
     ].join(" ");
   }
 
-  override beforeTurn(): TurnConfig | void {
-    if (!this.structuredActionTurn) return;
-    return {
-      output: Output.object({ schema: ActionProposalSchema }),
-      activeTools: []
-    };
-  }
-
-  override onStepFinish(event: unknown): void {
-    const output = (event as { output?: unknown }).output;
-    const parsed = ActionProposalSchema.safeParse(output);
-    if (parsed.success) {
-      this.pendingActionProposal = parsed.data;
-    }
-  }
-
-  rememberSecret(note: string): { ok: true } {
-    this.secrets = rememberSecret(this.secrets, note);
-    return { ok: true };
-  }
-
-  listOwnSecrets(): string[] {
-    return [...this.secrets];
-  }
-
-  proposeAction(projection: CharacterProjection): ActionProposal {
-    return this.deterministicAction(projection);
-  }
-
   async createCharacterPlan(draft: CharacterCreationDraft, stores: Record<StoreId, Store>): Promise<CharacterCreationPlan> {
     try {
       const prompt = [
         "Create your own level 1 Old School Essentials character for session 0.",
         "Return compact JSON only. No markdown. No prose.",
-        "Shape: {\"name\":string,\"className\":\"fighter|cleric|magic-user|thief|dwarf|elf|halfling\",\"abilitySwap\":{\"first\":ability,\"second\":ability},\"alignment\":\"lawful|neutral|chaotic\",\"deity\":string optional,\"reasonExceptional\":string,\"purchases\":[{\"itemId\":string,\"quantity\":number}]}",
+        "Shape: {\"name\":string,\"className\":\"fighter|cleric|magic-user|thief|dwarf|elf|halfling\",\"abilitySwap\":{\"first\":ability,\"second\":ability},\"alignment\":\"lawful|neutral|chaotic\",\"deity\":string optional,\"reasonExceptional\":string,\"innerMonologue\":string,\"goal\":string,\"fear\":string,\"purchases\":[{\"itemId\":string,\"quantity\":number}]}",
         "Use the rolled abilities and starting gold exactly as provided.",
         "You may make at most one ability score swap.",
         "Buy starting gear manually from available item ids. Food, light, containers, and tools matter.",
@@ -165,8 +154,8 @@ export class PlayerAgent extends Think<Env> {
       });
       return toCharacterCreationPlan(draft.playerId, CharacterCreationPlanSchema.parse(parseJsonObject(extractWorkersAIText(result))));
     } catch (error) {
-      console.warn("[PlayerAgent] character creation failed; using deterministic fallback", error);
-      return fallbackCharacterPlan(draft.playerId);
+      console.warn("[PlayerAgent] character creation failed; no canned fallback", error);
+      throw new Error(`PlayerAgent character creation failed for ${draft.playerId}: ${String(error)}`);
     }
   }
 
@@ -179,76 +168,20 @@ export class PlayerAgent extends Think<Env> {
         prompt: [
           "Choose one available adventure hook to pursue in this Old School Essentials campaign.",
           "Return only the structured choice. Do not invent hook ids.",
+          "Include tableSpeech, innerMonologue, goal, and fear. This is the gameplay: stress, desire, anticipation, and reasoning.",
           "Your choice should reflect your player personality and your character sheet, not a railroad.",
           `Context: ${JSON.stringify(context)}`,
           `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
         ].join("\n")
       });
-      return toAdventureChoice((context as { playerId: PlayerId }).playerId, result.object);
+      const choice = toAdventureChoice((context as { playerId: PlayerId }).playerId, result.object);
+      const validHookIds = new Set(((context as { hooks?: Array<{ id: string }> }).hooks ?? []).map((hook) => hook.id));
+      if (!validHookIds.has(choice.hookId)) throw new Error(`PlayerAgent chose unavailable hook ${choice.hookId}`);
+      return choice;
     } catch (error) {
-      console.warn("[PlayerAgent] adventure hook choice failed; using deterministic fallback", error);
-      return fallbackAdventureChoice((context as { playerId: PlayerId }).playerId);
+      console.warn("[PlayerAgent] adventure hook choice failed; no canned fallback", error);
+      throw new Error(`PlayerAgent adventure hook choice failed for ${(context as { playerId: PlayerId }).playerId}: ${String(error)}`);
     }
-  }
-
-  async proposeActionWithStructuredTurn(projection: CharacterProjection): Promise<ActionProposal> {
-    try {
-      const result = await generateObject({
-        model: this.getModel(),
-        schema: ActionProposalSchema,
-        prompt: [
-          "What do you do?",
-          "Return one structured action proposal matching the schema.",
-          "Use actionKind for gameplay semantics instead of stuffing mechanics into prose.",
-          "Valid actionKind values: inspect_area, move_to_location, hold_position, interact, other.",
-          "If moving toward a visible exit, set targetRoomId to that room id.",
-          "Do not include player secrets. Use refereeIntent only for Referee-visible intent.",
-          `Projection: ${JSON.stringify(projection)}`,
-          `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
-        ].join("\n")
-      });
-
-      const proposal = result.object;
-      return {
-        playerId: projection.playerId,
-        characterId: projection.characterId,
-        ...(proposal.tableSpeech ? { tableSpeech: proposal.tableSpeech } : {}),
-        declaredAction: proposal.declaredAction,
-        actionKind: proposal.actionKind,
-        ...(proposal.targetRoomId ? { targetRoomId: proposal.targetRoomId as `room-${string}` } : {}),
-        ...(proposal.refereeIntent ? { refereeIntent: proposal.refereeIntent } : {})
-      };
-    } catch (error) {
-      console.warn("[PlayerAgent] structured action turn failed; using deterministic fallback", error);
-      return this.deterministicAction(projection);
-    }
-  }
-
-  private deterministicAction(projection: CharacterProjection): ActionProposal {
-    const cautiousSecret = this.secrets.find((secret) =>
-      secret.toLowerCase().includes("osric")
-    );
-
-    if (projection.playerId === "player-a") {
-      return {
-        playerId: projection.playerId,
-        characterId: projection.characterId,
-        tableSpeech: "Hold up. Let me check the threshold first.",
-        declaredAction: "inspect the mossy threshold for traps",
-        actionKind: "inspect_area",
-        ...(cautiousSecret
-          ? { refereeIntent: "I am slowing Osric down without saying I distrust his impulse control." }
-          : { refereeIntent: "I am being careful before the party enters." })
-      };
-    }
-
-    return {
-      playerId: projection.playerId,
-      characterId: projection.characterId,
-      tableSpeech: "Fine, but make it quick. This torch is not getting younger.",
-      declaredAction: "hold the torch high and wait for Brindle's signal",
-      actionKind: "hold_position"
-    };
   }
 
   private privateContextSummary(): string {
@@ -262,24 +195,11 @@ function toAdventureChoice(playerId: PlayerId, output: AdventureChoiceOutput): A
     playerId,
     hookId: output.hookId as HookId,
     approach: output.approach,
+    ...(output.tableSpeech ? { tableSpeech: output.tableSpeech } : {}),
+    ...(output.innerMonologue ? { innerMonologue: output.innerMonologue } : {}),
+    ...(output.goal ? { goal: output.goal } : {}),
+    ...(output.fear ? { fear: output.fear } : {}),
     ...(output.reason ? { reason: output.reason } : {})
-  };
-}
-
-function fallbackAdventureChoice(playerId: PlayerId): AdventureChoice {
-  if (playerId === "player-a") {
-    return {
-      playerId,
-      hookId: "hook-drowned-bell",
-      approach: "cautious",
-      reason: "The shrine rumor sounds dangerous but legible enough to investigate without blundering."
-    };
-  }
-  return {
-    playerId,
-    hookId: "hook-blue-tiled-vault",
-    approach: "bold",
-    reason: "The dangerous vault sounds like the fastest road to a name worth remembering."
   };
 }
 
@@ -315,6 +235,9 @@ function toCharacterCreationPlan(playerId: PlayerId, output: CharacterCreationPl
     alignment: output.alignment,
     ...(output.deity ? { deity: output.deity } : {}),
     reasonExceptional: output.reasonExceptional,
+    ...(output.innerMonologue ? { innerMonologue: output.innerMonologue } : {}),
+    ...(output.goal ? { goal: output.goal } : {}),
+    ...(output.fear ? { fear: output.fear } : {}),
     purchases: output.purchases
       .filter((purchase) => purchase.quantity > 0)
       .map((purchase) => ({
@@ -358,43 +281,6 @@ function normalizeItemId(itemId: string): string {
   return aliases[itemId] ?? itemId;
 }
 
-function fallbackCharacterPlan(playerId: PlayerId): CharacterCreationPlan {
-  if (playerId === "player-a") {
-    return {
-      playerId,
-      name: "Brindle Reed",
-      className: "thief",
-      abilitySwap: { first: "dexterity", second: "strength" },
-      alignment: "neutral",
-      reasonExceptional: "Notices the small ugly details other people step over.",
-      purchases: [
-        { itemId: "item-rations-week", quantity: 1 },
-        { itemId: "item-torches", quantity: 1 },
-        { itemId: "item-backpack", quantity: 1 },
-        { itemId: "item-rope-50", quantity: 1 },
-        { itemId: "item-dagger", quantity: 1 }
-      ],
-      planSource: "fallback"
-    };
-  }
-
-  return {
-    playerId,
-    name: "Osric Vale",
-    className: "fighter",
-    abilitySwap: { first: "strength", second: "charisma" },
-    alignment: "lawful",
-    reasonExceptional: "Runs toward the scream before counting the odds.",
-    purchases: [
-      { itemId: "item-rations-week", quantity: 1 },
-      { itemId: "item-torches", quantity: 1 },
-      { itemId: "item-sword", quantity: 1 },
-      { itemId: "item-shield", quantity: 1 }
-    ],
-    planSource: "fallback"
-  };
-}
-
 function secureRandomInt(sides: number): number {
   const buffer = new Uint32Array(1);
   crypto.getRandomValues(buffer);
@@ -416,14 +302,6 @@ export class Referee extends Agent<Env> {
     return this.campaign;
   }
 
-  async createDungeonDemo(campaignId = this.name): Promise<Campaign> {
-    this.campaign = seedThreeRoomCampaign(campaignId);
-    await this.subAgent(RefereeAgent, "referee");
-    await this.subAgent(PlayerAgent, "player-a");
-    await this.subAgent(PlayerAgent, "player-b");
-    return this.campaign;
-  }
-
   getCampaign(): Campaign {
     return this.requireCampaign();
   }
@@ -434,21 +312,6 @@ export class Referee extends Agent<Env> {
 
   getDevCampaign() {
     return projectForDevMonitor(this.requireCampaign());
-  }
-
-  getProjection(playerId: PlayerId) {
-    return projectForPlayer(this.requireCampaign(), playerId);
-  }
-
-  async seedPlayerPrivateMemoryForDemo(): Promise<{ ok: true }> {
-    const player = await this.subAgent(PlayerAgent, "player-a");
-    await player.rememberSecret("I suspect Osric will charge ahead and get us killed.");
-    return { ok: true };
-  }
-
-  resolveRound(proposals: ActionProposal[]): Campaign {
-    this.campaign = resolveRound(this.requireCampaign(), proposals);
-    return this.campaign;
   }
 
   async runSessionZero(): Promise<Campaign> {
@@ -473,8 +336,8 @@ export class Referee extends Agent<Env> {
         try {
           this.campaign = commitCharacterCreation(this.requireCampaign(), rolled.draft, trimPlanToBudget(plan, this.requireCampaign().stores, rolled.draft.startingGoldGp), secureRandomInt);
         } catch (repairError) {
-          console.warn("[Referee] repaired player character plan rejected; using fallback", repairError);
-          this.campaign = commitCharacterCreation(this.requireCampaign(), rolled.draft, fallbackCharacterPlan(playerId), secureRandomInt);
+          console.warn("[Referee] repaired player character plan rejected; no canned fallback", repairError);
+          throw new Error(`Player ${playerId} character plan rejected after repair: ${String(repairError)}`);
         }
       }
     }
@@ -487,15 +350,14 @@ export class Referee extends Agent<Env> {
     return this.campaign;
   }
 
-  recoverDemoTreasure(): Campaign {
-    this.campaign = awardRecoveredTreasureXp(this.requireCampaign(), 20, "A small road cache is recovered and carried back as coin-value treasure");
-    return this.campaign;
-  }
-
   async travelToAdventure(): Promise<Campaign> {
     if (!this.campaign) await this.createGame(this.name);
     if (!this.requireCampaign().party.chosenHookId) await this.chooseAdventure();
-    this.campaign = travelToChosenHook(this.requireCampaign(), secureRandomInt);
+    const before = this.requireCampaign();
+    const travelled = travelToChosenHook(before, secureRandomInt);
+    const referee = await this.subAgent(RefereeAgent, "referee");
+    const outcome = await referee.generateOutcome(this.refereeOutcomeContext("travel", before, travelled));
+    this.campaign = commitRefereeOutcome(travelled, outcome);
     return this.campaign;
   }
 
@@ -510,59 +372,12 @@ export class Referee extends Agent<Env> {
       playerB.chooseAdventureHook(this.adventureChoiceContext("player-b"))
     ]);
 
-    this.campaign = commitAdventureChoice(this.requireCampaign(), choices);
+    const before = this.requireCampaign();
+    const chosen = commitAdventureChoice(before, choices);
+    const referee = await this.subAgent(RefereeAgent, "referee");
+    const outcome = await referee.generateOutcome(this.refereeOutcomeContext("adventure_choice", before, chosen));
+    this.campaign = commitRefereeOutcome(chosen, outcome);
     return this.campaign;
-  }
-
-  async runDemoRound(): Promise<Campaign> {
-    if (!this.campaign || Object.keys(this.campaign.characters).length === 0) await this.createDungeonDemo(this.name);
-    return this.resolveRound([
-      {
-        playerId: "player-a",
-        characterId: "character-brindle",
-        tableSpeech: "Hold up. Something smells wrong.",
-        declaredAction: "inspect the mossy threshold for traps",
-        actionKind: "inspect_area",
-        refereeIntent: "I want to catch danger before Osric notices I am worried."
-      },
-      {
-        playerId: "player-b",
-        characterId: "character-osric",
-        tableSpeech: "I was born ready.",
-        declaredAction: "raise the torch and wait for Brindle's signal",
-        actionKind: "hold_position"
-      }
-    ]);
-  }
-
-  async runPlayerIntentRound(): Promise<Campaign> {
-    if (!this.campaign) await this.createGame(this.name);
-    if (Object.keys(this.requireCampaign().characters).length === 0) await this.runSessionZero();
-
-    const playerA = await this.subAgent(PlayerAgent, "player-a");
-    const playerB = await this.subAgent(PlayerAgent, "player-b");
-
-    const proposals = await Promise.all([
-      playerA.proposeAction(projectForPlayer(this.requireCampaign(), "player-a")),
-      playerB.proposeAction(projectForPlayer(this.requireCampaign(), "player-b"))
-    ]);
-
-    return this.resolveRound(proposals);
-  }
-
-  async runLivePlayerIntentRound(): Promise<Campaign> {
-    if (!this.campaign) await this.createGame(this.name);
-    if (Object.keys(this.requireCampaign().characters).length === 0) await this.runSessionZero();
-
-    const playerA = await this.subAgent(PlayerAgent, "player-a");
-    const playerB = await this.subAgent(PlayerAgent, "player-b");
-
-    const proposals = await Promise.all([
-      playerA.proposeActionWithStructuredTurn(projectForPlayer(this.requireCampaign(), "player-a")),
-      playerB.proposeActionWithStructuredTurn(projectForPlayer(this.requireCampaign(), "player-b"))
-    ]);
-
-    return this.resolveRound(proposals);
   }
 
   override async onBeforeSubAgent(_request: Request, child: { className: string; name: string }): Promise<Response | void> {
@@ -608,6 +423,26 @@ export class Referee extends Agent<Env> {
     };
   }
 
+  private refereeOutcomeContext(trigger: "adventure_choice" | "travel", before: Campaign, after: Campaign) {
+    return {
+      trigger,
+      publicState: projectForMonitor(after),
+      previousPublicEvents: before.publicEvents.slice(-8),
+      newPublicEvents: after.publicEvents.slice(before.publicEvents.length),
+      newDice: after.diceLedger.slice(before.diceLedger.length),
+      privateRefereeContext: {
+        factionAgendas: Object.values(after.factions).map((faction) => ({
+          name: faction.name,
+          publicGoal: faction.publicGoal,
+          hiddenAgenda: faction.hiddenAgenda,
+          clock: faction.clock,
+          clockMax: faction.clockMax
+        })),
+        refereeAudit: after.refereeAuditEvents.slice(before.refereeAuditEvents.length)
+      }
+    };
+  }
+
   private requireCampaign(): Campaign {
     if (!this.campaign) {
       this.campaign = seedTavernCampaign(this.name);
@@ -627,14 +462,11 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith("/api/")) return null;
 
-  const campaignId = url.searchParams.get("campaign") ?? "demo-campaign";
+  const campaignId = url.searchParams.get("campaign") ?? "agent-dungeon-campaign";
   const referee = await getAgentByName(env.Referee, campaignId);
 
   if (url.pathname === "/api/create-game") {
     return json(projectForMonitor(await referee.createGame(campaignId)));
-  }
-  if (url.pathname === "/api/create-dungeon-demo") {
-    return json(projectForMonitor(await referee.createDungeonDemo(campaignId)));
   }
   if (url.pathname === "/api/session-zero") {
     return json(projectForMonitor(await referee.runSessionZero()));
@@ -648,27 +480,6 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   if (url.pathname === "/api/travel-to-adventure") {
     return json(projectForMonitor(await referee.travelToAdventure()));
   }
-  if (url.pathname === "/api/recover-demo-treasure") {
-    return json(projectForMonitor(await referee.recoverDemoTreasure()));
-  }
-  if (url.pathname === "/api/projection/player-a") {
-    return json(await referee.getProjection("player-a"));
-  }
-  if (url.pathname === "/api/projection/player-b") {
-    return json(await referee.getProjection("player-b"));
-  }
-  if (url.pathname === "/api/demo-round") {
-    return json(projectForMonitor(await referee.runDemoRound()));
-  }
-  if (url.pathname === "/api/seed-player-secret") {
-    return json(await referee.seedPlayerPrivateMemoryForDemo());
-  }
-  if (url.pathname === "/api/player-intent-round") {
-    return json(projectForMonitor(await referee.runPlayerIntentRound()));
-  }
-  if (url.pathname === "/api/live-player-intent-round") {
-    return json(projectForMonitor(await referee.runLivePlayerIntentRound()));
-  }
   if (url.pathname === "/api/campaign") {
     return json(await referee.getPublicCampaign());
   }
@@ -681,7 +492,7 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
 
 async function campaignEvents(request: Request, env: Env, devMode = false): Promise<Response> {
   const url = new URL(request.url);
-  const campaignId = url.searchParams.get("campaign") ?? "demo-campaign";
+  const campaignId = url.searchParams.get("campaign") ?? "agent-dungeon-campaign";
   const referee = await getAgentByName(env.Referee, campaignId);
   const encoder = new TextEncoder();
   let ticks = 0;
@@ -743,17 +554,13 @@ function monitorPage(): Response {
 <body>
   <h1>Agent Dungeon Monitor</h1>
   <p>Public table view. Private PlayerAgent secrets are not shown here.</p>
-  <p class="note">Honest lanes: Kimi builds character plans and chooses hooks. Deterministic Referee code resolves typed choices with dice/procedure. Demo scaffolding is hidden unless you open <code>?dev=1</code>.</p>
+  <p class="note">Honest lanes: Kimi builds character plans and chooses hooks. The Referee engine resolves typed choices with dice and explicit OSE-ish procedure. No canned fallback characters, fake treasure button, or old 3-room demo controls.</p>
   <p>
     <button data-action="/api/create-game">Reset tavern campaign</button>
     <button data-action="/api/session-zero">Ask PlayerAgents: session 0</button>
     <button data-action="/api/choose-adventure">Ask PlayerAgents: choose hook</button>
     <button data-action="/api/travel-to-adventure">Resolve travel by dice</button>
     <button data-action="/api/advance-turn">Advance world clocks</button>
-    <button class="dev-only" data-action="/api/recover-demo-treasure">DEV: award demo treasure XP</button>
-    <button class="dev-only" data-action="/api/seed-player-secret">DEV: seed player secret</button>
-    <button class="dev-only" data-action="/api/live-player-intent-round">DEV: old 3-room Kimi round</button>
-    <button class="dev-only" data-action="/api/player-intent-round">DEV: deterministic 3-room round</button>
   </p>
   <p id="status">Realtime: connecting...</p>
   <div class="grid">
@@ -778,7 +585,7 @@ function monitorPage(): Response {
     const searchParams = new URLSearchParams(location.search);
 
     const devMode = searchParams.get('dev') === '1';
-    const campaignId = searchParams.get('campaign') || 'demo-campaign';
+    const campaignId = searchParams.get('campaign') || 'agent-dungeon-campaign';
     document.body.classList.toggle('dev', devMode);
 
     function withCampaign(path) {
@@ -787,12 +594,23 @@ function monitorPage(): Response {
     }
 
     async function load(path) {
-      const response = await fetch(withCampaign(path));
-      const data = await response.json();
-      render(data);
-      if (devMode && path !== '/api/campaign-dev') {
-        const devResponse = await fetch(withCampaign('/api/campaign-dev'));
-        render(await devResponse.json());
+      try {
+        status.textContent = 'Running ' + path + '...';
+        const response = await fetch(withCampaign(path));
+        const text = await response.text();
+        if (!response.ok) throw new Error(text || (response.status + ' ' + response.statusText));
+        const data = JSON.parse(text);
+        render(data);
+        if (devMode && path !== '/api/campaign-dev') {
+          const devResponse = await fetch(withCampaign('/api/campaign-dev'));
+          const devText = await devResponse.text();
+          if (!devResponse.ok) throw new Error(devText || (devResponse.status + ' ' + devResponse.statusText));
+          render(JSON.parse(devText));
+        }
+        status.textContent = 'Realtime: connected';
+      } catch (error) {
+        status.textContent = 'Error: ' + (error && error.message ? error.message : String(error));
+        events.textContent = 'No canned fallback ran. The action failed honestly. Retry or open ?dev=1 for audit.';
       }
     }
 
@@ -845,12 +663,19 @@ export default {
     if (url.pathname === "/events-dev") return campaignEvents(request, env, true);
     if (url.pathname === "/" || url.pathname === "/monitor") return monitorPage();
 
-    const api = await handleApi(request, env);
-    if (api) return api;
+    try {
+      const api = await handleApi(request, env);
+      if (api) return api;
+    } catch (error) {
+      if (url.pathname.startsWith("/api/")) {
+        return json({ error: String(error) }, { status: 500 });
+      }
+      throw error;
+    }
 
     return (
       (await routeAgentRequest(request, env)) ??
-      new Response("Cloudflare Agent Dungeon prototype. Try /monitor, /api/create-game, /api/seed-player-secret, /api/player-intent-round, or /api/live-player-intent-round.", {
+      new Response("Cloudflare Agent Dungeon prototype. Try /monitor, /api/create-game, /api/session-zero, /api/choose-adventure, or /api/travel-to-adventure.", {
         headers: { "content-type": "text/plain;charset=utf-8" }
       })
     );
