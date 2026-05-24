@@ -576,6 +576,82 @@ Results:
 - Added `creationSource` tracking (`kimi`, `repaired_kimi`, `fallback`, `unknown`) so later reviews can see whether PlayerAgent character plans came from Kimi or deterministic fallback.
 - A tailed deployed smoke run produced Kimi-created characters `Skoll` and `Thorvald the Grim`, both marked `creationSource: kimi`.
 
+## 2026-05-24 — Autonomous hook choice and public-safe monitor projection
+
+### Gap found during continuation audit
+
+The previous deployed monitor was useful, but two requirements were still weak:
+
+- players did not yet choose which tavern rumor/adventure to pursue;
+- public monitor/API output still exposed raw campaign state shape risks like hidden room descriptions, hidden faction agendas, and Referee audit lanes.
+
+### Implemented
+
+Added domain/runtime support for non-railroaded tavern choice:
+
+- `AdventureHook` records for three tavern leads
+- `AdventureChoice` typed player choices
+- `commitAdventureChoice(campaign, choices)`
+- party goal state: `party.chosenHookId` and `party.destinationId`
+- ignored-hook faction clock advancement so player choice changes world state
+- `/api/choose-adventure` route
+- monitor button: `Choose adventure`
+
+Added public-safe monitor projection:
+
+- `projectForMonitor(campaign)`
+- `/api/campaign`, `/events`, and public action routes now return projected public state
+- public projection omits hidden room descriptions, hidden faction agendas, and Referee audit events
+- Session 0 dice rolls are public in the dice ledger so monitor can show real rolled abilities/gold without exposing hidden Referee state
+
+### Validation
+
+Commands:
+
+```bash
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts
+```
+
+Tests now cover:
+
+- adventure hook choice commits party goal
+- ignored hook faction clocks advance
+- public monitor projection does not contain `hiddenAgenda`, hidden room descriptions, or `refereeAuditEvents`
+
+Local smoke:
+
+```txt
+/api/choose-adventure -> status awaiting_player_intent
+party.chosenHookId -> hook-moss-crowned-door
+leak hiddenAgenda? false
+leak hiddenDescription? false
+leak audit? false
+```
+
+Deploy receipt:
+
+```txt
+agentdungeon.ai (custom domain)
+Current Version ID: 1d4354f2-6c26-4a8e-a107-ed8ee2adc614
+```
+
+Deployed smoke:
+
+```txt
+/monitor 200
+/api/create-game 200
+/api/session-zero 200
+/api/choose-adventure 200
+/api/advance-turn 200
+/events emitted event: campaign
+choice status: awaiting_player_intent
+party destination: location-moss-crowned-door
+leaks: hiddenAgenda=false, hiddenDescription=false, audit=false
+```
+
 ### Next learning question
 
-Next slice should reduce fallback odds further by adding audit receipts for whether each character plan came from Kimi, repaired Kimi, or deterministic fallback, then move from Session 0 into autonomous rumor choice / first expedition selection.
+Next slice should turn the chosen hook into an actual autonomous travel / first expedition loop: consume travel time/supplies, move party from tavern toward the destination, roll a travel/wandering encounter check from a source-backed OSE procedure, and then enter the chosen adventure site.
