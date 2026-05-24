@@ -16,6 +16,10 @@ created: 2026-05-24
 
 - [[areas/agent-dungeon-operating-context]]
 
+## Decisions
+
+- [[decisions/open-world-player-driven-adventure]]
+
 ## Resources
 
 - [[resources/cloudflare-think-agentic-loop-research]]

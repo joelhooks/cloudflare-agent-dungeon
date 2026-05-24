@@ -53,7 +53,9 @@ A runnable Cloudflare-hosted prototype:
 
 ## Expanded campaign ambition
 
-Joel wants the prototype to grow toward an autonomous ongoing OSE campaign, not just a room demo:
+Joel wants the prototype to grow toward an autonomous ongoing OSE campaign, not just a room demo.
+
+Hard correction: this is an **open-world, player-driven adventure**, not a scripted autonomous sequence. The runtime may run unattended, but it must not encode a predetermined path like tavern → hook → travel → dungeon → loot → return. The rules and world constraints are the rails; player choice and Referee consequences drive the route. See [[decisions/open-world-player-driven-adventure]].
 
 - starts at session 0 in a tavern
 - players must find adventure and glory instead of being railroaded
@@ -69,6 +71,7 @@ Joel wants the prototype to grow toward an autonomous ongoing OSE campaign, not 
 - player choices affect the world
 - OSE-faithful skill, XP, level, inventory, magic item, supply, food, and death pressure
 - a legitimate random dice service / ledger, not model vibes
+- autonomous mode advances open-world beats, not fixed story chapters
 
 ## Requirements (R)
 

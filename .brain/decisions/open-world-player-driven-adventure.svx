@@ -1,0 +1,80 @@
+---
+title: Open World Player-Driven Adventure
+kind: decision
+status: accepted
+created: 2026-05-24
+tags:
+  - gameplay
+  - autonomy
+  - open-world
+  - referee
+  - ose
+---
+
+# Open World Player-Driven Adventure
+
+## Decision
+
+Cloudflare Agent Dungeon is an **open-world, player-driven adventure**, not a scripted autonomous sequence.
+
+The autonomous runtime may manage process lifecycle, but it must not encode a predetermined story path like tavern → hook → travel → dungeon → loot → return. That shape is stage goo unless it emerges from player choices and world pressure.
+
+## What rails the game
+
+The rails are the game rules and world constraints:
+
+- OSE procedures: turns, travel, encounters, reactions, morale, light, food, XP, treasure recovery, death.
+- The campaign world graph: locations, paths, NPCs, factions, clocks, rumors, hazards, treasures, unresolved threads.
+- Fog-of-war projections: players know only what the Referee reveals.
+- Capability boundaries: player tools cannot read hidden world state, other player secrets, or the rules corpus by default.
+
+## What must not rail the game
+
+Do not model story as a fixed phase sequence.
+
+Avoid runtime shapes that imply the players must:
+
+1. accept a hook,
+2. travel to the expected place,
+3. clear an expected site,
+4. return for expected rewards,
+5. loop back to tavern.
+
+Those events are allowed, but only when chosen by players or forced by world consequences.
+
+## Correct autonomy shape
+
+A background runner should advance **beats**, not chapters.
+
+Each beat:
+
+1. Referee observes canonical world state and current table situation.
+2. Referee exposes current affordances: visible NPCs, exits, rumors, hazards, supplies, time pressure, pending questions.
+3. PlayerAgents choose typed intents from their own knowledge, goals, stress, fear, and personality.
+4. Referee validates intents against rules, world state, inventory, position, and visibility.
+5. Dice/procedure resolve uncertainty.
+6. RefereeAgent narrates consequences and asks the next meaningful question.
+7. World graph, clocks, character state, public events, and private audit lanes mutate.
+
+The runtime state machine is only plumbing: idle/running/waiting/resolving/scheduled/paused/failed. It must not be the adventure script.
+
+## Design principle
+
+Use **generative play inside typed rails**:
+
+- Agents create goals, fears, speech, tactics, relationships, and plans.
+- RefereeAgent creates table-facing narration, pressure, consequences, and questions.
+- Dice and OSE procedure create surprise.
+- Domain code enforces reality, death, inventory, time, XP, secrecy, and provenance.
+
+## Implementation implication
+
+Next implementation slice should not be `run scripted campaign sequence`.
+
+It should be `run next open-world beat`:
+
+- derive available player affordances from public/player-safe state,
+- ask PlayerAgents for intents,
+- let Referee/RefereeAgent adjudicate and narrate,
+- commit one beat,
+- schedule the next beat only if autoplay remains enabled.
