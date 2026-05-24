@@ -57,7 +57,9 @@ export class RefereeAgent extends Think<Env> {
   override getModel(): LanguageModel {
     const workersai = createWorkersAI({ binding: this.env.AI });
     return workersai("@cf/moonshotai/kimi-k2.6", {
-      sessionAffinity: this.sessionAffinity
+      sessionAffinity: this.sessionAffinity,
+      reasoning_effort: null,
+      chat_template_kwargs: { enable_thinking: false, thinking: false } as any
     }) as unknown as LanguageModel;
   }
 
@@ -82,7 +84,9 @@ export class PlayerAgent extends Think<Env> {
   override getModel(): LanguageModel {
     const workersai = createWorkersAI({ binding: this.env.AI });
     return workersai("@cf/moonshotai/kimi-k2.6", {
-      sessionAffinity: this.sessionAffinity
+      sessionAffinity: this.sessionAffinity,
+      reasoning_effort: null,
+      chat_template_kwargs: { enable_thinking: false, thinking: false } as any
     }) as unknown as LanguageModel;
   }
 
