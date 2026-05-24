@@ -1,7 +1,7 @@
 import { Agent, getAgentByName, routeAgentRequest } from "agents";
 import { Think, type TurnConfig } from "@cloudflare/think";
 import { createWorkersAI } from "workers-ai-provider";
-import { generateObject, Output, type LanguageModel } from "ai";
+import { generateObject, generateText, Output, type LanguageModel } from "ai";
 import { z } from "zod";
 import {
   advanceCampaignTurn,
@@ -126,16 +126,15 @@ export class PlayerAgent extends Think<Env> {
 
   async createCharacterPlan(draft: CharacterCreationDraft, stores: Record<StoreId, Store>): Promise<CharacterCreationPlan> {
     try {
-      const result = await generateObject({
+      const result = await generateText({
         model: this.getModel(),
-        schema: CharacterCreationPlanSchema,
-        maxOutputTokens: 4096,
+        maxOutputTokens: 900,
         prompt: [
           "Create your own level 1 Old School Essentials character for session 0.",
-          "Be concise. Return only the structured object. No prose.",
+          "Return compact JSON only. No markdown. No prose.",
+          "Shape: {\"name\":string,\"className\":\"fighter|cleric|magic-user|thief|dwarf|elf|halfling\",\"abilitySwap\":{\"first\":ability,\"second\":ability},\"alignment\":\"lawful|neutral|chaotic\",\"deity\":string optional,\"reasonExceptional\":string,\"purchases\":[{\"itemId\":string,\"quantity\":number}]}",
           "Use the rolled abilities and starting gold exactly as provided.",
           "You may make at most one ability score swap.",
-          "Choose one core classic class: fighter, cleric, magic-user, thief, dwarf, elf, halfling.",
           "Buy starting gear manually from available item ids. Food, light, containers, and tools matter.",
           "Do not buy more than the rolled starting gold can afford.",
           `Draft: ${JSON.stringify(draft)}`,
@@ -143,7 +142,7 @@ export class PlayerAgent extends Think<Env> {
           `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
         ].join("\n")
       });
-      return toCharacterCreationPlan(draft.playerId, result.object);
+      return toCharacterCreationPlan(draft.playerId, CharacterCreationPlanSchema.parse(parseJsonObject(result.text)));
     } catch (error) {
       console.warn("[PlayerAgent] character creation failed; using deterministic fallback", error);
       return fallbackCharacterPlan(draft.playerId);
@@ -214,6 +213,15 @@ export class PlayerAgent extends Think<Env> {
     if (this.secrets.length === 0) return "No private notes.";
     return `${this.secrets.length} private note(s). Use them to shape play, but do not reveal them unless you choose to act on them.`;
   }
+}
+
+function parseJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) return JSON.parse(trimmed);
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) throw new Error("No JSON object in model response");
+  return JSON.parse(trimmed.slice(start, end + 1));
 }
 
 function compactStoreCatalog(stores: Record<StoreId, Store>): string {
