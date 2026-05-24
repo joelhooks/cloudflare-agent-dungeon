@@ -1,7 +1,7 @@
 import { Agent, getAgentByName, routeAgentRequest } from "agents";
 import { Think, type TurnConfig } from "@cloudflare/think";
 import { createWorkersAI } from "workers-ai-provider";
-import { generateObject, generateText, Output, type LanguageModel } from "ai";
+import { generateObject, Output, type LanguageModel } from "ai";
 import { z } from "zod";
 import {
   advanceCampaignTurn,
@@ -130,23 +130,25 @@ export class PlayerAgent extends Think<Env> {
 
   async createCharacterPlan(draft: CharacterCreationDraft, stores: Record<StoreId, Store>): Promise<CharacterCreationPlan> {
     try {
-      const result = await generateText({
-        model: this.getModel(),
-        maxOutputTokens: 900,
-        prompt: [
-          "Create your own level 1 Old School Essentials character for session 0.",
-          "Return compact JSON only. No markdown. No prose.",
-          "Shape: {\"name\":string,\"className\":\"fighter|cleric|magic-user|thief|dwarf|elf|halfling\",\"abilitySwap\":{\"first\":ability,\"second\":ability},\"alignment\":\"lawful|neutral|chaotic\",\"deity\":string optional,\"reasonExceptional\":string,\"purchases\":[{\"itemId\":string,\"quantity\":number}]}",
-          "Use the rolled abilities and starting gold exactly as provided.",
-          "You may make at most one ability score swap.",
-          "Buy starting gear manually from available item ids. Food, light, containers, and tools matter.",
-          "Do not buy more than the rolled starting gold can afford.",
-          `Draft: ${JSON.stringify(draft)}`,
-          `Available items: ${compactStoreCatalog(stores)}`,
-          `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
-        ].join("\n")
+      const prompt = [
+        "Create your own level 1 Old School Essentials character for session 0.",
+        "Return compact JSON only. No markdown. No prose.",
+        "Shape: {\"name\":string,\"className\":\"fighter|cleric|magic-user|thief|dwarf|elf|halfling\",\"abilitySwap\":{\"first\":ability,\"second\":ability},\"alignment\":\"lawful|neutral|chaotic\",\"deity\":string optional,\"reasonExceptional\":string,\"purchases\":[{\"itemId\":string,\"quantity\":number}]}",
+        "Use the rolled abilities and starting gold exactly as provided.",
+        "You may make at most one ability score swap.",
+        "Buy starting gear manually from available item ids. Food, light, containers, and tools matter.",
+        "Do not buy more than the rolled starting gold can afford.",
+        `Draft: ${JSON.stringify(draft)}`,
+        `Available items: ${compactStoreCatalog(stores)}`,
+        `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
+      ].join("\n");
+      const result = await this.env.AI.run("@cf/moonshotai/kimi-k2.6", {
+        messages: [{ role: "user", content: prompt }],
+        chat_template_kwargs: { thinking: false, enable_thinking: false },
+        reasoning_effort: null,
+        max_completion_tokens: 900
       });
-      return toCharacterCreationPlan(draft.playerId, CharacterCreationPlanSchema.parse(parseJsonObject(result.text)));
+      return toCharacterCreationPlan(draft.playerId, CharacterCreationPlanSchema.parse(parseJsonObject(extractWorkersAIText(result))));
     } catch (error) {
       console.warn("[PlayerAgent] character creation failed; using deterministic fallback", error);
       return fallbackCharacterPlan(draft.playerId);
@@ -217,6 +219,14 @@ export class PlayerAgent extends Think<Env> {
     if (this.secrets.length === 0) return "No private notes.";
     return `${this.secrets.length} private note(s). Use them to shape play, but do not reveal them unless you choose to act on them.`;
   }
+}
+
+function extractWorkersAIText(result: unknown): string {
+  const response = result as {
+    response?: string;
+    choices?: Array<{ message?: { content?: string }; text?: string }>;
+  };
+  return response.response ?? response.choices?.[0]?.message?.content ?? response.choices?.[0]?.text ?? "";
 }
 
 function parseJsonObject(text: string): unknown {
