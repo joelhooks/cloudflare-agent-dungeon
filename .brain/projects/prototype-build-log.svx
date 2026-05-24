@@ -495,6 +495,85 @@ Results:
 - Typecheck passed.
 - Tests passed: 8 domain tests.
 
+### Kimi / Session 0 runtime correction
+
+The AI SDK structured-output path was fine for the small action proposal, but Kimi character creation initially failed through `generateObject()`/`generateText()` because reasoning/structured-output adapter behavior produced empty or overlong outputs. Direct Workers AI `env.AI.run("@cf/moonshotai/kimi-k2.6", ...)` with `chat_template_kwargs.thinking=false` produced usable compact JSON.
+
+Current shape:
+
+- PlayerAgent rolls are deterministic code + crypto random service.
+- PlayerAgent asks Kimi for a compact JSON character plan.
+- Referee validates the parsed plan with Zod/domain code.
+- Referee repairs over-budget purchase lists by keeping affordable items in player-chosen order.
+- Referee falls back only if model JSON/schema repair fails.
+
+Local runtime receipt with direct Kimi:
+
+```txt
+Garrick the Stubborn fighter
+Brother Aldric cleric
+16 dice ledger entries
+No fallback warnings; one purchase repair for overbuying torches
+```
+
+### Tailnet preview
+
+Portless was restarted with Tailscale sharing enabled:
+
+```txt
+https://dark-wizard.tail7af24.ts.net:8443/monitor
+```
+
+Verified with HTTP 200. Joel said Tailnet links are fine because phone is on Tailnet.
+
+### Deployed to agentdungeon.ai
+
+Configured Wrangler custom domain route:
+
+```json
+"routes": [
+  {
+    "pattern": "agentdungeon.ai",
+    "custom_domain": true
+  }
+]
+```
+
+Deployed with:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts
+```
+
+Deploy receipt:
+
+```txt
+Uploaded cloudflare-agent-dungeon
+Deployed cloudflare-agent-dungeon triggers
+  agentdungeon.ai (custom domain)
+Current Version ID: 8036055d-562c-42dd-8e69-72a47d17a0c9
+```
+
+Smoke checks:
+
+```bash
+curl https://agentdungeon.ai/monitor
+curl https://agentdungeon.ai/api/create-game?campaign=<smoke>
+curl https://agentdungeon.ai/api/session-zero?campaign=<smoke>
+curl https://agentdungeon.ai/api/advance-turn?campaign=<smoke>
+curl -N https://agentdungeon.ai/events?campaign=<smoke>
+```
+
+Results:
+
+- `/monitor`: 200
+- `/api/create-game`: 200
+- `/api/session-zero`: 200
+- `/api/advance-turn`: 200
+- `/events`: emitted `event: campaign`
+- Session 0 produced 2 characters and 16 dice ledger entries.
+- Deployed sample produced `Brindle Reed` thief and `Bran` cleric, with rations/supplies and faction clocks advancing to night.
+
 ### Next learning question
 
-Next slice should smoke test the local Worker Session 0 routes with real Kimi, then configure/deploy `agentdungeon.ai`.
+Next slice should reduce fallback odds further by adding audit receipts for whether each character plan came from Kimi, repaired Kimi, or deterministic fallback, then move from Session 0 into autonomous rumor choice / first expedition selection.
