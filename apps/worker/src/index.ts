@@ -262,6 +262,22 @@ function toCharacterCreationPlan(playerId: PlayerId, output: CharacterCreationPl
   };
 }
 
+function trimPlanToBudget(plan: CharacterCreationPlan, stores: Record<StoreId, Store>, budgetGp: number): CharacterCreationPlan {
+  let remaining = budgetGp;
+  const purchases: CharacterCreationPlan["purchases"] = [];
+
+  for (const purchase of plan.purchases) {
+    const item = Object.values(stores).flatMap((store) => store.items).find((candidate) => candidate.id === purchase.itemId);
+    if (!item) continue;
+    const affordableQuantity = Math.min(purchase.quantity, Math.floor(remaining / item.costGp));
+    if (affordableQuantity <= 0) continue;
+    remaining -= affordableQuantity * item.costGp;
+    purchases.push({ ...purchase, quantity: affordableQuantity });
+  }
+
+  return { ...plan, purchases };
+}
+
 function normalizeItemId(itemId: string): string {
   const aliases: Record<string, string> = {
     "item-flask-oil": "item-oil-flask",
@@ -380,8 +396,13 @@ export class Referee extends Agent<Env> {
       try {
         this.campaign = commitCharacterCreation(this.requireCampaign(), rolled.draft, plan, secureRandomInt);
       } catch (error) {
-        console.warn("[Referee] player character plan rejected; using fallback", error);
-        this.campaign = commitCharacterCreation(this.requireCampaign(), rolled.draft, fallbackCharacterPlan(playerId), secureRandomInt);
+        console.warn("[Referee] player character plan needed purchase repair", error);
+        try {
+          this.campaign = commitCharacterCreation(this.requireCampaign(), rolled.draft, trimPlanToBudget(plan, this.requireCampaign().stores, rolled.draft.startingGoldGp), secureRandomInt);
+        } catch (repairError) {
+          console.warn("[Referee] repaired player character plan rejected; using fallback", repairError);
+          this.campaign = commitCharacterCreation(this.requireCampaign(), rolled.draft, fallbackCharacterPlan(playerId), secureRandomInt);
+        }
       }
     }
 
