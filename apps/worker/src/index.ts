@@ -14,6 +14,7 @@ import {
   rollCharacterCreationDraft,
   seedTavernCampaign,
   seedThreeRoomCampaign,
+  travelToChosenHook,
   type ActionProposal,
   type AdventureChoice,
   type Campaign,
@@ -480,6 +481,13 @@ export class Referee extends Agent<Env> {
     return this.campaign;
   }
 
+  async travelToAdventure(): Promise<Campaign> {
+    if (!this.campaign) await this.createGame(this.name);
+    if (!this.requireCampaign().party.chosenHookId) await this.chooseAdventure();
+    this.campaign = travelToChosenHook(this.requireCampaign(), secureRandomInt);
+    return this.campaign;
+  }
+
   async chooseAdventure(): Promise<Campaign> {
     if (!this.campaign) await this.createGame(this.name);
     if (Object.keys(this.requireCampaign().characters).length === 0) await this.runSessionZero();
@@ -626,6 +634,9 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   if (url.pathname === "/api/choose-adventure") {
     return json(projectForMonitor(await referee.chooseAdventure()));
   }
+  if (url.pathname === "/api/travel-to-adventure") {
+    return json(projectForMonitor(await referee.travelToAdventure()));
+  }
   if (url.pathname === "/api/projection/player-a") {
     return json(await referee.getProjection("player-a"));
   }
@@ -716,6 +727,7 @@ function monitorPage(): Response {
     <button data-action="/api/create-game">Reset tavern campaign</button>
     <button data-action="/api/session-zero">Run session 0</button>
     <button data-action="/api/choose-adventure">Choose adventure</button>
+    <button data-action="/api/travel-to-adventure">Travel to adventure</button>
     <button data-action="/api/advance-turn">Advance world turn</button>
     <button data-action="/api/seed-player-secret">Seed player secret</button>
     <button data-action="/api/live-player-intent-round">Run live Kimi dungeon round</button>

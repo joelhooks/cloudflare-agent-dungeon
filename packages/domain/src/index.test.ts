@@ -11,6 +11,7 @@ import {
   seedTavernCampaign,
   seedThreeRoomCampaign,
   startingTownStores,
+  travelToChosenHook,
   type ActionProposal
 } from "./index";
 
@@ -186,6 +187,20 @@ describe("Cloudflare Agent Dungeon domain prototype", () => {
     expect(text).not.toContain("tripwire");
     expect(text).not.toContain("Wake the ash-cobra");
     expect(text).not.toContain("refereeAuditEvents");
+  });
+
+  it("travels to the chosen hook with OSE-style lost and encounter checks", () => {
+    const campaign = commitAdventureChoice(seedThreeRoomCampaign(), [
+      { playerId: "player-a", hookId: "hook-drowned-bell", approach: "cautious" },
+      { playerId: "player-b", hookId: "hook-drowned-bell", approach: "bold" }
+    ]);
+    const travelled = travelToChosenHook(campaign, fixedRandom([2, 1, 3, 3, 3, 3]));
+
+    expect(travelled.party.currentLocationId).toBe("location-sunken-shrine");
+    expect(travelled.characters["character-brindle"]?.locationId).toBe("location-sunken-shrine");
+    expect(travelled.characters["character-brindle"]?.supplies?.rationDays).toBe(1);
+    expect(JSON.stringify(travelled.diceLedger)).toContain("OSE wilderness losing direction check");
+    expect(JSON.stringify(travelled.publicEvents)).toContain("Something is encountered about 120 yards away");
   });
 
   it("advances faction clocks and applies hunger when characters have no food", () => {

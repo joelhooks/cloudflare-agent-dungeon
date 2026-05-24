@@ -144,7 +144,7 @@ export type ActionProposal = {
 export type PublicEvent = {
   id: EventId;
   visibility: "public";
-  kind: "scene_revealed" | "table_action" | "outcome" | "dice_roll" | "world_event" | "faction_clock" | "session_zero" | "player_choice";
+  kind: "scene_revealed" | "table_action" | "outcome" | "dice_roll" | "world_event" | "faction_clock" | "session_zero" | "player_choice" | "travel";
   text: string;
   actor?: CharacterId;
   createdAt: string;
@@ -805,6 +805,59 @@ function openTavernStart(campaign: Campaign): Campaign {
     )
   );
   return next;
+}
+
+export function travelToChosenHook(campaign: Campaign, randomInt: RandomInt): Campaign {
+  const next = cloneCampaign(campaign);
+  const chosenHookId = next.party.chosenHookId;
+  if (!chosenHookId) {
+    next.publicEvents.push(event("The party has not chosen a lead yet, so no expedition leaves the tavern.", "outcome"));
+    return next;
+  }
+
+  const hook = next.hooks[chosenHookId];
+  if (!hook) throw new Error(`No adventure hook ${chosenHookId}`);
+  const destination = next.world.locations[hook.locationId];
+  if (!destination) throw new Error(`No destination ${hook.locationId}`);
+
+  next.publicEvents.push(event(`The party sets out from ${next.world.locations[next.party.currentLocationId]?.name ?? next.party.currentLocationId} toward ${destination.name}.`, "travel"));
+
+  const lostRoll = rollAndRecord(next, "1d6", randomInt, "OSE wilderness losing direction check, settled/clear route", "public");
+  next.publicEvents.push(event(`Losing direction check: ${lostRoll.result} on ${lostRoll.formula}.`, "dice_roll"));
+  if (lostRoll.result === 1) {
+    next.publicEvents.push(event("The party loses the road and spends the day correcting course. The destination remains out of reach.", "outcome"));
+    consumeRations(next);
+    next.time = { day: next.time.day + 1, watch: "morning" };
+    return next;
+  }
+
+  const encounterRoll = rollAndRecord(next, "1d6", randomInt, "OSE wilderness wandering monster check, settled/clear route", "public");
+  next.publicEvents.push(event(`Wandering encounter check: ${encounterRoll.result} on ${encounterRoll.formula}.`, "dice_roll"));
+  if (encounterRoll.result === 1) {
+    const distanceRoll = rollAndRecord(next, "4d6", randomInt, "OSE wilderness encounter distance x10 yards", "public");
+    next.publicEvents.push(event(`Something is encountered about ${distanceRoll.result * 10} yards away. The Referee has not resolved its identity yet.`, "outcome"));
+  }
+
+  next.party = { ...next.party, currentLocationId: hook.locationId };
+  for (const character of Object.values(next.characters)) {
+    character.locationId = hook.locationId;
+  }
+  consumeRations(next);
+  next.time = { day: next.time.day + 1, watch: "morning" };
+  next.publicEvents.push(event(`By morning, the party reaches ${destination.name}.`, "travel"));
+  return next;
+}
+
+function consumeRations(campaign: Campaign): void {
+  for (const character of Object.values(campaign.characters)) {
+    const rationDays = character.supplies?.rationDays ?? 0;
+    if (rationDays > 0) {
+      character.supplies = { rationDays: rationDays - 1 };
+    } else {
+      character.stats = { ...character.stats, hp: Math.max(0, character.stats.hp - 1) };
+      campaign.publicEvents.push(event(`${character.name} has no food for the travel day and loses 1 hp.`, "outcome", character.id));
+    }
+  }
 }
 
 export function advanceCampaignTurn(campaign: Campaign, reason = "Autonomous world turn"): Campaign {
