@@ -1,6 +1,6 @@
 // PROTOTYPE — THROWAWAY UI + BEAT GENERATOR STUDY
 // Question: does a console/TUI-like monitor make the autonomous tavern/town loop feel generative and player-driven?
-// Assumption: this is a UI prototype with a tiny throwaway generative API. State lives in browser memory.
+// Assumption: this is a UI prototype with a tiny throwaway generative API. State persists server-side in one global prototype Referee Agent.
 // Run with: pnpm --filter @cloudflare-agent-dungeon/worker dev
 // Open: /prototype/tavern-town?variant=console|split|map
 // Delete or absorb after Joel picks the useful shape.
@@ -37,6 +37,12 @@ const PrototypeStateSchema = z.object({
 });
 
 type PrototypeState = z.infer<typeof PrototypeStateSchema>;
+
+export type PrototypeTavernTownState = PrototypeState & {
+  log: unknown[];
+  updatedAt?: string;
+  error?: string;
+};
 
 const GeneratedBeatCandidateSchema = z.object({
   lane: z.enum(["referee", "player", "npc", "rules", "audit"]),
@@ -85,19 +91,15 @@ type RuleReceipt = {
   snippet?: string;
 };
 
-export async function handlePrototypeTavernTownApi(request: Request, env: Env): Promise<Response | null> {
-  const url = new URL(request.url);
-  if (url.pathname !== "/api/prototype/tavern-town-beat") return null;
-  if (request.method !== "POST") return json({ error: "POST only" }, { status: 405 });
-
-  const input = await request.json().catch(() => ({}));
-  const state = PrototypeStateSchema.parse((input as { state?: unknown }).state ?? initialPrototypeState());
+export async function advancePrototypeTavernTownState(env: Env, currentState: PrototypeTavernTownState): Promise<PrototypeTavernTownState> {
+  const state = PrototypeStateSchema.parse(currentState) as PrototypeTavernTownState;
   const receipts = await consultPrototypeRules(state);
   const playerIntents = await generatePrototypePlayerIntents(env, state);
   const generated = await generatePrototypeBeat(env, state, receipts, playerIntents);
-  const nextState = applyGeneratedBeat(state, generated, receipts, playerIntents);
-
-  return json({ state: nextState, beat: nextState.log?.[0], playerIntents, receipts: receipts.map((receipt) => receipt.id) });
+  return {
+    ...applyGeneratedBeat(state, generated, receipts, playerIntents),
+    updatedAt: new Date().toISOString()
+  };
 }
 
 export function prototypeTavernTownUiPage(): Response {
@@ -216,11 +218,11 @@ export function prototypeTavernTownUiPage(): Response {
 </head>
 <body>
   <main class="shell">
-    <div class="topbar"><span class="tag">Prototype / wipe me</span><span class="muted">Browser-memory state · one generated town beat per tick · newest turn first</span></div>
+    <div class="topbar"><span class="tag">Prototype / wipe me</span><span class="muted">Server-persisted single prototype game · one generated town beat per tick · newest turn first</span></div>
     <section class="hero">
       <div class="panel">
         <h1>Tavern Town Console</h1>
-        <p class="muted">Open-world tavern prototype. The daemon advances beats, not a plot. Players can ask, buy, hire, stall, drink, leave, or dig sideways.</p>
+        <p class="muted">Open-world tavern prototype. One server-side game is visible to everyone. The daemon advances beats, not a plot. Players can ask, buy, hire, stall, drink, leave, or dig sideways.</p>
       </div>
       <div class="panel">
         <h2>World daemon</h2>
@@ -228,9 +230,10 @@ export function prototypeTavernTownUiPage(): Response {
           <button id="start">Start World</button>
           <button id="pause" disabled>Pause</button>
           <button id="step">Step One Beat</button>
+          <button id="reset">Reset Server Game</button>
           <select id="speed"><option value="7000">slow</option><option value="4200" selected>table pace</option><option value="1800">fast skim</option></select>
         </div>
-        <p class="status"><span class="mode" id="mode">idle</span><span id="statusText">No persistence. This calls a throwaway prototype AI endpoint.</span></p>
+        <p class="status"><span class="mode" id="mode">idle</span><span id="statusText">Server state loading. This calls one locked throwaway prototype AI endpoint.</span></p>
       </div>
     </section>
 
@@ -274,9 +277,11 @@ export function prototypeTavernTownUiPage(): Response {
 
     let state = ${JSON.stringify(initialPrototypeState())};
     let timer = null;
+    let busy = false;
     const start = document.getElementById('start');
     const pause = document.getElementById('pause');
     const step = document.getElementById('step');
+    const reset = document.getElementById('reset');
     const speed = document.getElementById('speed');
     const mode = document.getElementById('mode');
     const statusText = document.getElementById('statusText');
@@ -295,27 +300,73 @@ export function prototypeTavernTownUiPage(): Response {
       document.getElementById('state').textContent = JSON.stringify({ ...state, log: undefined }, null, 2);
     }
 
-    async function nextBeat() {
-      state.mode = 'generating'; render();
-      statusText.textContent = 'Asking prototype PlayerAgents, then Referee, for one open-world tavern beat…';
-      const response = await fetch('/api/prototype/tavern-town-beat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state }) });
+    async function fetchServerState() {
+      const response = await fetch('/api/prototype/tavern-town-state');
       const text = await response.text();
       if (!response.ok) throw new Error(text || response.statusText);
       const data = JSON.parse(text);
       state = data.state;
-      state.mode = timer ? 'running' : 'stepping';
-      statusText.textContent = 'Generated beat ' + state.beat + '. Newest turn is at the top.';
+      statusText.textContent = 'Loaded server game at beat ' + state.beat + '.';
       render();
     }
 
+    async function nextBeat() {
+      if (busy) return;
+      busy = true;
+      step.disabled = true;
+      reset.disabled = true;
+      state.mode = 'generating'; render();
+      statusText.textContent = 'Asking prototype PlayerAgents, then Referee, for one locked server-side tavern beat…';
+      try {
+        const response = await fetch('/api/prototype/tavern-town-beat', { method: 'POST' });
+        const text = await response.text();
+        if (!response.ok) throw new Error(text || response.statusText);
+        const data = JSON.parse(text);
+        state = data.state;
+        state.mode = timer ? 'running' : 'stepping';
+        statusText.textContent = 'Generated beat ' + state.beat + '. Newest turn is at the top.';
+        render();
+      } finally {
+        busy = false;
+        step.disabled = false;
+        reset.disabled = false;
+      }
+    }
+
+    async function resetServerGame() {
+      if (busy) return;
+      busy = true;
+      clearInterval(timer);
+      timer = null;
+      start.disabled = false;
+      pause.disabled = true;
+      step.disabled = true;
+      reset.disabled = true;
+      statusText.textContent = 'Resetting one server-side prototype game…';
+      try {
+        const response = await fetch('/api/prototype/tavern-town-reset', { method: 'POST' });
+        const text = await response.text();
+        if (!response.ok) throw new Error(text || response.statusText);
+        state = JSON.parse(text).state;
+        statusText.textContent = 'Server game reset.';
+        render();
+      } finally {
+        busy = false;
+        step.disabled = false;
+        reset.disabled = false;
+      }
+    }
+
     function schedule() { clearInterval(timer); timer = setInterval(function () { nextBeat().catch(stopWithError); }, Number(speed.value)); }
-    function stopWithError(error) { clearInterval(timer); timer = null; state.mode = 'failed'; start.disabled = false; pause.disabled = true; statusText.textContent = 'Error: ' + (error && error.message ? error.message : String(error)); render(); }
+    function stopWithError(error) { clearInterval(timer); timer = null; state.mode = 'failed'; start.disabled = false; pause.disabled = true; step.disabled = false; reset.disabled = false; busy = false; statusText.textContent = 'Error: ' + (error && error.message ? error.message : String(error)); render(); }
     function pauseRun(message) { clearInterval(timer); timer = null; state.mode = 'paused'; start.disabled = false; pause.disabled = true; statusText.textContent = message; render(); }
 
     start.addEventListener('click', function () { state.mode = 'running'; start.disabled = true; pause.disabled = false; render(); nextBeat().then(schedule).catch(stopWithError); });
-    pause.addEventListener('click', function () { pauseRun('Paused. Browser-memory state preserved.'); });
+    pause.addEventListener('click', function () { pauseRun('Paused. Server state preserved.'); });
     step.addEventListener('click', function () { nextBeat().catch(stopWithError); });
+    reset.addEventListener('click', function () { resetServerGame().catch(stopWithError); });
     speed.addEventListener('change', function () { if (timer) schedule(); });
+    setInterval(function () { if (!busy) fetchServerState().catch(function () {}); }, 3500);
     window.addEventListener('keydown', function (event) {
       if (['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName || '')) return;
       const variants = ['console','split','map'];
@@ -323,13 +374,13 @@ export function prototypeTavernTownUiPage(): Response {
       if (event.key === 'ArrowRight') location.search = '?variant=' + variants[(idx + 1) % variants.length];
       if (event.key === 'ArrowLeft') location.search = '?variant=' + variants[(idx + variants.length - 1) % variants.length];
     });
-    render();
+    fetchServerState().catch(stopWithError);
   </script>
 </body>
 </html>`, { headers: { "content-type": "text/html;charset=utf-8" } });
 }
 
-function initialPrototypeState(): PrototypeState & { log: unknown[] } {
+export function initialPrototypeState(): PrototypeTavernTownState {
   return {
     mode: "idle",
     beat: 0,
@@ -347,6 +398,7 @@ function initialPrototypeState(): PrototypeState & { log: unknown[] } {
     affordances: ["ask Hesta what trouble pays", "ask Rook about his brother", "talk to Sister Elian", "buy food/light/rope", "read the retainer board", "drink and listen"],
     visibleThreads: ["blue clay on Rook's boot", "Hesta's unpaid debts", "Sister Elian's buried bell"],
     ruleReceipts: [],
+    updatedAt: new Date().toISOString(),
     log: []
   };
 }

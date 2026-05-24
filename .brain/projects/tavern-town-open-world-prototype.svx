@@ -220,3 +220,15 @@ Parsing robustness follow-up:
 - Kimi sometimes wrapped JSON in markdown fences or truncated the Referee JSON because long `tableText` hit `max_completion_tokens`.
 - Fix: parse fenced JSON, require complete JSON before parsing, tell the model not to fence output, cap string lengths in prompt, raise Referee generation token budget, and retry player/referee parsing up to 3 times.
 - Browser check after fix: three consecutive `Step One Beat` actions reached `beat=3`, rendered 9 turns, no parse/schema error.
+
+Server persistence follow-up:
+
+- Browser-memory prototype state was wrong for the desired feel: every viewer could fork a different tavern, which made the running game not real.
+- Moved prototype state into one fixed server-side `Referee` Agent instance named `tavern-town-prototype`.
+- Added API routes:
+  - `GET /api/prototype/tavern-town-state`
+  - `POST /api/prototype/tavern-town-beat`
+  - `POST /api/prototype/tavern-town-reset`
+- The UI loads/polls server state, so a fresh browser sees the currently running game.
+- Added server-side single-flight locking by persisting `mode="generating"`; overlapping beat requests return the in-progress state instead of starting another AI beat.
+- Parallel receipt: two overlapping POSTs from beat 1 returned beats `2` and `1/generating`; final server state was beat `2`, not beat `3`.

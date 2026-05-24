@@ -3,7 +3,12 @@ import { Think } from "@cloudflare/think";
 import { createWorkersAI } from "workers-ai-provider";
 import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
-import { handlePrototypeTavernTownApi, prototypeTavernTownUiPage } from "./prototype-tavern-town-ui";
+import {
+  advancePrototypeTavernTownState,
+  initialPrototypeState,
+  prototypeTavernTownUiPage,
+  type PrototypeTavernTownState
+} from "./prototype-tavern-town-ui";
 import {
   advanceCampaignTurn,
   commitAdventureChoice,
@@ -322,8 +327,12 @@ function secureRandomInt(sides: number): number {
   return (value % sides) + 1;
 }
 
-export class Referee extends Agent<Env, Campaign> {
-  initialState: Campaign = seedTavernCampaign("agent-dungeon-campaign");
+type RefereeState = Campaign & {
+  prototypeTavernTown?: PrototypeTavernTownState;
+};
+
+export class Referee extends Agent<Env, RefereeState> {
+  initialState: RefereeState = seedTavernCampaign("agent-dungeon-campaign");
 
   async createGame(campaignId = this.name): Promise<Campaign> {
     const campaign = this.commitCampaign(seedTavernCampaign(campaignId));
@@ -465,14 +474,68 @@ export class Referee extends Agent<Env, Campaign> {
     };
   }
 
+  getPrototypeTavernTown(): PrototypeTavernTownState {
+    const state = this.requireRefereeState();
+    if (!state.prototypeTavernTown) {
+      const prototypeTavernTown = initialPrototypeState();
+      this.setState({ ...state, prototypeTavernTown });
+      return prototypeTavernTown;
+    }
+    return state.prototypeTavernTown;
+  }
+
+  resetPrototypeTavernTown(): PrototypeTavernTownState {
+    const prototypeTavernTown = initialPrototypeState();
+    this.setState({ ...this.requireRefereeState(), prototypeTavernTown });
+    return prototypeTavernTown;
+  }
+
+  async stepPrototypeTavernTown(): Promise<PrototypeTavernTownState> {
+    const state = this.requireRefereeState();
+    const current = state.prototypeTavernTown ?? initialPrototypeState();
+    if (current.mode === "generating") return current;
+
+    const generating: PrototypeTavernTownState = {
+      ...current,
+      mode: "generating",
+      updatedAt: new Date().toISOString()
+    };
+    this.setState({ ...state, prototypeTavernTown: generating });
+
+    try {
+      const next = await advancePrototypeTavernTownState(this.env, generating);
+      this.setState({ ...this.requireRefereeState(), prototypeTavernTown: next });
+      return next;
+    } catch (error) {
+      const failed: PrototypeTavernTownState = {
+        ...generating,
+        mode: "failed",
+        error: String(error),
+        updatedAt: new Date().toISOString()
+      };
+      this.setState({ ...this.requireRefereeState(), prototypeTavernTown: failed });
+      throw error;
+    }
+  }
+
   private commitCampaign(campaign: Campaign): Campaign {
-    this.setState(campaign);
+    const prototypeTavernTown = this.state?.prototypeTavernTown;
+    this.setState(prototypeTavernTown ? { ...campaign, prototypeTavernTown } : campaign);
     return campaign;
   }
 
   private requireCampaign(): Campaign {
+    return this.requireRefereeState();
+  }
+
+  private requireRefereeState(): RefereeState {
     if (!this.state || this.state.id !== this.name) {
-      return this.commitCampaign(seedTavernCampaign(this.name));
+      const existingPrototype = this.state?.prototypeTavernTown;
+      const next: RefereeState = existingPrototype
+        ? { ...seedTavernCampaign(this.name), prototypeTavernTown: existingPrototype }
+        : seedTavernCampaign(this.name);
+      this.setState(next);
+      return next;
     }
     return this.state;
   }
@@ -489,8 +552,21 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith("/api/")) return null;
 
-  const prototype = await handlePrototypeTavernTownApi(request, env);
-  if (prototype) return prototype;
+  if (url.pathname === "/api/prototype/tavern-town-state") {
+    const referee = await getAgentByName(env.Referee, "tavern-town-prototype");
+    return json({ state: await referee.getPrototypeTavernTown() });
+  }
+  if (url.pathname === "/api/prototype/tavern-town-reset") {
+    if (request.method !== "POST") return json({ error: "POST only" }, { status: 405 });
+    const referee = await getAgentByName(env.Referee, "tavern-town-prototype");
+    return json({ state: await referee.resetPrototypeTavernTown() });
+  }
+  if (url.pathname === "/api/prototype/tavern-town-beat") {
+    if (request.method !== "POST") return json({ error: "POST only" }, { status: 405 });
+    const referee = await getAgentByName(env.Referee, "tavern-town-prototype");
+    const prototypeState: PrototypeTavernTownState = await referee.stepPrototypeTavernTown();
+    return json({ state: prototypeState, beat: prototypeState.log?.[0] });
+  }
 
   const campaignId = url.searchParams.get("campaign") ?? "agent-dungeon-campaign";
   const referee = await getAgentByName(env.Referee, campaignId);
