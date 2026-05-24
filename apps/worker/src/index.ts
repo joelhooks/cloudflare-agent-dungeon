@@ -8,6 +8,7 @@ import {
   awardRecoveredTreasureXp,
   commitAdventureChoice,
   commitCharacterCreation,
+  projectForDevMonitor,
   projectForMonitor,
   projectForPlayer,
   rememberSecret,
@@ -431,6 +432,10 @@ export class Referee extends Agent<Env> {
     return projectForMonitor(this.requireCampaign());
   }
 
+  getDevCampaign() {
+    return projectForDevMonitor(this.requireCampaign());
+  }
+
   getProjection(playerId: PlayerId) {
     return projectForPlayer(this.requireCampaign(), playerId);
   }
@@ -667,6 +672,9 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   if (url.pathname === "/api/campaign") {
     return json(await referee.getPublicCampaign());
   }
+  if (url.pathname === "/api/campaign-dev") {
+    return json(await referee.getDevCampaign());
+  }
 
   return json({ error: "Not found" }, { status: 404 });
 }
@@ -762,10 +770,16 @@ function monitorPage(): Response {
     const world = document.getElementById('world');
     const raw = document.getElementById('raw');
 
+    const devMode = new URLSearchParams(location.search).get('dev') === '1';
+
     async function load(path) {
       const response = await fetch(path);
       const data = await response.json();
       render(data);
+      if (devMode && path !== '/api/campaign-dev') {
+        const devResponse = await fetch('/api/campaign-dev');
+        render(await devResponse.json());
+      }
     }
 
     function render(data) {
@@ -775,8 +789,8 @@ function monitorPage(): Response {
 
       const auditEvents = data.refereeAuditEvents || [];
       audit.textContent = auditEvents.map(function (event) {
-        return '[' + event.kind + '] ' + [event.characterId, event.declaredAction, event.refereeIntent, event.note].filter(Boolean).join(' | ');
-      }).join('\n\n') || 'Private Referee audit is hidden on the public monitor.';
+        return '[PRIVATE/DEV ' + event.kind + '] ' + [event.characterId, event.declaredAction, event.refereeIntent, event.note].filter(Boolean).join(' | ');
+      }).join('\n\n') || 'Private Referee audit is hidden on the public monitor. Add ?dev=1 to show the explicitly marked dev audit projection.';
 
       characters.textContent = Object.values(data.characters).map(function (character) {
         return character.name + ' — level ' + (character.level || 1) + ' ' + (character.className || 'unknown') + ', xp ' + (character.xp || 0) + ', hp ' + character.stats.hp + ', AC ' + character.stats.armorClass + ', food ' + ((character.supplies && character.supplies.rationDays) || 0) + ' day(s), gp ' + (character.goldGp || 0) + ', source ' + (character.creationSource || 'unknown') + '\nInventory: ' + character.inventory.join(', ');
@@ -804,7 +818,7 @@ function monitorPage(): Response {
       button.addEventListener('click', function () { load(button.dataset.action); });
     });
 
-    load('/api/campaign');
+    load(devMode ? '/api/campaign-dev' : '/api/campaign');
   </script>
 </body>
 </html>`, { headers: { "content-type": "text/html;charset=utf-8" } });

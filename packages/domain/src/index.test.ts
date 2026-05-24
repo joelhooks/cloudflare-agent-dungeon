@@ -4,6 +4,7 @@ import {
   awardRecoveredTreasureXp,
   commitAdventureChoice,
   commitCharacterCreation,
+  projectForDevMonitor,
   projectForMonitor,
   projectForPlayer,
   rememberSecret,
@@ -188,6 +189,15 @@ describe("Cloudflare Agent Dungeon domain prototype", () => {
     expect(text).not.toContain("tripwire");
     expect(text).not.toContain("Wake the ash-cobra");
     expect(text).not.toContain("refereeAuditEvents");
+  });
+
+  it("exposes Referee audit only through an explicitly marked dev monitor projection", () => {
+    const campaign = seedTavernCampaign();
+    const devMonitor = projectForDevMonitor(campaign);
+
+    expect(devMonitor.devMode).toBe(true);
+    expect(devMonitor.refereeAuditEvents).toHaveLength(1);
+    expect(JSON.stringify(devMonitor)).not.toContain("Wake the ash-cobra");
   });
 
   it("adds an OSE-ish recovered treasure XP hook", () => {

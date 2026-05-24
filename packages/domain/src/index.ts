@@ -665,6 +665,14 @@ export function projectForMonitor(campaign: Campaign) {
   };
 }
 
+export function projectForDevMonitor(campaign: Campaign) {
+  return {
+    ...projectForMonitor(campaign),
+    devMode: true,
+    refereeAuditEvents: campaign.refereeAuditEvents
+  };
+}
+
 export function commitAdventureChoice(campaign: Campaign, choices: AdventureChoice[]): Campaign {
   const next = cloneCampaign(campaign);
   const validChoices = choices.filter((choice) => next.players[choice.playerId] && next.hooks[choice.hookId]?.status !== "resolved");
