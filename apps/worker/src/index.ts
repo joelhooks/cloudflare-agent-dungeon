@@ -129,9 +129,10 @@ export class PlayerAgent extends Think<Env> {
       const result = await generateObject({
         model: this.getModel(),
         schema: CharacterCreationPlanSchema,
-        maxOutputTokens: 1200,
+        maxOutputTokens: 4096,
         prompt: [
           "Create your own level 1 Old School Essentials character for session 0.",
+          "Be concise. Return only the structured object. No prose.",
           "Use the rolled abilities and starting gold exactly as provided.",
           "You may make at most one ability score swap.",
           "Choose one core classic class: fighter, cleric, magic-user, thief, dwarf, elf, halfling.",
