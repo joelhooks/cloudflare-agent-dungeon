@@ -5,7 +5,9 @@ import { generateObject, Output, type LanguageModel } from "ai";
 import { z } from "zod";
 import {
   advanceCampaignTurn,
+  commitAdventureChoice,
   commitCharacterCreation,
+  projectForMonitor,
   projectForPlayer,
   rememberSecret,
   resolveRound,
@@ -13,10 +15,12 @@ import {
   seedTavernCampaign,
   seedThreeRoomCampaign,
   type ActionProposal,
+  type AdventureChoice,
   type Campaign,
   type CharacterCreationDraft,
   type CharacterCreationPlan,
   type CharacterProjection,
+  type HookId,
   type PlayerId,
   type Store,
   type StoreId
@@ -31,6 +35,14 @@ const ActionProposalSchema = z.object({
 });
 
 type ActionProposalOutput = z.infer<typeof ActionProposalSchema>;
+
+const AdventureChoiceSchema = z.object({
+  hookId: z.string().min(1),
+  approach: z.enum(["cautious", "bold", "social", "stealthy", "mystic", "other"]),
+  reason: z.string().optional()
+});
+
+type AdventureChoiceOutput = z.infer<typeof AdventureChoiceSchema>;
 
 const CharacterCreationPlanSchema = z.object({
   name: z.string().min(1),
@@ -155,6 +167,27 @@ export class PlayerAgent extends Think<Env> {
     }
   }
 
+  async chooseAdventureHook(context: unknown): Promise<AdventureChoice> {
+    try {
+      const result = await generateObject({
+        model: this.getModel(),
+        schema: AdventureChoiceSchema,
+        maxOutputTokens: 900,
+        prompt: [
+          "Choose one available adventure hook to pursue in this Old School Essentials campaign.",
+          "Return only the structured choice. Do not invent hook ids.",
+          "Your choice should reflect your player personality and your character sheet, not a railroad.",
+          `Context: ${JSON.stringify(context)}`,
+          `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
+        ].join("\n")
+      });
+      return toAdventureChoice((context as { playerId: PlayerId }).playerId, result.object);
+    } catch (error) {
+      console.warn("[PlayerAgent] adventure hook choice failed; using deterministic fallback", error);
+      return fallbackAdventureChoice((context as { playerId: PlayerId }).playerId);
+    }
+  }
+
   async proposeActionWithStructuredTurn(projection: CharacterProjection): Promise<ActionProposal> {
     try {
       const result = await generateObject({
@@ -219,6 +252,32 @@ export class PlayerAgent extends Think<Env> {
     if (this.secrets.length === 0) return "No private notes.";
     return `${this.secrets.length} private note(s). Use them to shape play, but do not reveal them unless you choose to act on them.`;
   }
+}
+
+function toAdventureChoice(playerId: PlayerId, output: AdventureChoiceOutput): AdventureChoice {
+  return {
+    playerId,
+    hookId: output.hookId as HookId,
+    approach: output.approach,
+    ...(output.reason ? { reason: output.reason } : {})
+  };
+}
+
+function fallbackAdventureChoice(playerId: PlayerId): AdventureChoice {
+  if (playerId === "player-a") {
+    return {
+      playerId,
+      hookId: "hook-drowned-bell",
+      approach: "cautious",
+      reason: "The shrine rumor sounds dangerous but legible enough to investigate without blundering."
+    };
+  }
+  return {
+    playerId,
+    hookId: "hook-blue-tiled-vault",
+    approach: "bold",
+    reason: "The dangerous vault sounds like the fastest road to a name worth remembering."
+  };
 }
 
 function extractWorkersAIText(result: unknown): string {
@@ -366,6 +425,10 @@ export class Referee extends Agent<Env> {
     return this.requireCampaign();
   }
 
+  getPublicCampaign() {
+    return projectForMonitor(this.requireCampaign());
+  }
+
   getProjection(playerId: PlayerId) {
     return projectForPlayer(this.requireCampaign(), playerId);
   }
@@ -414,6 +477,21 @@ export class Referee extends Agent<Env> {
 
   advanceWorldTurn(): Campaign {
     this.campaign = advanceCampaignTurn(this.requireCampaign());
+    return this.campaign;
+  }
+
+  async chooseAdventure(): Promise<Campaign> {
+    if (!this.campaign) await this.createGame(this.name);
+    if (Object.keys(this.requireCampaign().characters).length === 0) await this.runSessionZero();
+
+    const playerA = await this.subAgent(PlayerAgent, "player-a");
+    const playerB = await this.subAgent(PlayerAgent, "player-b");
+    const choices = await Promise.all([
+      playerA.chooseAdventureHook(this.adventureChoiceContext("player-a")),
+      playerB.chooseAdventureHook(this.adventureChoiceContext("player-b"))
+    ]);
+
+    this.campaign = commitAdventureChoice(this.requireCampaign(), choices);
     return this.campaign;
   }
 
@@ -478,6 +556,39 @@ export class Referee extends Agent<Env> {
     }
   }
 
+  private adventureChoiceContext(playerId: PlayerId) {
+    const campaign = this.requireCampaign();
+    const character = Object.values(campaign.characters).find((candidate) => candidate.playerId === playerId);
+    return {
+      playerId,
+      character: character
+        ? {
+            name: character.name,
+            className: character.className,
+            hp: character.stats.hp,
+            armorClass: character.stats.armorClass,
+            inventory: character.inventory,
+            goldGp: character.goldGp,
+            rationDays: character.supplies?.rationDays ?? 0,
+            reasonExceptional: character.reasonExceptional
+          }
+        : undefined,
+      time: campaign.time,
+      currentLocation: campaign.world.locations[campaign.party.currentLocationId],
+      hooks: Object.values(campaign.hooks)
+        .filter((hook) => hook.status === "available")
+        .map((hook) => ({
+          id: hook.id,
+          title: hook.title,
+          publicSummary: hook.publicSummary,
+          rumoredReward: hook.rumoredReward,
+          danger: hook.danger,
+          location: campaign.world.locations[hook.locationId]?.name
+        })),
+      recentEvents: campaign.publicEvents.slice(-8)
+    };
+  }
+
   private requireCampaign(): Campaign {
     if (!this.campaign) {
       this.campaign = seedTavernCampaign(this.name);
@@ -501,16 +612,19 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   const referee = await getAgentByName(env.Referee, campaignId);
 
   if (url.pathname === "/api/create-game") {
-    return json(await referee.createGame(campaignId));
+    return json(projectForMonitor(await referee.createGame(campaignId)));
   }
   if (url.pathname === "/api/create-dungeon-demo") {
-    return json(await referee.createDungeonDemo(campaignId));
+    return json(projectForMonitor(await referee.createDungeonDemo(campaignId)));
   }
   if (url.pathname === "/api/session-zero") {
-    return json(await referee.runSessionZero());
+    return json(projectForMonitor(await referee.runSessionZero()));
   }
   if (url.pathname === "/api/advance-turn") {
-    return json(await referee.advanceWorldTurn());
+    return json(projectForMonitor(await referee.advanceWorldTurn()));
+  }
+  if (url.pathname === "/api/choose-adventure") {
+    return json(projectForMonitor(await referee.chooseAdventure()));
   }
   if (url.pathname === "/api/projection/player-a") {
     return json(await referee.getProjection("player-a"));
@@ -519,19 +633,19 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
     return json(await referee.getProjection("player-b"));
   }
   if (url.pathname === "/api/demo-round") {
-    return json(await referee.runDemoRound());
+    return json(projectForMonitor(await referee.runDemoRound()));
   }
   if (url.pathname === "/api/seed-player-secret") {
     return json(await referee.seedPlayerPrivateMemoryForDemo());
   }
   if (url.pathname === "/api/player-intent-round") {
-    return json(await referee.runPlayerIntentRound());
+    return json(projectForMonitor(await referee.runPlayerIntentRound()));
   }
   if (url.pathname === "/api/live-player-intent-round") {
-    return json(await referee.runLivePlayerIntentRound());
+    return json(projectForMonitor(await referee.runLivePlayerIntentRound()));
   }
   if (url.pathname === "/api/campaign") {
-    return json(await referee.getCampaign());
+    return json(await referee.getPublicCampaign());
   }
 
   return json({ error: "Not found" }, { status: 404 });
@@ -547,7 +661,7 @@ async function campaignEvents(request: Request, env: Env): Promise<Response> {
   const stream = new ReadableStream({
     async start(controller) {
       async function send() {
-        const campaign = await referee.getCampaign();
+        const campaign = await referee.getPublicCampaign();
         controller.enqueue(encoder.encode(`event: campaign\ndata: ${JSON.stringify(campaign)}\n\n`));
       }
 
@@ -601,6 +715,7 @@ function monitorPage(): Response {
   <p>
     <button data-action="/api/create-game">Reset tavern campaign</button>
     <button data-action="/api/session-zero">Run session 0</button>
+    <button data-action="/api/choose-adventure">Choose adventure</button>
     <button data-action="/api/advance-turn">Advance world turn</button>
     <button data-action="/api/seed-player-secret">Seed player secret</button>
     <button data-action="/api/live-player-intent-round">Run live Kimi dungeon round</button>
@@ -636,16 +751,19 @@ function monitorPage(): Response {
         return '[' + event.kind + '] ' + event.text;
       }).join('\n\n') || 'No public events.';
 
-      audit.textContent = data.refereeAuditEvents.map(function (event) {
+      const auditEvents = data.refereeAuditEvents || [];
+      audit.textContent = auditEvents.map(function (event) {
         return '[' + event.kind + '] ' + [event.characterId, event.declaredAction, event.refereeIntent, event.note].filter(Boolean).join(' | ');
-      }).join('\n\n') || 'No private Referee audit events.';
+      }).join('\n\n') || 'Private Referee audit is hidden on the public monitor.';
 
       characters.textContent = Object.values(data.characters).map(function (character) {
-        return character.name + ' — level ' + (character.level || 1) + ' ' + (character.className || 'unknown') + ', hp ' + character.stats.hp + ', AC ' + character.stats.armorClass + ', food ' + ((character.supplies && character.supplies.rationDays) || 0) + ' day(s), gp ' + (character.goldGp || 0) + '\nInventory: ' + character.inventory.join(', ');
+        return character.name + ' — level ' + (character.level || 1) + ' ' + (character.className || 'unknown') + ', hp ' + character.stats.hp + ', AC ' + character.stats.armorClass + ', food ' + ((character.supplies && character.supplies.rationDays) || 0) + ' day(s), gp ' + (character.goldGp || 0) + ', source ' + (character.creationSource || 'unknown') + '\nInventory: ' + character.inventory.join(', ');
       }).join('\n\n') || 'No characters yet. Run session 0.';
 
-      world.textContent = 'Day ' + data.time.day + ', ' + data.time.watch + '\n\nLocations:\n' + Object.values(data.world.locations).map(function (location) {
+      world.textContent = 'Day ' + data.time.day + ', ' + data.time.watch + '\nParty goal: ' + (data.party.chosenHookId || 'none yet') + '\n\nLocations:\n' + Object.values(data.world.locations).map(function (location) {
         return '- ' + location.name + ' (' + location.kind + ')';
+      }).join('\n') + '\n\nHooks:\n' + Object.values(data.hooks).map(function (hook) {
+        return '- ' + hook.title + ' [' + hook.status + '] ' + hook.publicSummary;
       }).join('\n') + '\n\nFaction clocks:\n' + Object.values(data.factions).map(function (faction) {
         return '- ' + faction.name + ': ' + faction.clock + '/' + faction.clockMax + ' — ' + faction.publicGoal;
       }).join('\n');

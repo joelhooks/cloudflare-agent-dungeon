@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   advanceCampaignTurn,
+  commitAdventureChoice,
   commitCharacterCreation,
+  projectForMonitor,
   projectForPlayer,
   rememberSecret,
   resolveRound,
@@ -160,6 +162,30 @@ describe("Cloudflare Agent Dungeon domain prototype", () => {
     expect(JSON.stringify(stores)).toContain("Lantern");
     expect(JSON.stringify(stores)).toContain("Rations (standard, 7 days)");
     expect(JSON.stringify(stores)).toContain("Leather armor");
+  });
+
+  it("commits player adventure choices and lets ignored faction clocks advance", () => {
+    const campaign = seedTavernCampaign();
+    const chosen = commitAdventureChoice(campaign, [
+      { playerId: "player-a", hookId: "hook-drowned-bell", approach: "cautious", reason: "The shrine sounds survivable." },
+      { playerId: "player-b", hookId: "hook-blue-tiled-vault", approach: "bold", reason: "Glory lives in the dangerous option." }
+    ]);
+
+    expect(chosen.party.chosenHookId).toBe("hook-drowned-bell");
+    expect(chosen.party.destinationId).toBe("location-sunken-shrine");
+    expect(chosen.hooks["hook-drowned-bell"]?.status).toBe("pursued");
+    expect(chosen.factions["faction-ash-cobra-cult"]?.clock).toBe(2);
+    expect(JSON.stringify(chosen.publicEvents)).toContain("The party commits");
+  });
+
+  it("projects monitor state without hidden room, hidden faction, or referee audit data", () => {
+    const campaign = seedThreeRoomCampaign();
+    const monitor = projectForMonitor(campaign);
+    const text = JSON.stringify(monitor);
+
+    expect(text).not.toContain("tripwire");
+    expect(text).not.toContain("Wake the ash-cobra");
+    expect(text).not.toContain("refereeAuditEvents");
   });
 
   it("advances faction clocks and applies hunger when characters have no food", () => {

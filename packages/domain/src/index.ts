@@ -3,6 +3,7 @@ export type CharacterId = `character-${string}`;
 export type RoomId = `room-${string}`;
 export type LocationId = `location-${string}`;
 export type FactionId = `faction-${string}`;
+export type HookId = `hook-${string}`;
 export type StoreId = `store-${string}`;
 export type ItemId = `item-${string}`;
 export type EventId = `event-${string}`;
@@ -70,6 +71,24 @@ export type Faction = {
   clockMax: number;
 };
 
+export type AdventureHook = {
+  id: HookId;
+  title: string;
+  locationId: LocationId;
+  publicSummary: string;
+  rumoredReward: string;
+  danger: "low" | "medium" | "high";
+  factionIds: FactionId[];
+  status: "available" | "pursued" | "resolved";
+};
+
+export type AdventureChoice = {
+  playerId: PlayerId;
+  hookId: HookId;
+  approach: "cautious" | "bold" | "social" | "stealthy" | "mystic" | "other";
+  reason?: string;
+};
+
 export type StoreItem = {
   id: ItemId;
   name: string;
@@ -125,7 +144,7 @@ export type ActionProposal = {
 export type PublicEvent = {
   id: EventId;
   visibility: "public";
-  kind: "scene_revealed" | "table_action" | "outcome" | "dice_roll" | "world_event" | "faction_clock" | "session_zero";
+  kind: "scene_revealed" | "table_action" | "outcome" | "dice_roll" | "world_event" | "faction_clock" | "session_zero" | "player_choice";
   text: string;
   actor?: CharacterId;
   createdAt: string;
@@ -134,7 +153,7 @@ export type PublicEvent = {
 export type RefereeAuditEvent = {
   id: EventId;
   visibility: "referee";
-  kind: "action_proposed" | "adjudication_note" | "character_creation" | "world_tick";
+  kind: "action_proposed" | "adjudication_note" | "character_creation" | "world_tick" | "adventure_choice";
   playerId?: PlayerId;
   characterId?: CharacterId;
   declaredAction?: string;
@@ -184,6 +203,12 @@ export type Campaign = {
     locations: Record<LocationId, Location>;
   };
   factions: Record<FactionId, Faction>;
+  hooks: Record<HookId, AdventureHook>;
+  party: {
+    currentLocationId: LocationId;
+    chosenHookId?: HookId;
+    destinationId?: LocationId;
+  };
   stores: Record<StoreId, Store>;
   publicEvents: PublicEvent[];
   refereeAuditEvents: RefereeAuditEvent[];
@@ -326,6 +351,41 @@ function startingFactions(): Record<FactionId, Faction> {
   };
 }
 
+function startingAdventureHooks(): Record<HookId, AdventureHook> {
+  return {
+    "hook-moss-crowned-door": {
+      id: "hook-moss-crowned-door",
+      title: "Copper-Sealed Door North of Willowby",
+      locationId: "location-moss-crowned-door",
+      publicSummary: "A shepherd saw green fire under a tilted stone door after rain. The Willowby reeve wants quiet help before panic spreads.",
+      rumoredReward: "Reeve's purse, salvage rights, and first claim on lawful treasure.",
+      danger: "medium",
+      factionIds: ["faction-river-guild"],
+      status: "available"
+    },
+    "hook-drowned-bell": {
+      id: "hook-drowned-bell",
+      title: "The Bell That Rings Underwater",
+      locationId: "location-sunken-shrine",
+      publicSummary: "Fishers swear a shrine bell rings beneath black water whenever something dead walks the reed beds.",
+      rumoredReward: "Temple favor, village gratitude, and old shrine silver if recovered cleanly.",
+      danger: "medium",
+      factionIds: ["faction-stagmere-saints"],
+      status: "available"
+    },
+    "hook-blue-tiled-vault": {
+      id: "hook-blue-tiled-vault",
+      title: "Blue Tiles Beneath Stagmere",
+      locationId: "location-blue-vault",
+      publicSummary: "A peat-cutter broke into blue tile under the abandoned bathhouse. Snake-charms appeared on three doors the next morning.",
+      rumoredReward: "Vault coin, forbidden relics, and a name that travels faster than fear.",
+      danger: "high",
+      factionIds: ["faction-ash-cobra-cult"],
+      status: "available"
+    }
+  };
+}
+
 export function startingTownStores(): Record<StoreId, Store> {
   const generalItems: StoreItem[] = [
     { id: "item-backpack", name: "Backpack", category: "container", costGp: 5 },
@@ -426,6 +486,7 @@ export function startingTownStores(): Record<StoreId, Store> {
 }
 
 export function seedTavernCampaign(id = "agent-dungeon-campaign"): Campaign {
+  const world = emptyWorld();
   const players: Record<PlayerId, Player> = {
     "player-a": {
       id: "player-a",
@@ -446,8 +507,10 @@ export function seedTavernCampaign(id = "agent-dungeon-campaign"): Campaign {
     players,
     characters: {},
     rooms: threeRoomDungeonRooms(),
-    world: emptyWorld(),
+    world,
     factions: startingFactions(),
+    hooks: startingAdventureHooks(),
+    party: { currentLocationId: world.startingLocationId },
     stores: startingTownStores(),
     publicEvents: [event("Session 0 begins in the Golden Eel Tavern. Hungry would-be adventurers gather under smoke-dark rafters to make names worth singing.", "session_zero")],
     refereeAuditEvents: [audit("Campaign seeded for autonomous tavern-start play.", { kind: "world_tick" })],
@@ -549,19 +612,137 @@ export function rememberSecret(secrets: string[], note: string): string[] {
   return [...secrets, note];
 }
 
+export function projectForMonitor(campaign: Campaign) {
+  return {
+    id: campaign.id,
+    status: campaign.status,
+    time: campaign.time,
+    players: campaign.players,
+    party: campaign.party,
+    characters: Object.fromEntries(
+      Object.entries(campaign.characters).map(([id, character]) => [
+        id,
+        {
+          id: character.id,
+          playerId: character.playerId,
+          name: character.name,
+          stats: character.stats,
+          inventory: character.inventory,
+          locationId: character.locationId,
+          abilities: character.abilities,
+          className: character.className,
+          level: character.level,
+          xp: character.xp,
+          goldGp: character.goldGp,
+          alignment: character.alignment,
+          deity: character.deity,
+          reasonExceptional: character.reasonExceptional,
+          supplies: character.supplies,
+          creationSource: character.creationSource
+        }
+      ])
+    ),
+    world: {
+      startingLocationId: campaign.world.startingLocationId,
+      locations: campaign.world.locations
+    },
+    factions: Object.fromEntries(
+      Object.entries(campaign.factions).map(([id, faction]) => [
+        id,
+        {
+          id: faction.id,
+          name: faction.name,
+          publicGoal: faction.publicGoal,
+          clock: faction.clock,
+          clockMax: faction.clockMax
+        }
+      ])
+    ),
+    hooks: campaign.hooks,
+    stores: campaign.stores,
+    publicEvents: campaign.publicEvents,
+    diceLedger: campaign.diceLedger.filter((roll) => roll.visibility === "public")
+  };
+}
+
+export function commitAdventureChoice(campaign: Campaign, choices: AdventureChoice[]): Campaign {
+  const next = cloneCampaign(campaign);
+  const validChoices = choices.filter((choice) => next.players[choice.playerId] && next.hooks[choice.hookId]?.status !== "resolved");
+
+  for (const choice of validChoices) {
+    const hook = next.hooks[choice.hookId];
+    if (!hook) continue;
+    const character = Object.values(next.characters).find((candidate) => candidate.playerId === choice.playerId);
+    const actorName = character?.name ?? next.players[choice.playerId]?.name ?? choice.playerId;
+    next.publicEvents.push(event(`${actorName} wants to pursue “${hook.title}” with a ${choice.approach} approach.`, "player_choice", character?.id));
+    next.refereeAuditEvents.push(
+      audit(choice.reason ?? "Player chose an adventure hook.", {
+        kind: "adventure_choice",
+        playerId: choice.playerId,
+        ...(character ? { characterId: character.id } : {})
+      })
+    );
+  }
+
+  if (validChoices.length === 0) {
+    next.publicEvents.push(event("The tavern noise wins for now. No clear lead is chosen.", "outcome"));
+    return next;
+  }
+
+  const chosenHookId = chooseHookByVote(validChoices);
+  const chosenHook = next.hooks[chosenHookId];
+  if (!chosenHook) return next;
+
+  next.hooks[chosenHook.id] = { ...chosenHook, status: "pursued" };
+  next.party = {
+    ...next.party,
+    chosenHookId: chosenHook.id,
+    destinationId: chosenHook.locationId
+  };
+  next.status = "awaiting_player_intent";
+  next.publicEvents.push(event(`The party commits to ${chosenHook.title}. The road now points toward ${next.world.locations[chosenHook.locationId]?.name ?? chosenHook.locationId}.`, "outcome"));
+
+  for (const hook of Object.values(next.hooks)) {
+    if (hook.id === chosenHook.id) continue;
+    for (const factionId of hook.factionIds) {
+      const faction = next.factions[factionId];
+      if (!faction) continue;
+      faction.clock = Math.min(faction.clockMax, faction.clock + 1);
+      next.publicEvents.push(event(`While the party ignores “${hook.title}”, ${faction.name}'s clock advances to ${faction.clock}/${faction.clockMax}.`, "faction_clock"));
+    }
+  }
+
+  return next;
+}
+
+function chooseHookByVote(choices: AdventureChoice[]): HookId {
+  const counts = new Map<HookId, number>();
+  for (const choice of choices) counts.set(choice.hookId, (counts.get(choice.hookId) ?? 0) + 1);
+  let winner = choices[0]?.hookId;
+  let winnerCount = winner ? counts.get(winner) ?? 0 : 0;
+  for (const [hookId, count] of counts.entries()) {
+    if (count > winnerCount) {
+      winner = hookId;
+      winnerCount = count;
+    }
+  }
+  if (!winner) throw new Error("No adventure hook choice available");
+  return winner;
+}
+
 export function rollCharacterCreationDraft(campaign: Campaign, playerId: PlayerId, randomInt: RandomInt): { campaign: Campaign; draft: CharacterCreationDraft } {
   if (!campaign.players[playerId]) throw new Error(`No player ${playerId}`);
 
   const next = cloneCampaign(campaign);
   const rawAbilities: AbilityScores = {
-    strength: rollAndRecord(next, "3d6", randomInt, `Session 0 strength for ${playerId}`, "referee", playerId).result,
-    intelligence: rollAndRecord(next, "3d6", randomInt, `Session 0 intelligence for ${playerId}`, "referee", playerId).result,
-    wisdom: rollAndRecord(next, "3d6", randomInt, `Session 0 wisdom for ${playerId}`, "referee", playerId).result,
-    dexterity: rollAndRecord(next, "3d6", randomInt, `Session 0 dexterity for ${playerId}`, "referee", playerId).result,
-    constitution: rollAndRecord(next, "3d6", randomInt, `Session 0 constitution for ${playerId}`, "referee", playerId).result,
-    charisma: rollAndRecord(next, "3d6", randomInt, `Session 0 charisma for ${playerId}`, "referee", playerId).result
+    strength: rollAndRecord(next, "3d6", randomInt, `Session 0 strength for ${playerId}`, "public", playerId).result,
+    intelligence: rollAndRecord(next, "3d6", randomInt, `Session 0 intelligence for ${playerId}`, "public", playerId).result,
+    wisdom: rollAndRecord(next, "3d6", randomInt, `Session 0 wisdom for ${playerId}`, "public", playerId).result,
+    dexterity: rollAndRecord(next, "3d6", randomInt, `Session 0 dexterity for ${playerId}`, "public", playerId).result,
+    constitution: rollAndRecord(next, "3d6", randomInt, `Session 0 constitution for ${playerId}`, "public", playerId).result,
+    charisma: rollAndRecord(next, "3d6", randomInt, `Session 0 charisma for ${playerId}`, "public", playerId).result
   };
-  const startingGoldGp = rollAndRecord(next, "3d6", randomInt, `Session 0 starting gold x10 for ${playerId}`, "referee", playerId).result * 10;
+  const startingGoldGp = rollAndRecord(next, "3d6", randomInt, `Session 0 starting gold x10 for ${playerId}`, "public", playerId).result * 10;
 
   return { campaign: next, draft: { playerId, rawAbilities, startingGoldGp } };
 }
@@ -619,7 +800,7 @@ function openTavernStart(campaign: Campaign): Campaign {
   next.status = "tavern_start";
   next.publicEvents.push(
     event(
-      "The Golden Eel grows loud with three leads: a copper-sealed door north of Willowby, a drowned bell near the Sunken Shrine, and Stagmere folk whispering about blue tiles under the bathhouse.",
+      `The Golden Eel grows loud with three leads: ${Object.values(next.hooks).map((hook) => hook.title).join("; ")}.`,
       "scene_revealed"
     )
   );
