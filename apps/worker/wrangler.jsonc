@@ -4,6 +4,12 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-05-24",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    {
+      "pattern": "agentdungeon.ai",
+      "custom_domain": true
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
