@@ -38,21 +38,27 @@ const PrototypeStateSchema = z.object({
 
 type PrototypeState = z.infer<typeof PrototypeStateSchema>;
 
-const GeneratedBeatSchema = z.object({
+const GeneratedBeatCandidateSchema = z.object({
   lane: z.enum(["referee", "player", "npc", "rules", "audit"]),
   actor: z.string(),
   title: z.string(),
   tableText: z.string(),
   processReasoning: z.string(),
   devReasoning: z.string(),
-  nextAffordances: z.array(z.string()).min(3).max(10),
-  visibleThreads: z.array(z.string()).min(1).max(10),
+  nextAffordances: z.array(z.string()).min(1),
+  visibleThreads: z.array(z.string()).min(1),
   npcUpdates: z.array(PrototypeNpcSchema).optional(),
   partyUpdates: z.array(PrototypePartyMemberSchema).optional(),
   rulesUsed: z.array(z.string()).optional()
 });
 
+const GeneratedBeatSchema = GeneratedBeatCandidateSchema.extend({
+  nextAffordances: z.array(z.string()).min(3).max(7),
+  visibleThreads: z.array(z.string()).min(1).max(7)
+});
+
 type GeneratedBeat = z.infer<typeof GeneratedBeatSchema>;
+type GeneratedBeatCandidate = z.infer<typeof GeneratedBeatCandidateSchema>;
 
 type RuleReceipt = {
   id: string;
@@ -348,26 +354,75 @@ async function consultPrototypeRules(state: PrototypeState): Promise<RuleReceipt
 }
 
 async function generatePrototypeBeat(env: Env, state: PrototypeState, receipts: RuleReceipt[]): Promise<GeneratedBeat> {
-  const prompt = [
+  let validationError = "";
+  let lastCandidate: GeneratedBeatCandidate | null = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const result = await env.AI.run("@cf/moonshotai/kimi-k2.6", {
+      messages: [{ role: "user", content: buildPrototypeBeatPrompt(state, receipts, validationError) }],
+      chat_template_kwargs: { thinking: false, enable_thinking: false },
+      reasoning_effort: null,
+      max_completion_tokens: 1200
+    });
+
+    try {
+      const candidate = GeneratedBeatCandidateSchema.parse(parseJsonObject(extractWorkersAIText(result)));
+      lastCandidate = candidate;
+      return GeneratedBeatSchema.parse(repairGeneratedBeat(candidate, state));
+    } catch (error) {
+      validationError = summarizeValidationError(error);
+    }
+  }
+
+  if (lastCandidate) return GeneratedBeatSchema.parse(repairGeneratedBeat(lastCandidate, state));
+  throw new Error(`Prototype beat generation failed after retry: ${validationError}`);
+}
+
+function buildPrototypeBeatPrompt(state: PrototypeState, receipts: RuleReceipt[], validationError: string): string {
+  return [
     "You are a THROWAWAY prototype Referee generator for Cloudflare Agent Dungeon.",
     "Generate exactly ONE tavern/town beat. Do not run a scripted route. Do not force hook acceptance.",
     "The town/tavern is the whole open world for now. Players can talk, buy, hire, wait, leave, ask sideways, or ignore pressure.",
     "Use player-driven affordances. NPCs should want things and remember things.",
     "Rules validation comes from OSE rulebook receipts supplied from JoelClaw docs. Code is not the rules authority.",
     "Do not quote long rulebook text. You may cite receipt ids in rulesUsed.",
-    "Return compact JSON only matching this TypeScript-ish shape:",
-    "{ lane:'referee|player|npc|rules|audit', actor:string, title:string, tableText:string, processReasoning:string, devReasoning:string, nextAffordances:string[], visibleThreads:string[], npcUpdates?:Npc[], partyUpdates?:PartyMember[], rulesUsed?:string[] }",
+    "Return compact JSON only. No markdown. No extra keys.",
+    "Hard shape: { lane:'referee|player|npc|rules|audit', actor:string, title:string, tableText:string, processReasoning:string, devReasoning:string, nextAffordances:string[], visibleThreads:string[], npcUpdates?:Npc[], partyUpdates?:PartyMember[], rulesUsed?:string[] }",
+    "Hard limits: nextAffordances MUST contain 3-7 items. visibleThreads MUST contain 1-7 items. If you have more ideas, choose the best 7. Do not exceed these limits.",
+    validationError ? `Previous attempt failed schema validation: ${validationError}. Retry with fewer array items and valid JSON.` : "",
     `State: ${JSON.stringify({ ...state, log: (state.log ?? []).slice(0, 4) })}`,
     `Rule receipts: ${JSON.stringify(receipts.map((receipt) => ({ id: receipt.id, docId: receipt.docId, headingPath: receipt.headingPath, snippet: receipt.snippet?.slice(0, 240) })))}`
-  ].join("\n");
+  ].filter(Boolean).join("\n");
+}
 
-  const result = await env.AI.run("@cf/moonshotai/kimi-k2.6", {
-    messages: [{ role: "user", content: prompt }],
-    chat_template_kwargs: { thinking: false, enable_thinking: false },
-    reasoning_effort: null,
-    max_completion_tokens: 1400
-  });
-  return GeneratedBeatSchema.parse(parseJsonObject(extractWorkersAIText(result)));
+function repairGeneratedBeat(candidate: GeneratedBeatCandidate, state: PrototypeState): GeneratedBeat {
+  const nextAffordances = takeUnique(candidate.nextAffordances, 7);
+  const visibleThreads = takeUnique(candidate.visibleThreads, 7);
+  const repaired = {
+    ...candidate,
+    nextAffordances: padToMinimum(nextAffordances, state.affordances, 3).slice(0, 7),
+    visibleThreads: padToMinimum(visibleThreads, state.visibleThreads, 1).slice(0, 7)
+  };
+  return GeneratedBeatSchema.parse(repaired);
+}
+
+function takeUnique(values: string[], max: number): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, max);
+}
+
+function padToMinimum(values: string[], fallback: string[], minimum: number): string[] {
+  const padded = [...values];
+  for (const item of fallback) {
+    if (padded.length >= minimum) break;
+    if (!padded.includes(item)) padded.push(item);
+  }
+  while (padded.length < minimum) padded.push("wait and listen");
+  return padded;
+}
+
+function summarizeValidationError(error: unknown): string {
+  if (error instanceof z.ZodError) return error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
+  return String(error);
 }
 
 function applyGeneratedBeat(state: PrototypeState, beat: GeneratedBeat, receipts: RuleReceipt[]): PrototypeState & { log: unknown[] } {

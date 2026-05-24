@@ -199,3 +199,10 @@ stateBeat=1
 rule receipts rendered from JoelClaw docs ids
 newest generated turn appeared at top
 ```
+
+Schema repair follow-up:
+
+- Kimi sometimes returned more `nextAffordances` / `visibleThreads` than the UI schema allowed.
+- Root cause: strict Zod max arrays were being used directly on model output, so harmless over-generation became a 500.
+- Fix: parse a looser candidate, retry once with the schema error in the prompt, then repair by deduping/capping arrays and padding minimums from current state.
+- Browser check after fix: two consecutive `Step One Beat` actions reached `beat=2`, with 7 affordances and 7 visible threads, no schema error.
