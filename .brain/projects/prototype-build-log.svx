@@ -551,7 +551,7 @@ Deploy receipt:
 Uploaded cloudflare-agent-dungeon
 Deployed cloudflare-agent-dungeon triggers
   agentdungeon.ai (custom domain)
-Current Version ID: 8036055d-562c-42dd-8e69-72a47d17a0c9
+Current Version ID: 483861ee-0bef-423f-9b05-b4158777b50f
 ```
 
 Smoke checks:
@@ -573,6 +573,8 @@ Results:
 - `/events`: emitted `event: campaign`
 - Session 0 produced 2 characters and 16 dice ledger entries.
 - Deployed sample produced `Brindle Reed` thief and `Bran` cleric, with rations/supplies and faction clocks advancing to night.
+- Added `creationSource` tracking (`kimi`, `repaired_kimi`, `fallback`, `unknown`) so later reviews can see whether PlayerAgent character plans came from Kimi or deterministic fallback.
+- A tailed deployed smoke run produced Kimi-created characters `Skoll` and `Thorvald the Grim`, both marked `creationSource: kimi`.
 
 ### Next learning question
 
