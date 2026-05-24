@@ -50,7 +50,7 @@ Relevant source-backed rule summary:
 Implementation:
 
 ```ts
-const startingGoldGp = rollAndRecord(next, "3d6", randomInt, `Session 0 starting gold x10 for ${playerId}`, "referee", playerId).result * 10;
+const startingGoldGp = rollAndRecord(next, "3d6", randomInt, `Session 0 starting gold x10 for ${playerId}`, "public", playerId).result * 10;
 ```
 
 ## Mundane equipment prices
@@ -90,6 +90,54 @@ Used directly for first store items:
 - Leather armour 20 gp, AC 12
 - Chainmail 40 gp, AC 14
 - Shield 10 gp, +1 AC bonus in rules; current prototype records a simple AC contribution and needs a later AC calculation pass.
+
+## Wilderness travel / adventure approach
+
+Receipts:
+
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s557`
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s563`
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s570`
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s571`
+
+Relevant source-backed rule summary:
+
+- Wilderness day sequence includes deciding course, checking if the party loses direction, checking wandering monsters, describing terrain/sites, and updating time/rations/rest at day end.
+- Losing direction chance depends on terrain; clear/grassland is `1-in-6`.
+- Wandering monster checks are typically once per day; city/clear/grasslands/settled lands are `1-in-6`.
+- Encounter distance in wilderness is `4d6 × 10` yards, reduced to `1d4 × 10` yards if surprise applies.
+
+Implementation:
+
+```ts
+travelToChosenHook(campaign, randomInt)
+```
+
+Current slice uses a simple settled/clear route check: one `1d6` losing-direction roll, one `1d6` wandering-encounter roll, optional `4d6 × 10` yards encounter distance, travel-day ration consumption, and destination movement.
+
+## XP / progression hooks
+
+Receipts:
+
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s709`
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s710`
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s711`
+
+Relevant source-backed rule summary:
+
+- Characters who return from an adventure alive receive XP.
+- XP comes from treasure recovered and monsters defeated.
+- Non-magical treasure grants `1 XP` per `1 gp` value.
+- Magical treasure does not grant XP.
+- Defeated monsters grant XP based on Hit Dice, with bonus XP for special abilities.
+
+Implementation:
+
+```ts
+awardRecoveredTreasureXp(campaign, treasureGp, reason)
+```
+
+Current slice implements only a small recovered-treasure XP hook, splitting the provided gp-value XP amount across surviving characters. Monster XP and level-up table thresholds still need a source-backed pass.
 
 ## Deliberate prototype deviations / TODOs
 

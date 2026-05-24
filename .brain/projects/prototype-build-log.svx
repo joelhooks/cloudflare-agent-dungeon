@@ -652,6 +652,94 @@ party destination: location-moss-crowned-door
 leaks: hiddenAgenda=false, hiddenDescription=false, audit=false
 ```
 
+## 2026-05-24 — Travel-to-adventure and recovered-treasure XP hook
+
+### Gap found during continuation audit
+
+After hook choice, the prototype still needed the first actual expedition step and a stronger XP/progression receipt. The campaign could choose a lead, but it did not yet spend travel time, consume supplies, roll travel checks, move the party to the chosen adventure site, or show XP changing on the monitor.
+
+### Source receipts
+
+Added wilderness travel and XP receipts to [[resources/ose-session-zero-source-receipts]]:
+
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s557` — wilderness day sequence: decide course, losing direction, wandering monsters, description, end-of-day rations/time/rest
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s563` — losing direction chances by terrain
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s570` / `s571` — wandering monster checks and settled/clear `1-in-6`
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s709` / `s710` / `s711` — XP from recovered treasure and defeated monsters; non-magical treasure gives `1 XP` per `1 gp` value
+
+### Implemented
+
+Added domain/runtime support for the first expedition step:
+
+- `travelToChosenHook(campaign, randomInt)`
+  - requires a chosen hook
+  - rolls OSE-style losing direction check for a settled/clear route
+  - rolls OSE-style wandering encounter check
+  - rolls encounter distance as `4d6 × 10` yards when an encounter appears
+  - consumes a travel day of rations or harms unfed characters
+  - advances time to the next morning
+  - moves party/characters to the chosen destination
+- `/api/travel-to-adventure`
+- monitor button: `Travel to adventure`
+
+Added a minimal progression hook:
+
+- `awardRecoveredTreasureXp(campaign, treasureGp, reason)`
+- `/api/recover-demo-treasure`
+- monitor now shows character XP
+
+### Validation
+
+Commands:
+
+```bash
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts
+```
+
+Tests now cover 12 cases, including:
+
+- Session 0 dice/gold/shopping
+- stocked town stores
+- non-leaky projections
+- adventure hook choice
+- public-safe monitor projection
+- source-backed travel-to-adventure dice checks
+- recovered treasure XP hook
+
+Deploy receipt:
+
+```txt
+agentdungeon.ai (custom domain)
+Current Version ID: d156b747-808d-4bce-a5df-255c0600fb0f
+```
+
+Deployed smoke:
+
+```txt
+/monitor 200
+/api/create-game 200
+/api/session-zero 200
+/api/choose-adventure 200
+/api/travel-to-adventure 200
+/api/recover-demo-treasure 200
+/api/advance-turn 200
+/events emitted event: campaign
+```
+
+Sample deployed run:
+
+```txt
+session: tavern_start, 2 characters, 16 dice ledger entries
+characters: Sulky Meg thief creationSource=kimi, Marn thief creationSource=kimi
+chosen hook: hook-blue-tiled-vault -> location-blue-vault
+travel: day 2 morning, losing direction + wandering monster rolls recorded
+XP after demo treasure: 10 XP each
+leaks: hiddenAgenda=false, hiddenDescription=false, audit=false, secret=false
+```
+
 ### Next learning question
 
-Next slice should turn the chosen hook into an actual autonomous travel / first expedition loop: consume travel time/supplies, move party from tavern toward the destination, roll a travel/wandering encounter check from a source-backed OSE procedure, and then enter the chosen adventure site.
+The prototype is now credible as a first realtime slice. The next deeper OSE pass should be AC math, encumbrance, richer travel terrain/rest rules, monster XP, and level thresholds. Do not let that turn into a full VTT; keep it as narrow domain receipts plus tests.
