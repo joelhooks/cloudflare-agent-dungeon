@@ -1,0 +1,17 @@
+{
+  "name": "cloudflare-agent-dungeon",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.1.2",
+  "scripts": {
+    "build": "turbo build",
+    "check": "turbo check",
+    "test": "turbo test",
+    "prototype": "pnpm --filter @cloudflare-agent-dungeon/worker dev"
+  },
+  "devDependencies": {
+    "turbo": "^2.6.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14"
+  }
+}

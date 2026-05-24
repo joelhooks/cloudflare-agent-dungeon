@@ -1,0 +1,420 @@
+---
+title: Prototype Build Log
+kind: project
+status: active
+created: 2026-05-24
+tags:
+  - prototype
+  - build-log
+  - learning
+  - cloudflare
+  - agents-sdk
+  - think
+  - fog-of-war
+---
+
+# Prototype Build Log
+
+Narrative log for building Cloudflare Agent Dungeon while Joel learns the architecture.
+
+## 2026-05-24 — Boundary-first prototype scaffold
+
+### Question being answered
+
+Can the first runnable slice prove the gameplay/data boundaries before we wire a fully autonomous Think loop?
+
+### Source and Brain context
+
+This build follows:
+
+- [[projects/think-dnd-prototype]]
+- [[resources/cloudflare-think-agentic-loop-research]]
+- [[resources/idiomatic-think-prototype-shape]]
+- [[resources/run-agent-tool-plain-agent-parent]]
+
+### What we built first
+
+A Turborepo scaffold with a domain package and Worker app:
+
+- `packages/domain/src/index.ts`
+- `packages/domain/src/index.test.ts`
+- `apps/worker/src/index.ts`
+- `apps/worker/wrangler.jsonc`
+
+The first code slice intentionally starts with the deterministic game boundary:
+
+```txt
+Referee extends Agent
+  owns Campaign state and projections
+
+RefereeAgent extends Think
+  long-lived referee mind seam
+
+PlayerAgent extends Think
+  long-lived player mind/private memory seam
+```
+
+### Key learning
+
+The prototype should prove **Player != Character** and **intent != outcome** before adding a bigger model loop.
+
+Current strict action contract:
+
+```ts
+submitAction({
+  tableSpeech?: string,
+  declaredAction: string,
+  refereeIntent?: string
+})
+```
+
+Player secrets are not part of action proposals. They live behind a separate player-local capability:
+
+```txt
+rememberSecret(note)
+listOwnSecrets()
+```
+
+Only the same `PlayerAgent` has a game API path to read its own secrets.
+
+### Visibility lanes
+
+The prototype uses three lanes:
+
+1. Public/table-safe events for monitor and other players.
+2. Private Referee audit events for adjudication receipts, including `refereeIntent` when needed.
+3. PlayerAgent-private memory for secrets that do not leak to Referee, RefereeAgent, other players, or public monitor.
+
+### Intentional limitation
+
+Slice one does not yet ask live LLM children to choose actions. That is deliberate. The first learning target is the boundary and event/projection model. Once that is green, the next slice can replace deterministic demo proposals with PlayerAgent Think turns.
+
+### Validation
+
+Commands run:
+
+```bash
+pnpm approve-builds --all
+pnpm install
+pnpm --filter @cloudflare-agent-dungeon/domain test
+pnpm --filter @cloudflare-agent-dungeon/domain check
+pnpm --filter @cloudflare-agent-dungeon/worker check
+pnpm test
+pnpm check
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+```
+
+Results:
+
+- Domain tests passed: 3 tests.
+- Worker typecheck passed.
+- Full Turborepo `test` and `check` passed.
+- Wrangler dry-run build passed after adding `nodejs_compat` because the Agents dependency tree imports Node built-ins.
+
+### Implementation note
+
+`pnpm install` initially failed because pnpm 11 blocked dependency build scripts for `core-js-pure`, `esbuild`, `sharp`, and `workerd`. We approved the builds with `pnpm approve-builds --all`, then install/check/test succeeded.
+
+## 2026-05-24 — Stable PlayerAgent intent round
+
+### Question being answered
+
+Can stable long-lived `PlayerAgent[player-id]` children submit typed intent while keeping player secrets out of Referee state?
+
+### Source and Brain context
+
+Added research note:
+
+- [[resources/stable-player-agent-turn-submission]]
+
+### What changed
+
+Updated `apps/worker/src/index.ts`:
+
+- Added `PlayerAgent.proposeAction(projection)` as the first stable child-agent turn seam.
+- Added `Referee.runPlayerIntentRound()` to ask both stable PlayerAgents for simultaneous proposals.
+- Added `/api/player-intent-round`.
+- Added `/api/seed-player-secret` as a demo setup hook that stores a private note inside `PlayerAgent[player-a]`.
+- Removed the Referee read path for player secrets. The game API should not let Referee casually inspect `playerSecretNote`/secret memory.
+
+### Key learning
+
+Stable player identity should be a stable child facet:
+
+```txt
+PlayerAgent[player-a]
+PlayerAgent[player-b]
+```
+
+Per-run Agent Tool facets are useful for retained run UI, but they are a bad primary identity for player personality/private memory.
+
+Current slice keeps `proposeAction()` deterministic. That is not the final agentic loop; it is the seam where the next live Think turn will go.
+
+### Validation
+
+Commands run:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/worker check
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+pi_notes_brain_check
+```
+
+Results:
+
+- Worker typecheck passed.
+- Full Turborepo check passed.
+- Full Turborepo test passed.
+- Wrangler dry-run build passed.
+- Brain check passed.
+
+## 2026-05-24 — Structured PlayerAgent action turn
+
+### Decision
+
+Use structured output for the first live LLM PlayerAgent turn.
+
+Joel's reasoning: this is a bounded “what do you do?” prompt. The agent loop is not open-ended at that point, so the output should be a typed action proposal rather than a tool side effect.
+
+### What changed
+
+Updated `apps/worker/src/index.ts`:
+
+- Added `ActionProposalSchema` with `zod`.
+- Added `PlayerAgent.proposeActionWithStructuredTurn(projection)`.
+- Added `beforeTurn()` to enable `Output.object({ schema: ActionProposalSchema })` only for that bounded turn.
+- Added `activeTools: []` for the structured-output turn, matching Cloudflare Think docs guidance for providers that strip tools in JSON mode.
+- Added `/api/live-player-intent-round`.
+- Kept deterministic fallback when the live turn fails or produces no captured structured output.
+
+### Validation
+
+Commands run:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/worker check
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+pi_notes_brain_check
+```
+
+Results:
+
+- Worker typecheck passed.
+- Full Turborepo check passed.
+- Full Turborepo test passed.
+- Wrangler dry-run build passed.
+- Brain check passed.
+
+### Live validation
+
+Started local Wrangler through portless:
+
+```bash
+portless start agent-dungeon -- pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler dev src/index.ts --port 8788
+```
+
+Local URL:
+
+- `https://agent-dungeon.localhost:1355`
+
+First live attempt failed because `workers-ai-provider@0.7.5` implemented AI SDK v1 provider semantics while installed `ai@6` expects v2. Upgraded to `workers-ai-provider@^3.1.14`.
+
+Second live attempt failed because `@cf/meta/llama-3.1-8b-instruct-fp8` does not support JSON Schema mode.
+
+Source check:
+
+- Cloudflare JSON Mode docs say JSON mode does not support streaming.
+- Supported model list includes `@cf/meta/llama-3.3-70b-instruct-fp8-fast`.
+- URL: `https://developers.cloudflare.com/workers-ai/features/json-mode/`
+
+Changed Worker model to `@cf/meta/llama-3.3-70b-instruct-fp8-fast` and used `generateObject()` for the bounded “what do you do?” turn. This keeps structured output, but avoids Think's streaming path for this specific bounded prompt.
+
+Validated endpoint:
+
+```bash
+curl -k https://agent-dungeon.localhost:1355/api/create-game
+curl -k https://agent-dungeon.localhost:1355/api/seed-player-secret
+curl -k https://agent-dungeon.localhost:1355/api/live-player-intent-round
+```
+
+Observed live result:
+
+- status: `round_committed`
+- Brindle proposed: `move to room-shrine`
+- Osric proposed: `go through the door`
+- public events did not mention the private secret
+- Referee audit stored Osric's `refereeIntent`
+
+Follow-up validation:
+
+```bash
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+```
+
+All passed.
+
+## 2026-05-24 — Kimi model, zone verification, smarter Referee crossing resolution
+
+### Domain / deployment receipt
+
+Verified `agentdungeon.ai` in Joel's Cloudflare account. Receipt:
+
+- [[resources/cloudflare-account-agentdungeon-zone]]
+
+### Model change
+
+Joel prefers:
+
+```txt
+@cf/moonshotai/kimi-k2.6
+```
+
+Updated Worker model references from `@cf/meta/llama-3.3-70b-instruct-fp8-fast` to `@cf/moonshotai/kimi-k2.6`.
+
+Runtime validation showed Kimi handled JSON Schema mode through `generateObject()`.
+
+### Referee resolution correction
+
+Joel pushed back on hardcoded keyword lists like:
+
+```ts
+const target = ["room-shrine", "shrine", "door", "threshold", "entrance", "beyond", "passage"]
+```
+
+Correct critique: parsing prose with deterministic keyword soup wrecks agentic flow and bakes brittle room-specific language into the engine.
+
+Changed the action contract to carry gameplay semantics explicitly:
+
+```ts
+{
+  tableSpeech?: string,
+  declaredAction: string,
+  actionKind: "inspect" | "move" | "wait" | "other",
+  targetRoomId?: RoomId,
+  refereeIntent?: string
+}
+```
+
+Referee resolution now uses structured intent (`actionKind`, `targetRoomId`) instead of string term matching. The prose remains flavor/table intent; the typed fields carry game mechanics.
+
+### Validation
+
+Commands run:
+
+```bash
+pnpm check
+pnpm test
+```
+
+Results:
+
+- Typecheck passed.
+- Domain tests passed: 5 tests.
+- New tests cover threshold crossing and terse model-style actions with `targetRoomId`.
+
+### Live runtime receipt
+
+Local Wrangler/Workers AI run with Kimi produced:
+
+```txt
+PUBLIC EVENTS
+- Brindle: long in-character cautious movement narration
+- Brindle tries to spiritual_discernment.
+- Osric: “Osric steps beneath the mossy lintel and into the damp dark beyond the leaning door.”
+- Osric tries to action:move.
+- Osric rolls 1 on 1d6 for Crossing the moss-crowned threshold without checking.
+- The copper tripwire snaps tight across the threshold...
+
+SECRET LEAK CHECK
+public mentions private secret? False
+```
+
+## 2026-05-24 — Simple monitor and semantic action contract
+
+### User correction
+
+Joel flagged deterministic room-term matching as too limiting:
+
+> inlining specific terms seems super limiting... this sort of deterministic shit wrecks agentic flow
+
+Correct. The engine should not parse rich player prose with hardcoded room words. The player/referee agent should produce typed semantics; the deterministic Referee should resolve those semantics against state.
+
+### Contract change
+
+Updated action proposals to include:
+
+```ts
+actionKind: "inspect_area" | "move_to_location" | "hold_position" | "interact" | "other"
+targetRoomId?: RoomId
+```
+
+Referee threshold resolution now checks `actionKind` and `targetRoomId`, not prose keywords.
+
+### Model
+
+Set Worker model to Joel's preferred Workers AI model:
+
+```txt
+@cf/moonshotai/kimi-k2.6
+```
+
+### Monitor
+
+Built a deliberately simple stock-HTML monitor at:
+
+```txt
+/monitor
+```
+
+Local portless URL:
+
+```txt
+https://agent-dungeon.localhost:1355/monitor
+```
+
+It shows:
+
+- table/public events
+- private Referee audit events
+- raw campaign JSON
+- buttons for reset, seed secret, deterministic round, live Kimi round
+
+No SvelteKit yet. This is intentionally plain because the useful question is the event/projection loop, not visual chrome.
+
+### WebSocket note
+
+No WebSocket yet. For this stage, button-triggered HTTP is enough and easier to reason about. When continuous play starts, use one of:
+
+1. SSE/firehose from Referee for public monitor events — simplest for one-way audience updates.
+2. Agents SDK WebSocket / `useAgent` if the monitor needs callable methods or bidirectional control.
+3. SvelteKit later as a UI shell, but not required for the Worker-hosted monitor.
+
+### Validation
+
+Commands run:
+
+```bash
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+curl -k https://agent-dungeon.localhost:1355/monitor
+curl -k https://agent-dungeon.localhost:1355/api/live-player-intent-round
+```
+
+Results:
+
+- Typecheck passed.
+- Tests passed: 5 domain tests.
+- Wrangler dry-run passed.
+- `/monitor` served HTML.
+- live Kimi round triggered threshold hazard from semantic movement action.
+
+### Next learning question
+
+Should we deploy to `agentdungeon.ai` next, or add a one-way SSE monitor firehose first?

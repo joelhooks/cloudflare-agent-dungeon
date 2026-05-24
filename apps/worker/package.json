@@ -1,0 +1,27 @@
+{
+  "name": "@cloudflare-agent-dungeon/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "dev": "wrangler dev src/index.ts",
+    "deploy": "wrangler deploy src/index.ts",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@cloudflare-agent-dungeon/domain": "workspace:*",
+    "@cloudflare/think": "^0.7.2",
+    "agents": "^0.13.2",
+    "ai": "^6.0.0-beta.118",
+    "workers-ai-provider": "^3.1.14",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260524.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14",
+    "wrangler": "^4.93.0"
+  }
+}

@@ -1,0 +1,169 @@
+---
+title: Think D&D Prototype
+kind: project
+status: shaping
+created: 2026-05-24
+tags:
+  - cloudflare
+  - think
+  - dnd
+  - old-school-essentials
+  - atproto
+  - xstate
+  - effect
+  - cascadiajs
+shaping: true
+---
+
+# Think D&D Prototype
+
+## Source
+
+Joel wants a new monorepo: `joelhooks/cloudflare-agent-dungeon`.
+
+The shape: sandboxed/distributed agents play D&D. An OSE-style Referee agent shapes the game and has access to source material. Player agents have fog-of-war and only know what the Referee explicitly reveals. The campaign is ongoing, with persistent world arcs/modules. The first prototype should run on Cloudflare using Think, Wrangler, and real Cloudflare secrets. The audience should be able to pull up a live running game.
+
+## Problem
+
+The prior `atproto-agent-network` repo contains useful architecture and some RPG engine code, but this demo wants its own product/repo boundary. Keeping it separate prevents the atproto network research project from becoming overloaded with game/demo concerns.
+
+The hard parts are not “LLM says fantasy words.” The hard parts are:
+
+- durable agent identity and sessions
+- agentic loop/harness without inventing everything from scratch
+- fog-of-war and visibility boundaries
+- source-grounded rules lookup
+- event-sourced gameplay/provenance
+- real-time monitor surface
+- Cloudflare deployability
+- demo reliability
+
+## Outcome
+
+A runnable Cloudflare-hosted prototype:
+
+- one OSE-style Referee agent
+- two player agents
+- three rooms
+- Referee-generated micro-module
+- player-visible state strictly scoped by revealed information
+- live monitor page with streaming gameplay
+- source/rules lookup against JoelClaw docs/PDF Brain initially
+- architecture that can later adopt AT Protocol-shaped records/firehose/trust more deeply
+
+## Expanded campaign ambition
+
+Joel wants the prototype to grow toward an autonomous ongoing OSE campaign, not just a room demo:
+
+- starts at session 0 in a tavern
+- players must find adventure and glory instead of being railroaded
+- persistent campaign world/map
+- major urban hubs, rural towns, wilderness, and adventure sites
+- opposing factions with agendas and clocks
+- world events that progress autonomously
+- gods, legends, legendary monsters, and deep consistent lore
+- notable/exceptional but inexperienced player characters
+- player-created characters during session 0, not pregens
+- OSE character creation starts with `3d6 down the line`, then each player may make one ability score swap
+- Session 0 uses core classic OSE classes first: fighter, cleric, magic-user, thief, dwarf, elf, halfling
+- player choices affect the world
+- OSE-faithful skill, XP, level, inventory, magic item, supply, food, and death pressure
+- a legitimate random dice service / ledger, not model vibes
+
+## Requirements (R)
+
+| ID | Requirement | Status |
+|----|-------------|--------|
+| R0 | Audience can open a live running game during the CascadiaJS demo | Core goal |
+| R1 | Prototype runs on Cloudflare using Wrangler and real Cloudflare resources/secrets | Must-have |
+| R2 | Referee and player agents use an agentic loop with prompts, skills, goals, tools, streaming, and persisted context | Must-have |
+| R3 | Referee owns global truth and players only receive explicitly revealed information | Must-have |
+| R4 | First playable loop is exactly scoped: 1 Referee, 2 players, 3 rooms | Must-have |
+| R5 | Referee can consult Old School Essentials/source material through JoelClaw docs/PDF Brain first | Must-have |
+| R6 | Gameplay emits typed events suitable for monitor UI, replay, audit, and later AT Protocol-shaped records | Must-have |
+| R7 | Codebase is real monorepo software: Turborepo, strict TS, Effect where lifecycle/workflow complexity matters, and repo-local Effect source mirror | Must-have |
+| R8 | Public demo does not leak private/copyrighted rules corpus text | Must-have |
+
+## Domain language
+
+Use OSE idioms for canonical code/domain language. **Referee** is the canonical supervising role. DM/GameMaster/GM are historical aliases only when referencing prior source or external wording.
+
+Runtime/domain split:
+
+- `Referee extends Agent` is the top-level runtime actor / Durable Object supervisor.
+- A `Referee` instance is named by campaign ID.
+- `Campaign` is the durable domain state aggregate inside Referee: rooms, hidden info, event log, dice ledger, party workspace, player projections, and monitor/public projection.
+- Referee is the actor; Campaign is the state being run.
+- `RefereeAgent[referee]` is a long-lived Think child per campaign, not a fresh per-run mind.
+- `PlayerAgent[player-id]` is a long-lived Think child per campaign. It represents a player mind/personality, not the fictional character itself.
+- `Character` is the in-world role a PlayerAgent is acting as. Player and Character are separate domain concepts.
+- Keep player personality/private memory distinct from character knowledge from a gameplay perspective. Player style can shape choices; character knowledge must come only from Referee-revealed projections.
+- The first prototype should model `Player` and `Character` as explicit separate records, even while each player controls exactly one character.
+- `Player` owns agent/personality/private memory identity.
+- `Character` owns in-world stats, inventory, position, and character knowledge.
+- PlayerAgent action proposals should distinguish table-facing in-character speech from Referee-facing player intent. Rough rule: in-character to other players/the table; player intent to the Referee.
+- Public monitor should show both lanes when safe and clearly labeled: table speech/action in fiction, plus concise player intent for Referee resolution. Secret/private intent stays out of the public monitor.
+- PlayerAgent proposals may include explicit private intent. Other players and public monitor cannot see it.
+- Players must be able to keep secrets broadly and not leak them by default.
+- Deterministic `Referee` parent is the access-control boundary for private intent. It reads private intent first and passes only necessary adjudication context to `RefereeAgent`.
+- `RefereeAgent` should not automatically receive every private player thought.
+- Split player-private data into two lanes:
+  - `refereeIntent`: private from other players/public, visible to the deterministic Referee for adjudication.
+  - `playerSecretNote`: private player memory, not sent to Referee, RefereeAgent, other players, or public surfaces unless the same PlayerAgent explicitly chooses to reveal/use it.
+- Application-level rule: only the same `PlayerAgent` can read its `playerSecretNote` lane. Operator/debug tooling may have infrastructure power, but the game API exposes no read path.
+- `playerSecretNote` must not ride along with action proposals. It is a separate private self-memory write/read capability inside the same PlayerAgent.
+- Initial action proposal lanes: `tableSpeech`, `declaredAction`, optional `refereeIntent`.
+- Player private memory tool shape: `rememberSecret(note)` / player-local retrieval only. This lane is fully private, non-leaked, and critical to gameplay.
+- A PlayerAgent may later act from a secret through `refereeIntent` without revealing the original secret note. Once the actual secret is revealed to Referee/table/public, it is no longer secret.
+- `refereeIntent` is stored only in a private Referee audit lane, not in public events or player projections.
+- Event visibility lanes: public/table-safe events, private Referee audit events, and PlayerAgent-private memory.
+- Other PlayerAgents do not receive another player's raw action proposal before Referee resolution. They receive only Referee-committed table events.
+- Slice-one turn shape: players express intent from their current projections, then Referee determines outcomes and commits table reality.
+- PlayerAgent action contract is strict typed/schema-shaped output, not prose for Referee to parse. Initial shape: `submitAction({ tableSpeech?: string, declaredAction: string, refereeIntent?: string })`.
+- Source/reference to inspect for this boundary: JoelClaw docs `Game Angry PDF` (`docId: game-angry-pdf-47a26de25095`).
+
+## Selected early shape: Think-first supervised actors
+
+| Part | Mechanism | Flag |
+|------|-----------|:----:|
+| S1 | Cloudflare Think agents provide the first agentic loop for Referee/player sessions: prompts, tools, streaming, persisted messages/context | ⚠️ |
+| S2 | Referee parent agent owns canonical campaign/world state, hidden information, dice ledger, event log, shared party workspace, and player projections | ⚠️ |
+| S3 | Lifecycle supervisor models Referee/player/game states with XState-style statecharts and/or Effect services | ⚠️ |
+| S4 | Game state is event-sourced: Referee/global events, player-visible projection events, monitor/public events | ⚠️ |
+| S5 | Fog-of-war is enforced by projection/tool boundaries, sandboxed/firewalled player agents, a shared revealed party workspace, and private per-player sandboxes, not prompt instructions | ⚠️ |
+| S6 | Dice system is first-class: deterministic dice service / ledger under Referee control, not hidden model vibes | ⚠️ |
+| S7 | JoelClaw docs API is the first rules/source lookup backend; later Cloudflare Vectorize + FTS migration remains open | |
+| S8 | Monitor site subscribes to a real-time event stream and renders campaign/player/gameplay state | ⚠️ |
+| S9 | AT Protocol-shaped records/lexicons guide IDs, event schemas, provenance, firehose semantics, and future federation | ⚠️ |
+
+## Operating loop
+
+This is a learning-driven prototype, not a bulldoze implementation run.
+
+Loop:
+
+1. **Research** a bounded Think/Cloudflare question from source.
+2. **Report** the finding in plain language with source pointers and tradeoffs.
+3. **Implement** the smallest useful slice only after the mechanism is understood.
+4. **Capture** the learning back into Brain.
+
+Joel is driving and learning. Agents should not silently race end-to-end through the build.
+
+## First spike questions
+
+| # | Question |
+|---|----------|
+| X1-Q1 | How much of the required Referee/player agentic loop does Cloudflare Think provide today? Answered in [[resources/cloudflare-think-agentic-loop-research]]. |
+| X1-Q2 | How exactly should Think sub-agent communication work for this game loop: `chat()`, Agent Tools, direct RPC, or top-level DOs? |
+| X1-Q3 | What is the smallest Think app that can run 1 Referee + 2 players on Cloudflare and stream events? |
+| X1-Q4 | How should tools enforce fog-of-war: per-agent tools, per-turn envelopes, projections, or separate DOs? |
+| X1-Q5 | How should JoelClaw docs API be called from Cloudflare without leaking source corpus text publicly? |
+| X1-Q6 | Should the monitor be SvelteKit from the start, or a simpler Worker-served UI for the first run? |
+| X1-Q7 | What is the smallest OSE-faithful session 0 character creation loop where PlayerAgents build their own characters before entering the tavern? |
+
+## Related source pointers
+
+- Prior architecture repo: `/Users/joel/Code/joelhooks/atproto-agent-network`
+- Cascadia Brain note: `/Users/joel/Code/joelhooks/cascadia-2026/.brain/resources/cloudflare-project-think-pi-interop.svx`
+- JoelClaw docs discovery: `https://joelclaw.com/api/docs`
+- OSE search example: `https://joelclaw.com/api/docs/search?q=Old%20School%20Essentials&perPage=5&semantic=false`

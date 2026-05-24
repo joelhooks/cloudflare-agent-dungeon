@@ -1,0 +1,279 @@
+---
+title: Idiomatic Think Prototype Shape
+kind: resource
+status: active
+created: 2026-05-24
+tags:
+  - cloudflare
+  - think
+  - agents-sdk
+  - agent-tools
+  - sub-agents
+  - sessions
+  - game-master
+  - fog-of-war
+---
+
+# Idiomatic Think Prototype Shape
+
+## Research scope
+
+Follow-up source pass to shape Cloudflare Agent Dungeon so it uses the Cloudflare Agents SDK / Think idiom instead of fighting the framework.
+
+Files read:
+
+- `.agent-sources/cloudflare-agents/docs/sub-agents.md`
+- `.agent-sources/cloudflare-agents/docs/agent-tools.md`
+- `.agent-sources/cloudflare-agents/docs/sessions.md`
+- `.agent-sources/cloudflare-agents/examples/assistant/src/server.ts`
+- Prior note: [[resources/cloudflare-think-agentic-loop-research]]
+
+## Answer: what is idiomatic here?
+
+The idiomatic Agents SDK / Think shape is:
+
+```txt
+Top-level parent Agent owns the application domain lifecycle.
+Think sub-agents own durable chat/mind/session/tool loops.
+Agent Tools are for retained child-agent runs with replay/drill-in.
+Raw chat() is for custom low-level streaming RPC.
+Session context blocks/R2 skills/search providers are the memory/skill substrate.
+```
+
+For Cloudflare Agent Dungeon, that translates to:
+
+```txt
+Referee extends Agent
+  owns canonical campaign/world state, event log, dice ledger, player projections, monitor firehose
+
+  ├─ RefereeAgent extends Think
+  │    owns referee mind, referee skills, rules lookup tools, private referee memory
+  │
+  ├─ PlayerAgent[player-a] extends Think
+  │    owns player A mind, player A private memory, player-safe tools only
+  │
+  └─ PlayerAgent[player-b] extends Think
+       owns player B mind, player B private memory, player-safe tools only
+```
+
+Use **Referee** as the canonical OSE-aligned term. JoelClaw/OSE search shows OSE text using “referee” heavily. `GameMaster`/`GM` can remain a familiar explanatory alias in prose, but code/domain concepts should prefer `Referee` unless a later source pass contradicts this.
+
+## Sub-agents: are they “just other DOs”?
+
+Source answer: sub-agents are child Durable Objects / facets colocated under a parent agent.
+
+Important facts from `docs/sub-agents.md`:
+
+- Each sub-agent has isolated SQLite storage and its own in-memory state.
+- Each sub-agent has its own WebSocket connections.
+- Siblings do not see each other's broadcasts.
+- Siblings do not share memory by default.
+- Parent spawns/lists/deletes children through `subAgent()`, `listSubAgents()`, `deleteSubAgent()`.
+- Parent can gate external `/sub/...` access with `onBeforeSubAgent()`.
+- Parent and child communicate through typed RPC stubs: `this.subAgent(Child, name)` and `this.parentAgent(Parent)`.
+- Facets are colocated with the parent for low-latency RPC; they are not independent globally placed DOs.
+- Facets can schedule logical callbacks and run fibers; the top-level parent owns the physical DO alarm and dispatches back into the child.
+
+This is good for our first game because Referee can keep referee/player minds physically near the canonical world state while still isolating each mind's SQLite/session.
+
+It is **not** the final distributed federation story by itself. Later, if we want player agents on different networks/operators, we will need top-level DOs or atproto/federation boundaries.
+
+## Agent Tools vs raw `chat()`
+
+### Agent Tools
+
+Use Agent Tools when:
+
+- a parent model or deterministic workflow delegates work to a child agent;
+- you want retained child runs;
+- clients should render child timelines;
+- you want replay after refresh;
+- you want abort bridging;
+- you want drill-in URLs;
+- you want cleanup/retention policy.
+
+Source: `docs/agent-tools.md` says Agent Tools are built on sub-agents and add a parent-side run registry, streaming `agent-tool-event` frames, replay, cancellation, cleanup, and UI drill-in.
+
+Two APIs matter:
+
+- `agentTool(ChildAgent, ...)` — exposes a child agent as an AI SDK tool that the parent model can choose to call.
+- `runAgentTool(ChildAgent, ...)` — deterministic/imperative dispatch for workflows, scheduled work, HTTP handlers, and fan-out code.
+
+### Raw `subAgent(...).chat()`
+
+Use raw `chat()` when:
+
+- our code owns forwarding, cancellation, and replay policy;
+- we want low-level streaming RPC;
+- we do not need the Agent Tools retained run registry/UI machinery.
+
+### Recommendation for first prototype
+
+Use **`runAgentTool()` for player/referee-agent turns** if it is straightforward with a non-Think parent `Referee`.
+
+Reason: our Referee is a deterministic workflow, not a parent LLM chat. We want retained turn runs, replay, cancellation, and drill-in while keeping Referee as the authoritative state machine.
+
+Fallback: use raw child `chat()` if Agent Tools add too much ceremony for the first slice.
+
+Do **not** use `agentTool()` as the primary mechanism yet, because that makes a parent model decide delegation. Our Referee should decide whose turn it is. The referee model may eventually get tools to consult player agents or NPC agents, but first the game loop should be explicit.
+
+## Session and Skills shape
+
+Think Sessions give us a good native skill/memory model.
+
+Relevant source facts from `docs/sessions.md`:
+
+- Context blocks are injected into the system prompt.
+- `withContext(label, options)` adds context blocks.
+- Provider types are detected by duck typing:
+  - `ContextProvider`: read-only `get()` block.
+  - `WritableContextProvider`: `get()` + `set()`, gives `set_context`.
+  - `SkillProvider`: `get()` + `load()` + optional `set()`, gives `load_context`, `unload_context`, `set_context`.
+  - `SearchProvider`: `get()` + `search()` + optional `set()`, gives `search_context`, `set_context`.
+- Built-in `R2SkillProvider` stores on-demand documents in R2.
+- Built-in `AgentSearchProvider` provides SQLite FTS5 searchable context.
+- Loaded skill state survives restart by scanning conversation history for `load_context` tool results.
+
+### Recommended skill/memory mapping
+
+For `RefereeAgent`:
+
+- `soul`: read-only referee identity + operating rules.
+- `referee_memory`: writable private referee memory for campaign style, NPC motives, unresolved threads.
+- `rules`: searchable context or custom `consultRules` tool backed by JoelClaw docs API initially.
+- `referee_skills`: skill provider containing referee operating docs: module design, OSE adjudication, safety/fog rules, campaign pacing.
+
+For `PlayerAgent`:
+
+- `soul`: read-only player identity + roleplay/decision rules.
+- `player_memory`: writable private player memory.
+- `known_world`: read-only or writable projected facts that Referee allowed this player to know.
+- `player_skills`: skill provider containing player behavior rules.
+
+Do not give `PlayerAgent` a searchable/global campaign context. If player needs to remember revealed facts, Referee writes those facts into that player's projection/memory, not the other way around.
+
+## Referee responsibilities
+
+Referee should be a plain `Agent` unless we find a reason for it to be `Think` too.
+
+Why plain Agent first:
+
+- It should be deterministic and stateful.
+- It should own canonical state, not hallucinate it.
+- It should coordinate child Think agents, not be a chat mind itself.
+- It should expose monitor/fetch/WS/callable endpoints.
+- It should own DB tables and event schemas.
+
+Referee owns:
+
+- `campaign_state`: canonical hidden world state.
+- `events`: append-only typed event log.
+- `dice_rolls`: deterministic dice ledger.
+- `player_projections`: per-player visible state snapshots.
+- `party_workspace`: shared party workspace visible to players and referee.
+- `turn_runs`: mapping of game turns to Agent Tool runs or Think submissions.
+- `onBeforeSubAgent`: strict gate for referee/player child access.
+- monitor broadcasts / public firehose.
+
+## Fog-of-war as capability firewall
+
+The prototype should prove the security pattern, not just game fun.
+
+Rules:
+
+1. Player child storage is isolated by default.
+2. Players **do** share a party workspace that the referee can also access: shared map notes, marching order, visible inventory, party theories, handouts, and other revealed table artifacts.
+3. Each player also has a private sandboxed workspace/memory that other players and even the referee cannot inspect through the application API. This is for private thoughts, plans, and player-local memory. Technically the platform/operator may have infrastructure power, but the game model exposes no read path.
+4. Player tools cannot read canonical hidden state.
+5. Player prompts receive only projection text/JSON produced by Referee.
+6. Player action output is a proposal, not a mutation.
+7. Referee validates proposal schema and current visibility before applying anything.
+8. RefereeAgent can access hidden state, but its output still commits through Referee.
+9. Monitor gets sanitized public events, not raw hidden state or private rules corpus.
+
+This is the agent-systems lesson: agents need data/capability firewalls. Prompt discipline is not access control.
+
+## Dice system
+
+Dice should be deterministic application state, not model narration.
+
+First shape:
+
+- `rollDice(request)` is Referee-owned.
+- Every roll has: `rollId`, `turnId`, `actorId`, `formula`, `result`, `reason`, `visibility`, `createdAt`.
+- RefereeAgent can request rolls; players can propose actions that require rolls; Referee resolves.
+- Public monitor can show public rolls; hidden rolls stay hidden or are revealed later as events.
+
+This maps well to old-school play and gives the demo a concrete event-sourcing receipt.
+
+## Idiomatic first slice
+
+### Slice 1: Game loop skeleton, no fancy UI
+
+Build:
+
+- `Referee extends Agent`
+- `RefereeAgent extends Think`
+- `PlayerAgent extends Think`
+- `Referee.createGame()` seeds three hidden rooms and two players.
+- `Referee.runTurn()` performs one full loop:
+  1. ask RefereeAgent to describe/reveal current room;
+  2. project visible scene to each player;
+  3. dispatch each player for one proposed action;
+  4. resolve dice if needed;
+  5. ask RefereeAgent to adjudicate;
+  6. append typed events;
+  7. broadcast public monitor events.
+
+Use Agent Tools if possible; raw `chat()` if faster.
+
+### Slice 2: Monitor page
+
+Build a simple page that connects to Referee's event stream and shows:
+
+- current public room/scene
+- two player panels
+- live event log
+- dice rolls
+- child agent run status / links if Agent Tools are used
+
+Use SvelteKit later if we want, but first page can be whatever gets us a running public URL fastest.
+
+### Slice 3: JoelClaw rules lookup
+
+Add `consultRules` to RefereeAgent only:
+
+- calls `https://joelclaw.com/api/docs/search`
+- accepts a bounded query
+- returns small snippets/summaries plus doc IDs/chunk IDs
+- does not expose raw full books to public events
+
+### Slice 4: Referee/player Skills
+
+Use Session context blocks first:
+
+- static `soul` blocks for referee/player role identity;
+- `referee_memory` / `player_memory` writable blocks;
+- later R2 SkillProvider for full referee/player skill docs if useful.
+
+## Updated recommendation
+
+Prototype should be **Referee-first, Think-children, Agent-Tools-if-they-fit**.
+
+Not:
+
+- one giant Think chat that pretends to be a game;
+- one undifferentiated shared workspace that leaks hidden/canonical state;
+- pure custom Effect/XState agent loop;
+- full atproto federation before the local game works.
+
+Best short line:
+
+> Use Think for minds, Agents SDK for bodies, Referee for truth, shared party workspace for revealed table artifacts, private player sandboxes for secrets, and event projections for what each mind is allowed to know.
+
+## Open questions for next pass
+
+1. Can `runAgentTool()` be called cleanly from a plain `Agent` parent, or does the parent need to be chat-capable/Think for the event stream UI to work nicely?
+2. What exact child input/output contract should `PlayerAgent` use: structured output from `beforeTurn`, a required `submitAction` tool, or `getAgentToolOutput()` persisted JSON?
+3. Should RefereeAgent adjudication be one Think turn per player action, or one turn for the whole party round?
+4. How do we expose monitor streaming: parent `broadcast()`, custom WebSocket route, SSE endpoint, or Agent Tool event hooks?

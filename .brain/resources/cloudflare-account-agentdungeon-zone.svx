@@ -1,0 +1,59 @@
+---
+title: Cloudflare Account agentdungeon.ai Zone Receipt
+kind: resource
+status: active
+created: 2026-05-24
+tags:
+  - cloudflare
+  - dns
+  - deployment
+  - receipt
+---
+
+# Cloudflare Account agentdungeon.ai Zone Receipt
+
+## Verification
+
+Verified with Wrangler OAuth account and Cloudflare API on 2026-05-24.
+
+Wrangler account:
+
+```txt
+Account Name: Joels Account
+Account ID: baac0d692a7fb14f11b159b48b13055e
+Email: joelhooks@gmail.com
+```
+
+Cloudflare zone lookup:
+
+```txt
+GET https://api.cloudflare.com/client/v4/zones?name=agentdungeon.ai
+```
+
+Result:
+
+```json
+{
+  "success": true,
+  "count": 1,
+  "zones": [
+    {
+      "id": "e3c9cc6459203caccc5cceeefeb248d5",
+      "name": "agentdungeon.ai",
+      "status": "active",
+      "account": "Joels Account",
+      "type": "full",
+      "name_servers": [
+        "edward.ns.cloudflare.com",
+        "journey.ns.cloudflare.com"
+      ]
+    }
+  ]
+}
+```
+
+## Notes
+
+- `agentdungeon.ai` is active in Joel's Cloudflare account.
+- Use this zone for the public prototype/demo route when deploying Cloudflare Agent Dungeon.
+- Do not print OAuth/API tokens; the lookup used the local Wrangler OAuth token as a read receipt.

@@ -1,0 +1,117 @@
+---
+title: Agent Dungeon Operating Context
+kind: area
+status: active
+created: 2026-05-24
+tags:
+  - operating-context
+  - brain
+  - skills
+  - cloudflare
+  - think
+  - ose
+---
+
+# Agent Dungeon Operating Context
+
+## Purpose
+
+Durable operating context for future agents working in Cloudflare Agent Dungeon.
+
+This repo is a CascadiaJS demo plus long-running toy/game. It should remain real software, not throwaway stage goo.
+
+## Operating loop
+
+Joel is driving and learning. Agents should not bulldoze end-to-end.
+
+Default loop:
+
+1. Research one bounded mechanism from source.
+2. Report findings and tradeoffs in plain language.
+3. Implement the smallest useful slice.
+4. Capture learning in `.brain/`.
+
+## Canonical project memory
+
+`.brain/` is canonical. Chat is not the memory system.
+
+Use PARA:
+
+- `projects/` — active outcomes, shaping docs, build logs, implementation plans.
+- `areas/` — durable systems, vocabulary, operating rules, project doctrine.
+- `resources/` — source-grounded research, API notes, handoff prompts, examples.
+- `decisions/` — rare ADR-grade hard-to-reverse tradeoffs.
+- `data/` — raw receipts / machine-readable artifacts.
+
+Use `/skill:second-brain-execution` and `/skill:para-operator` when classifying or organizing durable context.
+
+## Source mirror policy
+
+Clone external source repos into project-local `.agent-sources/` as shallow mirrors/subtrees, then read local docs/source before claiming API behavior.
+
+`.agent-sources/` must stay out of product commits via `.git/info/exclude`.
+
+Existing important mirror:
+
+- `.agent-sources/cloudflare-agents` — Cloudflare Agents SDK / Think source.
+
+Effect work requires official Effect source at:
+
+- `.agent-sources/effect`
+
+Hydrate/search it before writing or reviewing Effect code.
+
+## OSE / rules corpus policy
+
+Old School Essentials and other RPG books are currently accessed through JoelClaw docs/PDF Brain.
+
+Start with:
+
+```bash
+curl -sS https://joelclaw.com/api/docs
+curl -sS "https://joelclaw.com/api/docs/search?q=Old%20School%20Essentials&perPage=5&semantic=false"
+curl -sS "https://joelclaw.com/api/docs/search?q=Old-School%20Essentials%20referee&perPage=5&semantic=false"
+```
+
+Rules:
+
+- `RefereeAgent` may use `consultRules`.
+- `PlayerAgent` should not get global rules/source access unless deliberately exposed.
+- Public monitor output must not leak raw private/copyrighted corpus text.
+- Internal events may keep doc/chunk IDs as receipts.
+
+## Project skills to create
+
+Create project-local skills under `.pi/skills/`:
+
+1. `ose-rules-access`
+   - Query JoelClaw docs/PDF Brain.
+   - Safe citation and non-leakage rules.
+   - Referee-only access policy.
+
+2. `source-mirror`
+   - Clone/update source repos into `.agent-sources/`.
+   - Exclude from commits.
+   - Read docs/source before implementation claims.
+
+3. `brain-maintenance`
+   - Use `.brain/` as durable project graph.
+   - Use `/skill:second-brain-execution` and `/skill:para-operator`.
+   - Keep notes linked and source-grounded.
+
+4. `think-agent-patterns` later
+   - Capture idiomatic Think/Agents SDK patterns learned while building Referee/player agents.
+
+## Project system prompt to create
+
+Create `.pi/APPEND_SYSTEM.md` with:
+
+- project identity and scope;
+- Referee terminology;
+- Think-first / Agents SDK idioms;
+- fog-of-war as capability firewall;
+- shared party workspace vs private player sandbox;
+- research → report → implement → Brain capture loop;
+- `.agent-sources/` source mirror policy;
+- OSE access policy;
+- Brain-first memory policy.

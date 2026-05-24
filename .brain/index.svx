@@ -1,0 +1,26 @@
+---
+title: Cloudflare Agent Dungeon Brain
+kind: index
+status: active
+created: 2026-05-24
+---
+
+# Cloudflare Agent Dungeon Brain
+
+## Projects
+
+- [[projects/think-dnd-prototype]]
+- [[projects/prototype-build-log]]
+
+## Areas
+
+- [[areas/agent-dungeon-operating-context]]
+
+## Resources
+
+- [[resources/cloudflare-think-agentic-loop-research]]
+- [[resources/idiomatic-think-prototype-shape]]
+- [[resources/run-agent-tool-plain-agent-parent]]
+- [[resources/stable-player-agent-turn-submission]]
+- [[resources/cloudflare-account-agentdungeon-zone]]
+- [[resources/session-handoff-prompt]]

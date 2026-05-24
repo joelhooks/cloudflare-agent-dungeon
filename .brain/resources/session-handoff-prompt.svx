@@ -1,0 +1,214 @@
+---
+title: Session Handoff Prompt
+kind: resource
+status: active
+created: 2026-05-24
+tags:
+  - handoff
+  - prompt
+  - cloudflare-agent-dungeon
+  - prototype
+  - brain
+---
+
+# Session Handoff Prompt
+
+Use this prompt when launching a new agent in `/Users/joel/Code/joelhooks/cloudflare-agent-dungeon`.
+
+```md
+You are working in `/Users/joel/Code/joelhooks/cloudflare-agent-dungeon`.
+
+We are building **Cloudflare Agent Dungeon**: a CascadiaJS demo + long-running toy/game where Cloudflare-hosted sandboxed agents play an ongoing Old School Essentials campaign.
+
+This is real software, not stage goo.
+
+## Current Brain context
+
+Read these first:
+
+- `BRAIN.md`
+- `AGENTS.md`
+- `.brain/index.svx`
+- `.brain/projects/think-dnd-prototype.svx`
+- `.brain/projects/prototype-build-log.svx`
+- `.brain/resources/cloudflare-think-agentic-loop-research.svx`
+- `.brain/resources/idiomatic-think-prototype-shape.svx`
+- `.brain/resources/run-agent-tool-plain-agent-parent.svx`
+- `.brain/resources/stable-player-agent-turn-submission.svx`
+- `.brain/areas/agent-dungeon-operating-context.svx`
+
+Also reference the prior source/inspiration repo:
+
+- `/Users/joel/Code/joelhooks/atproto-agent-network`
+
+And the Cascadia talk repo for source receipts:
+
+- `/Users/joel/Code/joelhooks/cascadia-2026/.brain/resources/cloudflare-project-think-pi-interop.svx`
+- `/Users/joel/Code/joelhooks/cascadia-2026/.brain/resources/repos/atproto-agent-network.svx`
+
+## Canonical architecture shape
+
+Use the OSE term **Referee**, not DM/GameMaster, in code/domain docs.
+
+Prototype shape:
+
+```txt
+Referee extends Agent
+  owns canonical campaign/world state, hidden info, event log, dice ledger,
+  party workspace, player projections, monitor firehose
+
+  ├─ RefereeAgent extends Think
+  │    referee mind/session/tools/rules lookup/private referee memory
+  │
+  ├─ PlayerAgent[player-a] extends Think
+  │    player A mind/private memory/private workspace/player-safe tools
+  │
+  └─ PlayerAgent[player-b] extends Think
+       player B mind/private memory/private workspace/player-safe tools
+```
+
+Use this line as the north star:
+
+> Use Think for minds, Agents SDK for bodies, Referee for truth, shared party workspace for revealed table artifacts, private player sandboxes for secrets, and event projections for what each mind is allowed to know.
+
+## Prototype target
+
+First runnable slice:
+
+- 1 Referee
+- 1 RefereeAgent
+- 2 PlayerAgents
+- 3 hidden rooms
+- RefereeAgent designs/refines the micro-module
+- Players only receive explicitly revealed projections
+- Players propose typed actions
+- Referee owns dice ledger and resolves rolls
+- RefereeAgent adjudicates with OSE/source lookup
+- Referee commits typed events
+- A tiny monitor endpoint/page streams public gameplay
+
+Do **not** build a full VTT.
+Do **not** implement federation first.
+Do **not** hand-roll a whole agent loop if Think works.
+Do **not** leak private/copyrighted rules corpus text into public monitor output.
+
+## Workflow
+
+Joel is driving and learning. Do not bulldoze end-to-end.
+
+Use this loop:
+
+1. Research one bounded mechanism from source.
+2. Report plain-language findings and tradeoffs.
+3. Implement the smallest useful slice.
+4. Capture learning in Brain.
+
+## Source mirrors
+
+Clone source repos into project-local `.agent-sources/` as shallow mirrors/subtrees and keep them out of commits via `.git/info/exclude`.
+
+Expected pattern:
+
+```bash
+mkdir -p .agent-sources
+git clone --depth 1 --filter=blob:none https://github.com/cloudflare/agents.git .agent-sources/cloudflare-agents
+printf '\n.agent-sources/\n' >> .git/info/exclude
+```
+
+Read source before claiming API behavior. Use `.agent-sources/cloudflare-agents/docs/**` and package source.
+
+For Effect work, hydrate official Effect source into:
+
+```txt
+.agent-sources/effect
+```
+
+Use the pi-effect/effect-source workflow before writing Effect code.
+
+## OSE / rules corpus access
+
+Old School Essentials books are currently available through JoelClaw docs/PDF Brain.
+
+Start with public docs API:
+
+```bash
+curl -sS https://joelclaw.com/api/docs
+curl -sS "https://joelclaw.com/api/docs/search?q=Old%20School%20Essentials&perPage=5&semantic=false"
+curl -sS "https://joelclaw.com/api/docs/search?q=Old-School%20Essentials%20referee&perPage=5&semantic=false"
+```
+
+Other possible paths:
+
+- `joelclaw` CLI is installed locally.
+- SSH to panda if needed: `ssh joel@panda '...'`
+
+Rules:
+
+- RefereeAgent may use `consultRules`.
+- PlayerAgents must not access global rules/source unless deliberately exposed.
+- Public monitor should show safe citations/summaries, not raw full book chunks.
+- Capture doc IDs/chunk IDs in internal events when useful.
+
+## Repo setup recommendations
+
+Start by building `.pi/APPEND_SYSTEM.md` with project-specific instructions:
+
+- Cloudflare Agent Dungeon identity and scope.
+- Referee terminology.
+- Think-first / Agents SDK idioms.
+- Fog-of-war as capability firewall.
+- Shared party workspace vs private player sandbox.
+- Research → report → implement → Brain capture loop.
+- Source mirror policy for `.agent-sources/`.
+- OSE access policy.
+- Brain-first memory policy.
+
+Also create project skills under `.pi/skills/`:
+
+1. `ose-rules-access`
+2. `source-mirror`
+3. `brain-maintenance`
+4. Optional later: `think-agent-patterns`
+
+## Brain maintenance
+
+Use `.brain/` as canonical memory.
+
+When adding durable knowledge:
+
+- Project work → `.brain/projects/`
+- Durable systems/vocabulary → `.brain/areas/`
+- Source research → `.brain/resources/`
+- Hard-to-reverse tradeoffs → `.brain/decisions/`
+
+Use:
+
+- `/skill:second-brain-execution`
+- `/skill:para-operator`
+
+Do not let chat history be the only source of truth.
+
+## Implementation constraints
+
+Prefer:
+
+- pnpm + Turborepo
+- strict shared TypeScript config
+- Cloudflare Workers + Durable Objects + Wrangler
+- Think for agentic loop
+- Effect for domain/runtime workflows where state, services, errors, scheduling, or durable boundaries matter
+- XState/statecharts as the lifecycle model where helpful
+- typed events and schemas
+- tests for state/projection/dice behavior
+
+Validate against real Cloudflare once runtime behavior matters. Cloudflare secrets are in `agent-secrets`; never hardcode them.
+
+## Immediate next action
+
+1. Create `.pi/APPEND_SYSTEM.md`.
+2. Create the first project skills:
+   - `.pi/skills/ose-rules-access/SKILL.md`
+   - `.pi/skills/source-mirror/SKILL.md`
+   - `.pi/skills/brain-maintenance/SKILL.md`
+3. Continue the research/report/implement loop from the current Brain state.
+```

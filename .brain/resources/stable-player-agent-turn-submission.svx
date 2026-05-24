@@ -1,0 +1,99 @@
+---
+title: Stable PlayerAgent Turn Submission
+kind: resource
+status: active
+created: 2026-05-24
+tags:
+  - cloudflare
+  - think
+  - player-agent
+  - turn-loop
+  - fog-of-war
+---
+
+# Stable PlayerAgent Turn Submission
+
+## Question
+
+How should stable long-lived `PlayerAgent[player-id]` Think sessions submit typed actions without turning each action into a per-run child identity?
+
+## Source receipts
+
+Read:
+
+- `.agent-sources/cloudflare-agents/docs/think/sub-agents.md`
+- `.agent-sources/cloudflare-agents/docs/think/lifecycle-hooks.md`
+- `.agent-sources/cloudflare-agents/packages/think/src/think.ts`
+
+Relevant source facts:
+
+- `saveMessages()` injects messages and triggers a model turn on the existing Think agent. It waits for completion and supports cancellation.
+- `submitMessages()` durably accepts a turn and returns quickly with inspect/cancel/idempotency semantics.
+- `beforeTurn()` can set turn-wide structured output using AI SDK `Output.object({ schema })`.
+- Source warns that `output` is turn-level only, and providers such as `workers-ai-provider` may strip tools when JSON response format is active, so structured-output turns should use `activeTools: []`.
+
+## Current prototype answer
+
+For slice two, keep `PlayerAgent[player-id]` stable and call a method on the child agent:
+
+```ts
+const player = await this.subAgent(PlayerAgent, "player-a");
+const proposal = await player.proposeAction(projection);
+```
+
+Today `proposeAction()` is deterministic so the boundary can be tested without model variance. It accepts a Referee-produced `CharacterProjection` and returns the strict action contract:
+
+```ts
+submitAction({
+  tableSpeech?: string,
+  declaredAction: string,
+  refereeIntent?: string
+})
+```
+
+Player private memory remains internal to the same `PlayerAgent`; Referee receives only the returned proposal.
+
+## Why not per-run Agent Tools for player identity?
+
+`runAgentTool()` is still useful for retained child runs and drill-in, but the default API names the child facet by `runId`. That is a poor primary identity for a long-lived player personality/memory. For player identity, stable child facets are clearer:
+
+```txt
+PlayerAgent[player-a]
+PlayerAgent[player-b]
+```
+
+Later we can wrap or record each stable child turn as a retained run/audit record, but identity should not be per-turn.
+
+## Resolved next implementation step
+
+Use structured output first.
+
+Reasoning: this turn is literally the Referee asking “what do you do?” The agent loop is not open-ended at that point; the product of the turn is a single typed action proposal. A required `submitAction` tool would make the contract a side effect of the turn, which is more ceremony and easier to leak through tool plumbing.
+
+Implemented seam:
+
+```ts
+PlayerAgent.proposeActionWithStructuredTurn(projection)
+```
+
+Initial attempted shape used Think `saveMessages()` plus `beforeTurn()` / `Output.object({ schema })`. Runtime validation showed this does not work on Workers AI because Cloudflare JSON mode currently does not support streaming, while Think uses `streamText()`.
+
+Current working shape:
+
+- `PlayerAgent.proposeActionWithStructuredTurn(projection)` calls AI SDK `generateObject()` inside the stable PlayerAgent child.
+- Model: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, from Cloudflare's JSON Mode supported model list.
+- Schema: `ActionProposalSchema`.
+- Prompt includes only Referee-produced projection and a private summary of secret memory.
+- If the live model turn fails, fallback to deterministic `proposeAction()`.
+
+This preserves the bounded “what do you do?” structured-output contract, but it is not a persisted Think chat turn yet. That is the real tradeoff.
+
+Source receipt:
+
+- Cloudflare JSON Mode docs: `https://developers.cloudflare.com/workers-ai/features/json-mode/`
+- Docs state JSON Mode currently does not support streaming.
+
+Runtime receipt:
+
+- `@cf/meta/llama-3.1-8b-instruct-fp8` failed with `5025: This model doesn't support JSON Schema`.
+- `@cf/meta/llama-3.3-70b-instruct-fp8-fast` succeeded for `/api/live-player-intent-round`.

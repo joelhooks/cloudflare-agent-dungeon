@@ -1,0 +1,300 @@
+---
+title: Cloudflare Think Agentic Loop Research
+kind: resource
+status: active
+created: 2026-05-24
+tags:
+  - cloudflare
+  - think
+  - agents-sdk
+  - agentic-loop
+  - dnd-prototype
+  - source-research
+---
+
+# Cloudflare Think Agentic Loop Research
+
+## Source checkout
+
+Cloudflare Agents was cloned into the project as a shallow local source mirror:
+
+- Local path: `.agent-sources/cloudflare-agents`
+- Repo: `https://github.com/cloudflare/agents.git`
+- Observed commit: `6fa7fd7`
+- Keep out of commits: `.agent-sources/` is excluded in `.git/info/exclude`.
+
+Files read for this pass:
+
+- `.agent-sources/cloudflare-agents/docs/think/index.md`
+- `.agent-sources/cloudflare-agents/docs/think/getting-started.md`
+- `.agent-sources/cloudflare-agents/docs/think/tools.md`
+- `.agent-sources/cloudflare-agents/docs/think/sub-agents.md`
+- `.agent-sources/cloudflare-agents/docs/think/programmatic-submissions.md`
+- `.agent-sources/cloudflare-agents/docs/think/lifecycle-hooks.md`
+- `.agent-sources/cloudflare-agents/docs/think/client-tools.md`
+- `.agent-sources/cloudflare-agents/examples/assistant/README.md`
+- `.agent-sources/cloudflare-agents/packages/think/src/think.ts`
+
+## Bottom line
+
+Cloudflare Think is not just a chat wrapper. It is close to the agentic loop we need for the D&D prototype.
+
+Think provides:
+
+- Durable Object-backed agent identity and SQLite state.
+- A default agentic loop around AI SDK `streamText`.
+- Message persistence.
+- Streaming and stream resumption.
+- Tool execution and tool-call hooks.
+- Custom system prompts and per-turn prompt/tool/model overrides.
+- Session context blocks and model-writable memory.
+- FTS5 search via Session.
+- Sub-agent RPC via `chat()`.
+- Programmatic turns via `saveMessages()`.
+- Durable accepted work via `submitMessages()` / `inspectSubmission()` / `cancelSubmission()`.
+- Durable chat recovery with fibers.
+- Workspace file tools backed by DO SQLite, optionally R2.
+- Optional sandboxed code execution, browser tools, MCP, client tools, approvals, and dynamic extensions.
+
+Open question answered by `docs/sub-agents.md`: sub-agents are **child Durable Objects / facets colocated under a parent agent**. They have their own isolated SQLite storage, own WebSocket connections, independent in-memory state, schedules, fibers, and chat recovery, but share the parent's machine and are spawned/listed/deleted through the parent. They are not independently placed edge-wide DOs. They communicate with parent/siblings through typed RPC stubs and explicit routing, not shared memory by default.
+
+For our first prototype, Think can probably be the **agent mind loop**. We should still build the **game master / campaign-state supervisor** ourselves using explicit state/event/projector boundaries.
+
+Good framing:
+
+> Think runs the mind. The Game Master owns the world. Our D&D engine governs what each mind can see and what it is allowed to change.
+
+## Capability map for Cloudflare Agent Dungeon
+
+| Need | Does Think provide it? | Source-backed note | What we still build |
+|------|------------------------|--------------------|---------------------|
+| Agentic loop | Yes | `Think` owns `streamText`, `maxSteps`, tool rounds, message persistence, hooks. Docs call it “full chat lifecycle — agentic loop, message persistence, streaming, tool execution...” | D&D-specific prompts, skills, and turn contracts. |
+| Durable identity/state | Yes | Think subclasses are Durable Objects/facets with SQLite-backed Session and Workspace. | Campaign IDs, character IDs, world/module IDs, and mapping to DO names. |
+| DM/player prompts | Yes | Override `getSystemPrompt()` or `configureSession()`; `beforeTurn()` can override system per turn. | Actual DM/player skill text and per-agent prompt policy. |
+| Tools | Yes | Built-in workspace tools; `getTools()` for AI SDK tools; MCP/client/extensions can merge in. | D&D tools: observe, propose action, reveal info, roll request, consult rules, etc. |
+| Tool gating | Yes | `beforeTurn()` can restrict `activeTools`; `beforeToolCall()` can block/substitute/modify. | Hard fog-of-war policy and per-role allowed tools. |
+| Streaming monitor | Mostly | `onChunk`, `onStepFinish`, `onChatResponse`, WebSocket chat, sub-agent callback `onEvent`. | Convert Think chunks and game events into a public monitor event stream. |
+| Programmatic game turns | Yes | `saveMessages()` triggers a turn without WebSocket; `submitMessages()` durably accepts work. | Game scheduler/turn driver that decides when each actor thinks. |
+| Parent/child orchestration | Yes | `subAgent(Child, name)` + child `chat()` streams via callback. Generic sub-agent docs say children are colocated facets with isolated SQLite, own WS connections, and typed RPC stubs. Assistant example uses parent `AssistantDirectory` with child `MyAssistant` facets. | Game Master / campaign supervisor shape, registry gates, and sibling communication policy. |
+| Cancellation | Yes | `cancelChat(requestId)`, AbortSignal for local calls, durable `cancelSubmission()`. | Operator UI controls and policy for cancelling a turn vs ending a campaign event. |
+| Recovery | Yes | `chatRecovery = true`; fiber recovery; `onChatRecovery`. | Decide when recovered turns are safe for game state, especially if parent monitor/driver vanished. |
+| Persistent memory | Yes | Session context blocks with `set_context`, `load_context`, `search_context`; writable memory. | Boundary between private agent memory, campaign source of truth, and public event log. |
+| Rules/source lookup | Mechanism yes | Custom tools can call external APIs; workspace can hold files; search context exists. | JoelClaw docs tool first; later Cloudflare Vectorize + FTS. Prevent public corpus leakage. |
+| Skills | Partial | Docs say `configureSession()` can add “skills”; source/docs mention context blocks and context-loading tools. | Need inspect Session docs/source next to understand first-class skill semantics. |
+| SvelteKit monitor | No | Think examples are React/Vite with `useAgentChat`. | We build monitor app. Can still use raw WebSocket/protocol or Svelte wrapper. |
+| ATProto trust/provenance | No, not directly | Think provides DO identity/session/events, not atproto records. | Our typed event/record schema and provenance layer. |
+
+## The shape that fits D&D
+
+### 1. Game Master parent owns the real-time world state
+
+Use a parent Durable Object as the Game Master / campaign supervisor. It owns the campaign/world, which is the canonical stateful representation of the current real-time world:
+
+- campaign metadata
+- room/module/world canonical state
+- hidden information
+- dice ledger
+- player registry
+- event log
+- public monitor projection
+- turn scheduling
+- visibility projections
+
+The assistant example is the closest source pattern: `AssistantDirectory` owns shared workspace/sidebar/MCP/scheduled work, while child `MyAssistant` facets own their own Think messages/memory/config/extensions.
+
+For us:
+
+```txt
+GameMaster[game-id]
+  ├─ DMAgent[dm]
+  ├─ PlayerAgent[player-a]
+  └─ PlayerAgent[player-b]
+```
+
+Difference from assistant: shared workspace is dangerous for players. This bit Joel before: if player agents share or can inspect global game state, the game leaks and they know everything about everything. Player agents must be sandboxed/firewalled from canonical state.
+
+### 2. Think child agents own private mind/session
+
+Each DM/player Think agent can own:
+
+- private message history
+- role-specific memory/context
+- role-specific skills
+- role-specific tools
+- branch history / recovery
+
+Players should not have direct tools that read canonical campaign state. They get projected inputs from the Game Master only.
+
+### 3. Fog-of-war belongs below prompts
+
+Do not rely on “don’t peek” instructions. Use Think hooks/tools to enforce visibility:
+
+- `beforeTurn()` limits active tools by role and phase.
+- `getTools()` only exposes role-safe tools.
+- `beforeToolCall()` blocks/substitutes any illegal call.
+- Game Master produces a player-visible projection and passes that into the player turn.
+- Game mutation tools return proposals/events, not direct writes to canonical state.
+
+This is not only good game design. It is the real agent-systems lesson: agents should be firewalled from data and capabilities they should not harvest or mutate. Prompt trust is not a boundary.
+
+### 4. Agent outputs should be proposed actions
+
+Player agents should produce typed proposed actions. DM agent should adjudicate and reveal. Dice should be a first-class system, not hidden model vibes.
+
+Example flow:
+
+```txt
+Game Master emits visible scene to Player A/B
+  -> Player Think agents propose actions
+  -> Game Master validates proposal shape
+  -> Game Master / dice service resolves needed rolls
+  -> DM Think agent adjudicates with rules/context tools
+  -> Game Master commits canonical event
+  -> Public monitor receives sanitized event
+  -> Player projections update
+```
+
+### 5. Jump straight to a game loop
+
+For a running game, callers should not block on every model turn. `submitMessages()` gives durable acceptance, idempotency, inspection, and cancellation. This is a better fit for scheduled/ongoing gameplay than raw `saveMessages()`.
+
+Earlier recommendation hedged toward `saveMessages()` or `chat()` for simplicity. Updated recommendation: jump straight to a small durable **game loop** and use `submitMessages()` where timeout ambiguity/retry duplication matters. Use child `chat()` only where direct streaming RPC is simpler and safe.
+
+## Useful source excerpts / evidence
+
+### Think explicitly claims the agentic loop
+
+From `docs/think/index.md`:
+
+> `@cloudflare/think` is an opinionated chat agent base class for Cloudflare Workers. It handles the full chat lifecycle — agentic loop, message persistence, streaming, tool execution, client tools, stream resumption, and extensions — all backed by Durable Object SQLite.
+
+This directly answers the big question: Think is intended to own the loop we did not want to invent.
+
+### Think vs AIChatAgent
+
+From `docs/think/index.md`:
+
+- `AIChatAgent` is a protocol adapter; app owns the LLM call.
+- `Think` is the opinionated framework; subclasses override `getModel()`, `getSystemPrompt()` / `configureSession()`, and `getTools()`.
+
+For this demo, Think is the better spike because we want to learn its built-in loop before deciding to drop to lower-level primitives.
+
+### Configuration hooks we likely need
+
+From `packages/think/src/think.ts` and docs:
+
+- `getSystemPrompt()` — role/system fallback.
+- `getTools()` — server-side AI SDK tools.
+- `configureSession()` — context blocks, compaction, search, skills.
+- `beforeTurn()` — inspect assembled system/messages/tools/model and override model, system, messages, tools, `activeTools`, max steps, temperature, output, etc.
+- `beforeStep()` — per-step overrides.
+- `beforeToolCall()` — allow, block, substitute, or change input before tool execution.
+- `afterToolCall()` — observe result.
+- `onStepFinish()` / `onChunk()` / `onChatResponse()` — stream/analytics/lifecycle events.
+
+These are exactly where D&D lifecycle and monitor events can hook in.
+
+### Sub-agents fit DM/player actors
+
+From `docs/think/sub-agents.md`:
+
+`chat()` runs a full turn on a sub-agent, persists user message, runs the agentic loop, persists assistant response, and streams chunks through callback methods:
+
+- `onStart({ requestId })`
+- `onEvent(json)`
+- `onDone()`
+- `onError(error)`
+
+This is probably enough for a parent `CampaignDirectory` to drive DM/player children and forward stream events to a monitor.
+
+### Programmatic submissions fit ongoing gameplay
+
+From `docs/think/programmatic-submissions.md`:
+
+`submitMessages()` creates a durable acceptance boundary. It returns quickly with a submission record and supports idempotency keys, later inspection, listing, cancellation, and statuses:
+
+- `pending`
+- `running`
+- `completed`
+- `aborted`
+- `skipped`
+- `error`
+
+This maps cleanly to a turn queue / campaign event loop.
+
+### Assistant example validates parent/child/shared-resource pattern
+
+From `examples/assistant/README.md`:
+
+```txt
+AssistantDirectory ("alice")
+  ├─ MyAssistant[chat-abc]   [facet]
+  ├─ MyAssistant[chat-def]   [facet]
+  └─ MyAssistant[chat-ghi]   [facet]
+```
+
+The parent owns cross-chat concerns. Children are full Think agents. This gives us a pattern for `CampaignDirectory` + DM/player children.
+
+Important caution from the same example: shared workspace means every chat can see every chat's files. For D&D fog-of-war, that is usually wrong for players.
+
+## Risks / gotchas
+
+### Think is experimental
+
+Docs mark `@cloudflare/think` experimental. Good for a prototype, but expect API churn.
+
+### Skills need another research pass
+
+The docs repeatedly mention Session “skills,” but this pass mostly verified context blocks and context tools. We should read `docs/sessions.md` and relevant Session source before designing DM/player Skills.
+
+### Shared workspace is a fog-of-war footgun
+
+The assistant example’s shared workspace is useful for multi-chat assistants, but dangerous for player agents. For D&D, we likely want:
+
+- DM/global workspace private to DM/supervisor.
+- Player private workspace/memory per player.
+- Public/revealed projection store.
+
+### Streaming chunks are not game events
+
+Think stream chunks are model/protocol chunks. The monitor needs typed game events, not just token soup. We can observe chunks for drama, but game state should change only through validated events/tools.
+
+### Recovery can duplicate or stale-act if not governed
+
+Think recovery is powerful, but recovered turns need game-specific safety rules. If a turn was orphaned too long, or the campaign state advanced, recovery might be unsafe. Use `onChatRecovery()` or submission inspection policy.
+
+### Public docs/rules leakage
+
+JoelClaw docs can answer OSE queries, but public monitor should show citations/summaries only when safe. Do not expose full private/copyrighted chunks in public events.
+
+## Updated recommendation for the next implementation slice
+
+Build the smallest Think-first **game loop** spike:
+
+```txt
+GameMaster DO / top-level Agent
+  ├─ DMAgent extends Think
+  ├─ PlayerAgent extends Think (player-a)
+  └─ PlayerAgent extends Think (player-b)
+```
+
+First playable sequence:
+
+1. GameMaster creates a 3-room hidden module seed and dice ledger.
+2. DM agent receives a prompt to flesh out the first room using a `consultRules` tool backed by JoelClaw docs API.
+3. GameMaster creates player-visible projections for the revealed entrance/room only.
+4. Player agents receive only their projection.
+5. Each player proposes one typed action through a tool or structured output.
+6. GameMaster validates action shape and resolves dice through a deterministic dice service.
+7. DM adjudicates with rules/context tools.
+8. GameMaster commits canonical sanitized events.
+9. Monitor page streams the event log and player-safe/public projections.
+
+Do **not** implement Cloudflare Vectorize, full ATProto repo semantics, or Pi-in-Sandbox in slice one. Keep them as later choices after Think proves or fails the loop.
+
+## Next research questions
+
+1. Inspect `Agent Tools` docs/source to decide whether DM should invoke players via `chat()` or agent tools.
+2. Read `docs/sessions.md` and Session source to understand Think “skills” and context blocks better.
+3. Inspect Think example server code enough to copy the parent/child routing pattern safely.
+4. Decide if monitor uses raw WebSocket, `useAgentChat`, or a separate SSE/firehose endpoint.

@@ -1,0 +1,91 @@
+---
+title: runAgentTool from Plain Agent Parent
+kind: resource
+status: active
+created: 2026-05-24
+tags:
+  - cloudflare
+  - agents-sdk
+  - think
+  - agent-tools
+  - sub-agents
+  - referee
+---
+
+# runAgentTool from Plain Agent Parent
+
+## Question
+
+Can `runAgentTool()` be called cleanly from a plain `Agent` parent for Referee → child Think turns, or should the first Cloudflare Agent Dungeon slice fall back to raw `subAgent(...).chat()`?
+
+## Sources read
+
+Local mirror: `.agent-sources/cloudflare-agents`
+
+Files:
+
+- `.agent-sources/cloudflare-agents/docs/agent-tools.md`
+- `.agent-sources/cloudflare-agents/docs/sub-agents.md`
+- `.agent-sources/cloudflare-agents/docs/think/sub-agents.md`
+- `.agent-sources/cloudflare-agents/packages/agents/src/index.ts`
+- `.agent-sources/cloudflare-agents/packages/agents/src/agent-tools.ts`
+- `.agent-sources/cloudflare-agents/packages/agents/src/agent-tool-types.ts`
+
+## Answer
+
+Yes. `runAgentTool()` is defined on the base `Agent` class, not only on `Think`.
+
+A plain `Referee extends Agent` can call:
+
+```ts
+await this.runAgentTool(PlayerAgent, {
+  runId,
+  input,
+  displayOrder,
+  signal
+});
+```
+
+The child must be a chat-capable `Agent` subclass for the agent-tool adapter path. `Think` children fit that shape.
+
+## Receipts
+
+`docs/agent-tools.md` says `runAgentTool()` is for deterministic workflows, scheduled work, HTTP handlers, and fan-out code. That matches a Referee-driven turn loop better than `agentTool()`, where the parent model chooses delegation.
+
+`packages/agents/src/index.ts` implements `async runAgentTool(...)` directly on the base `Agent` class. The method:
+
+- creates/reads a retained parent-side run row,
+- spawns the child with `this.subAgent(cls, runId)`,
+- adapts it through `_asAgentToolChildAdapter`,
+- calls `adapter.startAgentToolRun(...)`,
+- forwards child chunks as `agent-tool-event` frames,
+- bridges aborts via `cancelAgentToolRun`,
+- inspects terminal output,
+- stores completed/error/aborted/interrupted state.
+
+`packages/agents/src/agent-tool-types.ts` defines `ChatCapableAgentClass<T extends Agent = Agent> = SubAgentClass<T>`, so the type boundary is an `Agent` subclass, with runtime adapter capability deciding whether the child can run as a chat tool.
+
+`packages/agents/src/agent-tools.ts` shows `agentTool()` is only a wrapper that finds the current agent and calls `runAgentTool()` from inside an AI SDK tool execution. That wrapper is useful when a model chooses a helper, not needed for Referee's deterministic turn scheduler.
+
+## Recommendation
+
+Use `runAgentTool()` for the first Referee → RefereeAgent/PlayerAgent Think turns.
+
+Why:
+
+- Referee stays a deterministic plain `Agent` owning truth.
+- Child minds stay `Think` agents with private durable session/memory/tools.
+- Agent Tools give retained runs, replay/drill-in, cancellation, and event forwarding.
+- Idempotent `runId` fits retries/reconnects/alarms without duplicate child turns.
+
+Fallback to raw `subAgent(...).chat()` only if the first scaffold hits framework ceremony around child input/output adapters. That fallback loses the retained run registry/UI machinery, so it should be treated as a temporary slice-one shortcut, not the intended architecture.
+
+## Tradeoffs
+
+- `runAgentTool()` names the child facet by `runId`, so one retained child run is one child facet. For long-lived player identity, we need to decide whether player mind state lives in stable `PlayerAgent[player-a]` children, or whether agent-tool runs are per-turn child facets with separate state. This needs source-backed design before coding too much.
+- Agent Tool event frames are useful for UI/drill-in, but monitor gameplay should still be typed Referee events, not raw model chunks.
+- API is experimental, so keep wrappers/local seams small.
+
+## Next question
+
+What is the cleanest way to preserve long-lived PlayerAgent identity while also using retained per-turn Agent Tool runs: stable child agent plus raw `chat()`, or per-run child facets plus explicit memory/projection context?
