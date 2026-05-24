@@ -3,6 +3,7 @@ import { Think } from "@cloudflare/think";
 import { createWorkersAI } from "workers-ai-provider";
 import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
+import { prototypeTavernTownUiPage } from "./prototype-tavern-town-ui";
 import {
   advanceCampaignTurn,
   commitAdventureChoice,
@@ -688,6 +689,7 @@ export default {
     if (url.pathname === "/events") return campaignEvents(request, env);
     if (url.pathname === "/events-dev") return campaignEvents(request, env, true);
     if (url.pathname === "/" || url.pathname === "/monitor") return monitorPage();
+    if (url.pathname === "/prototype/tavern-town") return prototypeTavernTownUiPage();
 
     try {
       const api = await handleApi(request, env);

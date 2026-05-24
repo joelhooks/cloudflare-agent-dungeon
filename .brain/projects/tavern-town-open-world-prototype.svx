@@ -107,3 +107,35 @@ Build `runNextBeat()` for tavern/town mode:
 - mutate one beat of world/NPC/party state,
 - append process events newest-first in UI,
 - schedule next beat only while autoplay is enabled.
+
+## Throwaway UI prototype
+
+Question being answered: what should the autonomous tavern/town process monitor feel like?
+
+Prototype file:
+
+- `apps/worker/src/prototype-tavern-town-ui.ts`
+
+Route:
+
+- `/prototype/tavern-town?variant=ledger`
+- `/prototype/tavern-town?variant=table`
+- `/prototype/tavern-town?variant=console`
+
+One command:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/worker dev
+```
+
+Status: pending Joel verdict. Delete or absorb after we decide which shape teaches best.
+
+Browser receipt from local portless:
+
+```txt
+https://agent-dungeon-prototype.localhost:1355/prototype/tavern-town?variant=ledger
+Start World disables while running
+Newest feed item appears at top
+Process beats stream through simulated tavern/town loop
+Variants switch via floating bottom bar
+```
