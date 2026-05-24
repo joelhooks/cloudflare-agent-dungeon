@@ -807,6 +807,22 @@ function openTavernStart(campaign: Campaign): Campaign {
   return next;
 }
 
+export function awardRecoveredTreasureXp(campaign: Campaign, treasureGp: number, reason = "Recovered non-magical treasure"): Campaign {
+  if (!Number.isFinite(treasureGp) || treasureGp < 0) throw new Error("Treasure XP must be a non-negative number");
+  const next = cloneCampaign(campaign);
+  const livingCharacters = Object.values(next.characters).filter((character) => character.stats.hp > 0);
+  if (livingCharacters.length === 0 || treasureGp === 0) return next;
+
+  const share = Math.floor(treasureGp / livingCharacters.length);
+  for (const character of livingCharacters) {
+    character.xp = (character.xp ?? 0) + share;
+  }
+
+  next.publicEvents.push(event(`${reason}: ${treasureGp} gp value grants ${share} XP to each surviving character.`, "world_event"));
+  next.refereeAuditEvents.push(audit("OSE XP hook: recovered non-magical treasure grants 1 XP per 1 gp value before party split in this prototype.", { kind: "world_tick" }));
+  return next;
+}
+
 export function travelToChosenHook(campaign: Campaign, randomInt: RandomInt): Campaign {
   const next = cloneCampaign(campaign);
   const chosenHookId = next.party.chosenHookId;

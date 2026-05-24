@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   advanceCampaignTurn,
+  awardRecoveredTreasureXp,
   commitAdventureChoice,
   commitCharacterCreation,
   projectForMonitor,
@@ -187,6 +188,15 @@ describe("Cloudflare Agent Dungeon domain prototype", () => {
     expect(text).not.toContain("tripwire");
     expect(text).not.toContain("Wake the ash-cobra");
     expect(text).not.toContain("refereeAuditEvents");
+  });
+
+  it("adds an OSE-ish recovered treasure XP hook", () => {
+    const campaign = seedThreeRoomCampaign();
+    const awarded = awardRecoveredTreasureXp(campaign, 20, "Roadside coin cache recovered");
+
+    expect(awarded.characters["character-brindle"]?.xp).toBe(10);
+    expect(awarded.characters["character-osric"]?.xp).toBe(10);
+    expect(JSON.stringify(awarded.publicEvents)).toContain("20 gp value grants 10 XP");
   });
 
   it("travels to the chosen hook with OSE-style lost and encounter checks", () => {

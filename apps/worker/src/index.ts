@@ -5,6 +5,7 @@ import { generateObject, Output, type LanguageModel } from "ai";
 import { z } from "zod";
 import {
   advanceCampaignTurn,
+  awardRecoveredTreasureXp,
   commitAdventureChoice,
   commitCharacterCreation,
   projectForMonitor,
@@ -481,6 +482,11 @@ export class Referee extends Agent<Env> {
     return this.campaign;
   }
 
+  recoverDemoTreasure(): Campaign {
+    this.campaign = awardRecoveredTreasureXp(this.requireCampaign(), 20, "A small road cache is recovered and carried back as coin-value treasure");
+    return this.campaign;
+  }
+
   async travelToAdventure(): Promise<Campaign> {
     if (!this.campaign) await this.createGame(this.name);
     if (!this.requireCampaign().party.chosenHookId) await this.chooseAdventure();
@@ -637,6 +643,9 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   if (url.pathname === "/api/travel-to-adventure") {
     return json(projectForMonitor(await referee.travelToAdventure()));
   }
+  if (url.pathname === "/api/recover-demo-treasure") {
+    return json(projectForMonitor(await referee.recoverDemoTreasure()));
+  }
   if (url.pathname === "/api/projection/player-a") {
     return json(await referee.getProjection("player-a"));
   }
@@ -728,6 +737,7 @@ function monitorPage(): Response {
     <button data-action="/api/session-zero">Run session 0</button>
     <button data-action="/api/choose-adventure">Choose adventure</button>
     <button data-action="/api/travel-to-adventure">Travel to adventure</button>
+    <button data-action="/api/recover-demo-treasure">Recover demo treasure</button>
     <button data-action="/api/advance-turn">Advance world turn</button>
     <button data-action="/api/seed-player-secret">Seed player secret</button>
     <button data-action="/api/live-player-intent-round">Run live Kimi dungeon round</button>
@@ -769,7 +779,7 @@ function monitorPage(): Response {
       }).join('\n\n') || 'Private Referee audit is hidden on the public monitor.';
 
       characters.textContent = Object.values(data.characters).map(function (character) {
-        return character.name + ' — level ' + (character.level || 1) + ' ' + (character.className || 'unknown') + ', hp ' + character.stats.hp + ', AC ' + character.stats.armorClass + ', food ' + ((character.supplies && character.supplies.rationDays) || 0) + ' day(s), gp ' + (character.goldGp || 0) + ', source ' + (character.creationSource || 'unknown') + '\nInventory: ' + character.inventory.join(', ');
+        return character.name + ' — level ' + (character.level || 1) + ' ' + (character.className || 'unknown') + ', xp ' + (character.xp || 0) + ', hp ' + character.stats.hp + ', AC ' + character.stats.armorClass + ', food ' + ((character.supplies && character.supplies.rationDays) || 0) + ' day(s), gp ' + (character.goldGp || 0) + ', source ' + (character.creationSource || 'unknown') + '\nInventory: ' + character.inventory.join(', ');
       }).join('\n\n') || 'No characters yet. Run session 0.';
 
       world.textContent = 'Day ' + data.time.day + ', ' + data.time.watch + '\nParty goal: ' + (data.party.chosenHookId || 'none yet') + '\n\nLocations:\n' + Object.values(data.world.locations).map(function (location) {
