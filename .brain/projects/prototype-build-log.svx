@@ -743,3 +743,52 @@ leaks: hiddenAgenda=false, hiddenDescription=false, audit=false, secret=false
 ### Next learning question
 
 The prototype is now credible as a first realtime slice. The next deeper OSE pass should be AC math, encumbrance, richer travel terrain/rest rules, monster XP, and level thresholds. Do not let that turn into a full VTT; keep it as narrow domain receipts plus tests.
+
+## 2026-05-24 — Explicit private/dev Referee audit projection
+
+### Why
+
+The public monitor must not leak Referee/private lanes, but the requirement still asked for a Referee audit/debug view when explicitly marked private/dev. Leaving audit either always public or entirely absent was the fucky middle. We split the projection.
+
+### Implemented
+
+- `projectForMonitor(campaign)` stays public-safe and omits `refereeAuditEvents`, hidden room descriptions, hidden faction agendas, and player-private secrets.
+- `projectForDevMonitor(campaign)` adds `devMode: true` and `refereeAuditEvents` while still using the public-safe world/faction projection.
+- `/api/campaign-dev` returns the explicit dev projection.
+- `/monitor?dev=1` renders Referee audit entries with `PRIVATE/DEV` labels.
+
+### Validation
+
+Commands:
+
+```bash
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts
+```
+
+Deploy receipt:
+
+```txt
+agentdungeon.ai (custom domain)
+Current Version ID: 38b2237a-9024-4727-8758-d412fbc81335
+```
+
+Deployed smoke:
+
+```txt
+/monitor?dev=1 200
+/api/create-game 200
+/api/session-zero 200
+/api/choose-adventure 200
+/api/travel-to-adventure 200
+/api/recover-demo-treasure 200
+/api/campaign-dev 200
+/events emitted event: campaign
+public has audit? false
+devMode true, refereeAuditEvents length 6
+public leaks: hiddenAgenda=false, hiddenDescription=false, secret=false
+dev hidden agenda leak? false
+XP sample: Brindle Reed 10, Malodar the Miserable 10
+```
