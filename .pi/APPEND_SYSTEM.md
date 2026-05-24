@@ -79,7 +79,16 @@ For Effect work, hydrate official Effect source into `.agent-sources/effect` wit
 
 ## OSE / rules corpus access
 
-Old School Essentials source access starts with JoelClaw docs/PDF Brain.
+Old School Essentials source access starts with JoelClaw docs/PDF Brain. Before implementing or changing OSE procedures — character creation, classes, equipment prices, adventuring turns, encounters, morale/reaction, treasure, XP, level-up, retainers, supplies, or magic items — search JoelClaw and cite the doc/chunk IDs in Brain or referee audit receipts.
+
+Canonical JoelClaw OSE source docs currently include:
+
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24` — Old School Essentials Classic Fantasy Rules Tome v1.4
+- `old-school-essentials-basic-rules-v1-4-a4d9608ea98b` — Old School Essentials Basic Rules v1.4
+- `old-school-essentials-advanced-expansion-set-cha-317a5d4ba5c1` — Advanced Expansion Set Characters v1.0
+- `old-school-essentials-advanced-expansion-set-mag-32d160048e03` — Advanced Expansion Set Magic v1.0
+- `old-school-essentials-advanced-expansion-set-mon-d93a729edbee` — Advanced Expansion Set Monsters v1.0
+- `old-school-essentials-advanced-expansion-set-tre-eec18f681015` — Advanced Expansion Set Treasures v1.0
 
 Public docs API examples:
 
@@ -87,12 +96,15 @@ Public docs API examples:
 curl -sS https://joelclaw.com/api/docs
 curl -sS "https://joelclaw.com/api/docs/search?q=Old%20School%20Essentials&perPage=5&semantic=false"
 curl -sS "https://joelclaw.com/api/docs/search?q=Old-School%20Essentials%20referee&perPage=5&semantic=false"
+curl -sS "https://joelclaw.com/api/docs/search?q=Old-School%20Essentials%20Classic%20Fantasy%20Rules%20Tome%20character%20creation&perPage=5&semantic=false"
+curl -sS "https://joelclaw.com/api/docs/old-school-essentials-classic-fantasy-rules-tome-3751c5149a24/toc"
 ```
 
 Rules:
 
-- RefereeAgent may use `consultRules`.
-- PlayerAgents must not access global rules/source unless deliberately exposed.
+- Source-grounded content law applies: do not invent OSE mechanics when a rule should come from the books.
+- RefereeAgent may use `consultRules` / JoelClaw docs lookups for adjudication and procedure checks.
+- PlayerAgents must not access global rules/source unless deliberately exposed as a player-safe table artifact.
 - Capture doc IDs/chunk IDs in internal events when useful.
 - Public monitor should show safe citations/summaries, not raw full book chunks.
 
