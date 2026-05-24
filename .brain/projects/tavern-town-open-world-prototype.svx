@@ -128,7 +128,15 @@ One command:
 pnpm --filter @cloudflare-agent-dungeon/worker dev
 ```
 
-Status: pending Joel verdict. Delete or absorb after we decide which shape teaches best.
+Status: Joel prefers the **console view**, but pushed it toward an almost TUI-like surface with a Geist/pixel/monospace feel. Delete or absorb after we decide the concrete production monitor shape.
+
+Current design direction:
+
+- console-first, newest turn at top
+- TUI-like panels / lanes / status bar
+- pixel-sharp Geist-ish monospace instead of parchment UI
+- process/reasoning is the main artifact, not final JSON
+- Start World begins a generative tavern/town beat loop
 
 Browser receipt from local portless:
 
@@ -139,3 +147,17 @@ Newest feed item appears at top
 Process beats stream through simulated tavern/town loop
 Variants switch via floating bottom bar
 ```
+
+## Next generative slice
+
+The next real implementation step is not more UI polish. It is one real generative town beat:
+
+1. Add persisted tavern/town entities to campaign state: NPCs, known rumors, NPC disposition/memory, current affordances, autoplay status.
+2. Add `runTownBeat()` / `runNextBeat()` on `Referee`.
+3. Derive player-safe affordances from current tavern/town state.
+4. Ask PlayerAgents for typed tavern intents: talk, ask, buy, hire, observe, reveal backstory, leave, wait, other.
+5. Ask RefereeAgent to resolve the social beat and narrate public process while writing private reasoning to audit.
+6. Commit new public process events newest-first in the monitor.
+7. Schedule the next beat only while Start World/autoplay is enabled.
+
+The prototype should stay in the tavern/town boundary until this feels alive.
