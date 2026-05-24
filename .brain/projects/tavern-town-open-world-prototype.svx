@@ -214,3 +214,9 @@ Player intent follow-up:
 - Referee process text explicitly records which player intents it considered.
 - Worker AI capacity errors (`3040`) showed up when calling player/referee generations; mitigated by running player intents sequentially and retrying Kimi calls with a small backoff.
 - Browser check: `Step One Beat` produced 3 turns for beat 1: Referee top, then Mara player choice, then Tovin player choice. `refereeConsidered=true`, `hasPlayerLane=true`.
+
+Parsing robustness follow-up:
+
+- Kimi sometimes wrapped JSON in markdown fences or truncated the Referee JSON because long `tableText` hit `max_completion_tokens`.
+- Fix: parse fenced JSON, require complete JSON before parsing, tell the model not to fence output, cap string lengths in prompt, raise Referee generation token budget, and retry player/referee parsing up to 3 times.
+- Browser check after fix: three consecutive `Step One Beat` actions reached `beat=3`, rendered 9 turns, no parse/schema error.

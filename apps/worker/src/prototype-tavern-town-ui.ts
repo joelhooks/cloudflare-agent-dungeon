@@ -381,8 +381,8 @@ async function generatePrototypePlayerIntents(env: Env, state: PrototypeState): 
 
 async function generatePrototypePlayerIntent(env: Env, state: PrototypeState, member: PrototypeState["party"][number]): Promise<PrototypePlayerIntent> {
   let validationError = "";
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const result = await runPrototypeKimi(env, buildPrototypePlayerIntentPrompt(state, member, validationError), 700);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = await runPrototypeKimi(env, buildPrototypePlayerIntentPrompt(state, member, validationError), 900);
 
     try {
       return PrototypePlayerIntentSchema.parse(parseJsonObject(extractWorkersAIText(result)));
@@ -424,6 +424,7 @@ function buildPrototypePlayerIntentPrompt(state: PrototypeState, member: Prototy
     "Pick one action you actually want to attempt. You may choose an existing affordance or a closely related open-world action.",
     "Return compact JSON only. No markdown. No extra keys.",
     "Shape: { player:string, character:string, actor:string, title:string, tableSpeech:string, declaredAction:string, intentKind:'talk|ask|buy|hire|observe|reveal_backstory|leave|wait|other', target?:string, processReasoning:string, innerMonologue:string, privateGoal:string, privateFear:string }",
+    "Keep every string under 240 characters so JSON does not truncate.",
     validationError ? `Previous attempt failed schema validation: ${validationError}. Retry with valid JSON.` : "",
     `Your player/character: ${JSON.stringify(member)}`,
     `Visible location: ${state.location}`,
@@ -437,8 +438,8 @@ async function generatePrototypeBeat(env: Env, state: PrototypeState, receipts: 
   let validationError = "";
   let lastCandidate: GeneratedBeatCandidate | null = null;
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const result = await runPrototypeKimi(env, buildPrototypeBeatPrompt(state, receipts, playerIntents, validationError), 1200);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = await runPrototypeKimi(env, buildPrototypeBeatPrompt(state, receipts, playerIntents, validationError), 1800);
 
     try {
       const candidate = GeneratedBeatCandidateSchema.parse(parseJsonObject(extractWorkersAIText(result)));
@@ -465,6 +466,8 @@ function buildPrototypeBeatPrompt(state: PrototypeState, receipts: RuleReceipt[]
     "Return compact JSON only. No markdown. No extra keys.",
     "Hard shape: { lane:'referee|player|npc|rules|audit', actor:string, title:string, tableText:string, processReasoning:string, devReasoning:string, nextAffordances:string[], visibleThreads:string[], npcUpdates?:Npc[], partyUpdates?:PartyMember[], rulesUsed?:string[] }",
     "Hard limits: nextAffordances MUST contain 3-7 items. visibleThreads MUST contain 1-7 items. If you have more ideas, choose the best 7. Do not exceed these limits.",
+    "Keep tableText under 900 characters and process/dev reasoning under 300 characters each so JSON does not truncate.",
+    "Start with { and end with }. Do not wrap in markdown fences.",
     validationError ? `Previous attempt failed schema validation: ${validationError}. Retry with fewer array items and valid JSON.` : "",
     `State: ${JSON.stringify({ ...state, log: (state.log ?? []).slice(0, 4) })}`,
     `PlayerAgent intents to consider: ${JSON.stringify(playerIntents)}`,
@@ -550,11 +553,13 @@ function extractWorkersAIText(result: unknown): string {
 
 function parseJsonObject(text: string): unknown {
   const trimmed = text.trim();
-  if (trimmed.startsWith("{")) return JSON.parse(trimmed);
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) throw new Error(`No JSON object in model response: ${trimmed.slice(0, 200)}`);
-  return JSON.parse(trimmed.slice(start, end + 1));
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] ?? trimmed).trim();
+  if (candidate.startsWith("{") && candidate.endsWith("}")) return JSON.parse(candidate);
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) return JSON.parse(candidate.slice(start, end + 1));
+  throw new Error(`No complete JSON object in model response. Response likely truncated: ${trimmed.slice(0, 260)}`);
 }
 
 function stripMarks(value: string): string {
