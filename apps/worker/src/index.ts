@@ -56,6 +56,17 @@ const CharacterCreationPlanSchema = z.object({
 
 type CharacterCreationPlanOutput = z.infer<typeof CharacterCreationPlanSchema>;
 
+const publicOutcomeForbiddenTerms = [
+  "hidden agenda",
+  "secret agenda",
+  "hiddenagenda",
+  "private note",
+  "unrevealed",
+  "wake the ash-cobra",
+  "monopolize salvage",
+  "hide the saint-bell"
+];
+
 const RefereeOutcomeSchema = z.object({
   publicNarration: z.string().min(1),
   pressure: z.string().min(1),
@@ -88,22 +99,33 @@ export class RefereeAgent extends Think<Env> {
   }
 
   async generateOutcome(context: unknown): Promise<RefereeOutcome> {
-    const result = await generateObject({
-      model: this.getModel(),
-      schema: RefereeOutcomeSchema,
-      maxOutputTokens: 1200,
-      prompt: [
-        "Generate the Referee outcome for this campaign beat.",
-        "Return structured JSON only.",
-        "publicNarration: vivid table-facing result, safe for players/audience.",
-        "pressure: what got harder, closer, stranger, or more tempting because of the choice and dice.",
-        "nextQuestion: the next meaningful choice you ask the players.",
-        "privateReasoning: your actual Referee reasoning, including hidden clocks/agendas if useful. This is dev/private only.",
-        "Respect dice receipts and canonical state. Do not override rolls. Do not leak hidden/private data in publicNarration.",
-        `Context: ${JSON.stringify(context)}`
-      ].join("\n")
-    });
-    return result.object;
+    let validationError = "";
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const result = await generateObject({
+        model: this.getModel(),
+        schema: RefereeOutcomeSchema,
+        maxOutputTokens: 900,
+        prompt: [
+          "Generate the Referee outcome for this campaign beat.",
+          "Return structured JSON only. No markdown. No URLs. No links. No external references.",
+          "publicNarration: vivid table-facing result, safe for players/audience. Do not mention hidden agendas, private notes, or facts not revealed in publicState. Keep it under 900 characters.",
+          "pressure: public-safe pressure only. Say what feels harder/closer/tempting without naming hidden agendas or private causes. Keep it under 300 characters.",
+          "nextQuestion: one concrete next choice you ask the players, ending with a question mark. Keep it under 300 characters. No URLs.",
+          "privateReasoning: your actual Referee reasoning from the supplied public and audit context. This is dev/private only.",
+          "Respect dice receipts and canonical state. Do not override rolls. Do not invent exact distances, inventory, injuries, or backstory not present in context.",
+          "Never include the words hidden agenda, secret agenda, hiddenAgenda, private note, or unrevealed in publicNarration, pressure, or nextQuestion.",
+          validationError ? `Previous attempt rejected: ${validationError}` : "",
+          `Context: ${JSON.stringify(context)}`
+        ].filter(Boolean).join("\n")
+      });
+      try {
+        assertRefereeOutcomeSafe(result.object);
+        return result.object;
+      } catch (error) {
+        validationError = String(error);
+      }
+    }
+    throw new Error(`Referee outcome failed public-safety validation: ${validationError}`);
   }
 }
 
@@ -111,6 +133,17 @@ export class RefereeAgent extends Think<Env> {
  * Long-lived player mind. PlayerAgent represents a player/personality who is
  * roleplaying a separate Character. Private memory lives here, not on Referee.
  */
+function assertRefereeOutcomeSafe(outcome: RefereeOutcome): void {
+  const publicText = `${outcome.publicNarration}\n${outcome.pressure}\n${outcome.nextQuestion}`.toLowerCase();
+  if (/https?:\/\//i.test(publicText)) throw new Error("public outcome contains a URL");
+  const forbidden = publicOutcomeForbiddenTerms.find((term) => publicText.includes(term));
+  if (forbidden) throw new Error(`public outcome contains forbidden term: ${forbidden}`);
+  if (outcome.publicNarration.length > 1200) throw new Error("public narration is too long");
+  if (outcome.pressure.length > 500) throw new Error("pressure is too long");
+  if (outcome.nextQuestion.length > 500) throw new Error("next question is too long");
+  if (!outcome.nextQuestion.trim().endsWith("?")) throw new Error("next question must end with a question mark");
+}
+
 export class PlayerAgent extends Think<Env> {
   private secrets: string[] = [];
 
@@ -288,18 +321,18 @@ function secureRandomInt(sides: number): number {
   return (value % sides) + 1;
 }
 
-export class Referee extends Agent<Env> {
-  private campaign: Campaign | null = null;
+export class Referee extends Agent<Env, Campaign> {
+  initialState: Campaign = seedTavernCampaign("agent-dungeon-campaign");
 
   async createGame(campaignId = this.name): Promise<Campaign> {
-    this.campaign = seedTavernCampaign(campaignId);
+    const campaign = this.commitCampaign(seedTavernCampaign(campaignId));
 
     // Spawn stable long-lived minds. We do not use per-run facets as identity.
     await this.subAgent(RefereeAgent, "referee");
     await this.subAgent(PlayerAgent, "player-a");
     await this.subAgent(PlayerAgent, "player-b");
 
-    return this.campaign;
+    return campaign;
   }
 
   getCampaign(): Campaign {
@@ -315,7 +348,7 @@ export class Referee extends Agent<Env> {
   }
 
   async runSessionZero(): Promise<Campaign> {
-    if (!this.campaign) await this.createGame(this.name);
+    this.requireCampaign();
 
     const playerA = await this.subAgent(PlayerAgent, "player-a");
     const playerB = await this.subAgent(PlayerAgent, "player-b");
@@ -327,14 +360,14 @@ export class Referee extends Agent<Env> {
     for (const [playerId, player] of players) {
       if (Object.values(this.requireCampaign().characters).some((character) => character.playerId === playerId)) continue;
       const rolled = rollCharacterCreationDraft(this.requireCampaign(), playerId, secureRandomInt);
-      this.campaign = rolled.campaign;
+      this.commitCampaign(rolled.campaign);
       const plan = await player.createCharacterPlan(rolled.draft, this.requireCampaign().stores);
       try {
-        this.campaign = commitCharacterCreation(this.requireCampaign(), rolled.draft, plan, secureRandomInt);
+        this.commitCampaign(commitCharacterCreation(this.requireCampaign(), rolled.draft, plan, secureRandomInt));
       } catch (error) {
         console.warn("[Referee] player character plan needed purchase repair", error);
         try {
-          this.campaign = commitCharacterCreation(this.requireCampaign(), rolled.draft, trimPlanToBudget(plan, this.requireCampaign().stores, rolled.draft.startingGoldGp), secureRandomInt);
+          this.commitCampaign(commitCharacterCreation(this.requireCampaign(), rolled.draft, trimPlanToBudget(plan, this.requireCampaign().stores, rolled.draft.startingGoldGp), secureRandomInt));
         } catch (repairError) {
           console.warn("[Referee] repaired player character plan rejected; no canned fallback", repairError);
           throw new Error(`Player ${playerId} character plan rejected after repair: ${String(repairError)}`);
@@ -346,23 +379,21 @@ export class Referee extends Agent<Env> {
   }
 
   advanceWorldTurn(): Campaign {
-    this.campaign = advanceCampaignTurn(this.requireCampaign());
-    return this.campaign;
+    return this.commitCampaign(advanceCampaignTurn(this.requireCampaign()));
   }
 
   async travelToAdventure(): Promise<Campaign> {
-    if (!this.campaign) await this.createGame(this.name);
+    this.requireCampaign();
     if (!this.requireCampaign().party.chosenHookId) await this.chooseAdventure();
     const before = this.requireCampaign();
     const travelled = travelToChosenHook(before, secureRandomInt);
     const referee = await this.subAgent(RefereeAgent, "referee");
     const outcome = await referee.generateOutcome(this.refereeOutcomeContext("travel", before, travelled));
-    this.campaign = commitRefereeOutcome(travelled, outcome);
-    return this.campaign;
+    return this.commitCampaign(commitRefereeOutcome(travelled, outcome));
   }
 
   async chooseAdventure(): Promise<Campaign> {
-    if (!this.campaign) await this.createGame(this.name);
+    this.requireCampaign();
     if (Object.keys(this.requireCampaign().characters).length === 0) await this.runSessionZero();
 
     const playerA = await this.subAgent(PlayerAgent, "player-a");
@@ -376,8 +407,7 @@ export class Referee extends Agent<Env> {
     const chosen = commitAdventureChoice(before, choices);
     const referee = await this.subAgent(RefereeAgent, "referee");
     const outcome = await referee.generateOutcome(this.refereeOutcomeContext("adventure_choice", before, chosen));
-    this.campaign = commitRefereeOutcome(chosen, outcome);
-    return this.campaign;
+    return this.commitCampaign(commitRefereeOutcome(chosen, outcome));
   }
 
   override async onBeforeSubAgent(_request: Request, child: { className: string; name: string }): Promise<Response | void> {
@@ -430,24 +460,20 @@ export class Referee extends Agent<Env> {
       previousPublicEvents: before.publicEvents.slice(-8),
       newPublicEvents: after.publicEvents.slice(before.publicEvents.length),
       newDice: after.diceLedger.slice(before.diceLedger.length),
-      privateRefereeContext: {
-        factionAgendas: Object.values(after.factions).map((faction) => ({
-          name: faction.name,
-          publicGoal: faction.publicGoal,
-          hiddenAgenda: faction.hiddenAgenda,
-          clock: faction.clock,
-          clockMax: faction.clockMax
-        })),
-        refereeAudit: after.refereeAuditEvents.slice(before.refereeAuditEvents.length)
-      }
+      refereeAudit: after.refereeAuditEvents.slice(before.refereeAuditEvents.length)
     };
   }
 
+  private commitCampaign(campaign: Campaign): Campaign {
+    this.setState(campaign);
+    return campaign;
+  }
+
   private requireCampaign(): Campaign {
-    if (!this.campaign) {
-      this.campaign = seedTavernCampaign(this.name);
+    if (!this.state || this.state.id !== this.name) {
+      return this.commitCampaign(seedTavernCampaign(this.name));
     }
-    return this.campaign;
+    return this.state;
   }
 }
 

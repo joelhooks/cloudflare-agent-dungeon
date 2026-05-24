@@ -874,3 +874,97 @@ PRIVATE/DEV audit rendered
 all dev scaffold buttons visible
 stillLoading=false
 ```
+
+## 2026-05-24 — Removed canned demo paths and moved outcomes to RefereeAgent
+
+### Why
+
+Joel called the prior feel correctly: the old 3-room demo and fallback routes smelled like deterministic cheating bullshit. The interesting game is not state mutation. It is agents choosing under pressure and the Referee thinking through consequences from dice and procedure.
+
+### Changed
+
+Removed / cut from the deployed worker and domain surface:
+
+- deterministic fallback character plans
+- deterministic fallback adventure choices
+- old 3-room demo routes and buttons
+- deterministic 3-room action route
+- fixed-roll threshold hazard path
+- fake public demo treasure XP button
+- public player-secret seed route
+
+Kept as legitimate engine boundaries:
+
+- dice service and dice ledger
+- schema validation
+- purchase repair with explicit `repaired_kimi` source
+- food/supply consumption
+- faction clocks
+- public/dev projection firewall
+
+Added agentic outcome lane:
+
+- `RefereeAgent.generateOutcome(...)` now produces public narration, pressure, next question, and private reasoning.
+- `commitRefereeOutcome(...)` commits public narration to table events and private reasoning to Referee audit.
+- `PlayerAgent` adventure choices now include table speech, inner monologue, goal, fear, and reason.
+- Dev monitor shows private inner monologue / reasoning under `PRIVATE/DEV`; public monitor does not.
+- Referee outcome generation is validated for obvious public leaks / URLs before commit.
+
+### Persistence fix
+
+Discovered that `private campaign` class fields do not survive Durable Object hibernation/restarts. Switched `Referee` to `Agent<Env, Campaign>` with persisted `this.state` / `this.setState(...)`, based on Cloudflare Agents state docs. This makes campaign state survive separate API calls and browser reconnects.
+
+### Validation
+
+Commands:
+
+```bash
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts
+```
+
+Deploy receipt:
+
+```txt
+agentdungeon.ai (custom domain)
+Current Version ID: c8d3f522-af98-4957-86bf-c22257fe5783
+```
+
+Browser validation with `/skill:agent-browser`:
+
+```txt
+https://agentdungeon.ai/monitor?campaign=agency-c8d3f522
+```
+
+Clicked through:
+
+```txt
+Ask PlayerAgents: session 0 -> two Kimi characters rendered
+Ask PlayerAgents: choose hook -> RefereeAgent narration / pressure / next question rendered
+Resolve travel by dice -> dice checks + RefereeAgent site-arrival narration rendered
+```
+
+Public leak checks:
+
+```txt
+hiddenAgenda=false
+hidden agenda=false
+secret agenda=false
+Wake the ash-cobra=false
+Monopolize salvage=false
+Hide the saint-bell=false
+http/https URL=false
+```
+
+Dev audit check:
+
+```txt
+https://agentdungeon.ai/monitor?campaign=agency-c8d3f522&dev=1
+
+devMode=true
+auditHasInner=true
+auditHasReasoning=true
+stillLoading=false
+```
