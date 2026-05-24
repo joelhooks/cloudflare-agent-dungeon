@@ -679,7 +679,7 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   return json({ error: "Not found" }, { status: 404 });
 }
 
-async function campaignEvents(request: Request, env: Env): Promise<Response> {
+async function campaignEvents(request: Request, env: Env, devMode = false): Promise<Response> {
   const url = new URL(request.url);
   const campaignId = url.searchParams.get("campaign") ?? "demo-campaign";
   const referee = await getAgentByName(env.Referee, campaignId);
@@ -689,7 +689,7 @@ async function campaignEvents(request: Request, env: Env): Promise<Response> {
   const stream = new ReadableStream({
     async start(controller) {
       async function send() {
-        const campaign = await referee.getPublicCampaign();
+        const campaign = devMode ? await referee.getDevCampaign() : await referee.getPublicCampaign();
         controller.enqueue(encoder.encode(`event: campaign\ndata: ${JSON.stringify(campaign)}\n\n`));
       }
 
@@ -732,6 +732,9 @@ function monitorPage(): Response {
   <style>
     body { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; font: 18px/1.55 Georgia, serif; }
     button { margin: 0 .5rem .5rem 0; padding: .45rem .7rem; }
+    .note { border-left: 4px solid #333; padding-left: .8rem; max-width: 75ch; }
+    .dev-only { display: none; }
+    body.dev .dev-only { display: inline-block; }
     pre { white-space: pre-wrap; border: 1px solid #ccc; padding: 1rem; background: #fafafa; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
     @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
@@ -740,16 +743,17 @@ function monitorPage(): Response {
 <body>
   <h1>Agent Dungeon Monitor</h1>
   <p>Public table view. Private PlayerAgent secrets are not shown here.</p>
+  <p class="note">Honest lanes: Kimi builds character plans and chooses hooks. Deterministic Referee code resolves typed choices with dice/procedure. Demo scaffolding is hidden unless you open <code>?dev=1</code>.</p>
   <p>
     <button data-action="/api/create-game">Reset tavern campaign</button>
-    <button data-action="/api/session-zero">Run session 0</button>
-    <button data-action="/api/choose-adventure">Choose adventure</button>
-    <button data-action="/api/travel-to-adventure">Travel to adventure</button>
-    <button data-action="/api/recover-demo-treasure">Recover demo treasure</button>
-    <button data-action="/api/advance-turn">Advance world turn</button>
-    <button data-action="/api/seed-player-secret">Seed player secret</button>
-    <button data-action="/api/live-player-intent-round">Run live Kimi dungeon round</button>
-    <button data-action="/api/player-intent-round">Run deterministic dungeon round</button>
+    <button data-action="/api/session-zero">Ask PlayerAgents: session 0</button>
+    <button data-action="/api/choose-adventure">Ask PlayerAgents: choose hook</button>
+    <button data-action="/api/travel-to-adventure">Resolve travel by dice</button>
+    <button data-action="/api/advance-turn">Advance world clocks</button>
+    <button class="dev-only" data-action="/api/recover-demo-treasure">DEV: award demo treasure XP</button>
+    <button class="dev-only" data-action="/api/seed-player-secret">DEV: seed player secret</button>
+    <button class="dev-only" data-action="/api/live-player-intent-round">DEV: old 3-room Kimi round</button>
+    <button class="dev-only" data-action="/api/player-intent-round">DEV: deterministic 3-room round</button>
   </p>
   <p id="status">Realtime: connecting...</p>
   <div class="grid">
@@ -769,15 +773,25 @@ function monitorPage(): Response {
     const characters = document.getElementById('characters');
     const world = document.getElementById('world');
     const raw = document.getElementById('raw');
+    const nl = String.fromCharCode(10);
+    const blankLine = nl + nl;
+    const searchParams = new URLSearchParams(location.search);
 
-    const devMode = new URLSearchParams(location.search).get('dev') === '1';
+    const devMode = searchParams.get('dev') === '1';
+    const campaignId = searchParams.get('campaign') || 'demo-campaign';
+    document.body.classList.toggle('dev', devMode);
+
+    function withCampaign(path) {
+      const joiner = path.includes('?') ? '&' : '?';
+      return path + joiner + 'campaign=' + encodeURIComponent(campaignId);
+    }
 
     async function load(path) {
-      const response = await fetch(path);
+      const response = await fetch(withCampaign(path));
       const data = await response.json();
       render(data);
       if (devMode && path !== '/api/campaign-dev') {
-        const devResponse = await fetch('/api/campaign-dev');
+        const devResponse = await fetch(withCampaign('/api/campaign-dev'));
         render(await devResponse.json());
       }
     }
@@ -785,29 +799,29 @@ function monitorPage(): Response {
     function render(data) {
       events.textContent = data.publicEvents.map(function (event) {
         return '[' + event.kind + '] ' + event.text;
-      }).join('\n\n') || 'No public events.';
+      }).join(blankLine) || 'No public events.';
 
       const auditEvents = data.refereeAuditEvents || [];
       audit.textContent = auditEvents.map(function (event) {
         return '[PRIVATE/DEV ' + event.kind + '] ' + [event.characterId, event.declaredAction, event.refereeIntent, event.note].filter(Boolean).join(' | ');
-      }).join('\n\n') || 'Private Referee audit is hidden on the public monitor. Add ?dev=1 to show the explicitly marked dev audit projection.';
+      }).join(blankLine) || 'Private Referee audit is hidden on the public monitor. Add ?dev=1 to show the explicitly marked dev audit projection.';
 
       characters.textContent = Object.values(data.characters).map(function (character) {
-        return character.name + ' — level ' + (character.level || 1) + ' ' + (character.className || 'unknown') + ', xp ' + (character.xp || 0) + ', hp ' + character.stats.hp + ', AC ' + character.stats.armorClass + ', food ' + ((character.supplies && character.supplies.rationDays) || 0) + ' day(s), gp ' + (character.goldGp || 0) + ', source ' + (character.creationSource || 'unknown') + '\nInventory: ' + character.inventory.join(', ');
-      }).join('\n\n') || 'No characters yet. Run session 0.';
+        return character.name + ' — level ' + (character.level || 1) + ' ' + (character.className || 'unknown') + ', xp ' + (character.xp || 0) + ', hp ' + character.stats.hp + ', AC ' + character.stats.armorClass + ', food ' + ((character.supplies && character.supplies.rationDays) || 0) + ' day(s), gp ' + (character.goldGp || 0) + ', source ' + (character.creationSource || 'unknown') + nl + 'Inventory: ' + character.inventory.join(', ');
+      }).join(blankLine) || 'No characters yet. Run session 0.';
 
-      world.textContent = 'Day ' + data.time.day + ', ' + data.time.watch + '\nParty goal: ' + (data.party.chosenHookId || 'none yet') + '\n\nLocations:\n' + Object.values(data.world.locations).map(function (location) {
+      world.textContent = 'Day ' + data.time.day + ', ' + data.time.watch + nl + 'Party goal: ' + (data.party.chosenHookId || 'none yet') + blankLine + 'Locations:' + nl + Object.values(data.world.locations).map(function (location) {
         return '- ' + location.name + ' (' + location.kind + ')';
-      }).join('\n') + '\n\nHooks:\n' + Object.values(data.hooks).map(function (hook) {
+      }).join(nl) + blankLine + 'Hooks:' + nl + Object.values(data.hooks).map(function (hook) {
         return '- ' + hook.title + ' [' + hook.status + '] ' + hook.publicSummary;
-      }).join('\n') + '\n\nFaction clocks:\n' + Object.values(data.factions).map(function (faction) {
+      }).join(nl) + blankLine + 'Faction clocks:' + nl + Object.values(data.factions).map(function (faction) {
         return '- ' + faction.name + ': ' + faction.clock + '/' + faction.clockMax + ' — ' + faction.publicGoal;
-      }).join('\n');
+      }).join(nl);
 
       raw.textContent = JSON.stringify(data, null, 2);
     }
 
-    const source = new EventSource('/events');
+    const source = new EventSource(withCampaign(devMode ? '/events-dev' : '/events'));
     source.addEventListener('campaign', function (event) {
       status.textContent = 'Realtime: connected';
       render(JSON.parse(event.data));
@@ -828,6 +842,7 @@ export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
     if (url.pathname === "/events") return campaignEvents(request, env);
+    if (url.pathname === "/events-dev") return campaignEvents(request, env, true);
     if (url.pathname === "/" || url.pathname === "/monitor") return monitorPage();
 
     const api = await handleApi(request, env);

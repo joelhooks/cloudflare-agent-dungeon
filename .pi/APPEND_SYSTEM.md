@@ -54,6 +54,7 @@ North star:
 - Referee validates proposals before committing typed events.
 - RefereeAgent may use `consultRules`; PlayerAgents may not unless the Referee deliberately exposes a bounded safe artifact.
 - Public monitor output must show sanitized gameplay, safe citations, and summaries only. Never stream raw private/copyrighted rules corpus text.
+- Before claiming a monitor/UI deploy works, test it with `/skill:agent-browser` / agent-browser against the deployed URL, not just `curl`; verify the page leaves loading state and controls actually update visible state.
 
 ## Workspace boundaries
 

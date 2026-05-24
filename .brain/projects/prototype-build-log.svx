@@ -792,3 +792,85 @@ public leaks: hiddenAgenda=false, hiddenDescription=false, secret=false
 dev hidden agenda leak? false
 XP sample: Brindle Reed 10, Malodar the Miserable 10
 ```
+
+## 2026-05-24 — Browser-tested monitor loading fix and honest controls
+
+### Bug
+
+Joel tested the deployed monitor and it hung at `Loading...`. Root cause: the Worker embeds monitor JavaScript inside a template literal, and the source used string literals like `'\\n\\n'`. Inside the generated HTML those became literal newlines inside quoted JavaScript strings, which broke the browser script. `curl` still returned a 200 page, so the prior smoke was fake comfort.
+
+### Fix
+
+- Replaced embedded newline literals with `String.fromCharCode(10)` / `blankLine` in the monitor script.
+- Added the project rule to `.pi/APPEND_SYSTEM.md`: browser-test deployed monitor/UI with agent-browser before claiming it works.
+- Preserved `campaign=<id>` query parameters for `/api/*`, `/events`, and `/events-dev`, so browser test runs are isolated and button clicks update the same campaign shown on screen.
+- Split public vs dev controls:
+  - public shows only honest flow buttons: reset, PlayerAgent Session 0, PlayerAgent hook choice, dice/procedure travel, faction clocks
+  - demo scaffold buttons are hidden unless `?dev=1`
+- Added an explicit note on the monitor: Kimi creates character plans / hook choices; deterministic Referee code resolves typed choices with dice/procedure.
+
+### Deploy receipt
+
+```txt
+agentdungeon.ai (custom domain)
+Current Version ID: edddb1bb-7e8a-4b18-a42f-8dccc7076720
+```
+
+### Browser validation receipt
+
+Used `/skill:agent-browser` against the deployed URL, not just curl.
+
+Public URL tested:
+
+```txt
+https://agentdungeon.ai/monitor?campaign=honest-browser-edddb1bb
+```
+
+Browser checks:
+
+```txt
+status: Realtime: connected
+stillLoading: false
+visible public buttons:
+- Reset tavern campaign
+- Ask PlayerAgents: session 0
+- Ask PlayerAgents: choose hook
+- Resolve travel by dice
+- Advance world clocks
+hidden dev buttons:
+- DEV: award demo treasure XP
+- DEV: seed player secret
+- DEV: old 3-room Kimi round
+- DEV: deterministic 3-room round
+```
+
+Clicked through in-browser:
+
+```txt
+Ask PlayerAgents: session 0 -> characters rendered with inventory
+Ask PlayerAgents: choose hook -> world rendered Party goal: hook-...
+Resolve travel by dice -> table events showed losing-direction/travel outcome
+```
+
+Public projection stayed safe:
+
+```txt
+rawHasAudit=false
+rawHasHiddenAgenda=false
+rawHasSecret=false
+```
+
+Dev URL tested:
+
+```txt
+https://agentdungeon.ai/monitor?campaign=honest-dev-edddb1bb&dev=1
+```
+
+Dev checks:
+
+```txt
+devMode=true
+PRIVATE/DEV audit rendered
+all dev scaffold buttons visible
+stillLoading=false
+```
