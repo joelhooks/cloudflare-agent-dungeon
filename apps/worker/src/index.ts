@@ -253,11 +253,30 @@ function toCharacterCreationPlan(playerId: PlayerId, output: CharacterCreationPl
     alignment: output.alignment,
     ...(output.deity ? { deity: output.deity } : {}),
     reasonExceptional: output.reasonExceptional,
-    purchases: output.purchases.map((purchase) => ({
-      itemId: purchase.itemId as `item-${string}`,
-      quantity: purchase.quantity
-    }))
+    purchases: output.purchases
+      .filter((purchase) => purchase.quantity > 0)
+      .map((purchase) => ({
+        itemId: normalizeItemId(purchase.itemId) as `item-${string}`,
+        quantity: purchase.quantity
+      }))
   };
+}
+
+function normalizeItemId(itemId: string): string {
+  const aliases: Record<string, string> = {
+    "item-flask-oil": "item-oil-flask",
+    "item-oil": "item-oil-flask",
+    "item-rations": "item-rations-week",
+    "item-standard-rations": "item-rations-week",
+    "item-iron-rations": "item-iron-rations-week",
+    "item-iron-spikes-12": "item-iron-spikes",
+    "item-torch": "item-torches",
+    "item-torches-6": "item-torches",
+    "item-short-bow": "item-shortbow",
+    "item-arrows-20": "item-arrows",
+    "item-rope": "item-rope-50"
+  };
+  return aliases[itemId] ?? itemId;
 }
 
 function fallbackCharacterPlan(playerId: PlayerId): CharacterCreationPlan {
