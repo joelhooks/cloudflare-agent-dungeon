@@ -1,0 +1,98 @@
+---
+title: OSE Session Zero Source Receipts
+kind: resource
+status: active
+created: 2026-05-24
+tags:
+  - ose
+  - joelclaw
+  - character-creation
+  - equipment
+---
+
+# OSE Session Zero Source Receipts
+
+This note records the JoelClaw docs/PDF Brain receipts used for the current Session 0 implementation.
+
+## Character creation / class scope
+
+Primary source doc:
+
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24` — *Old School Essentials Classic Fantasy Rules Tome v1.4*
+
+JoelClaw summary for that doc identifies the classic seven classes as:
+
+- Cleric
+- Dwarf
+- Elf
+- Fighter
+- Halfling
+- Magic-User
+- Thief
+
+Implementation maps these into:
+
+```ts
+"fighter" | "cleric" | "magic-user" | "thief" | "dwarf" | "elf" | "halfling"
+```
+
+## Starting money
+
+Receipt:
+
+- `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s105:n0`
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s174:n0`
+
+Relevant source-backed rule summary:
+
+- PCs begin with `3d6 × 10` gold pieces.
+
+Implementation:
+
+```ts
+const startingGoldGp = rollAndRecord(next, "3d6", randomInt, `Session 0 starting gold x10 for ${playerId}`, "referee", playerId).result * 10;
+```
+
+## Mundane equipment prices
+
+Receipt:
+
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s178`
+- Heading: `Adventuring Gear Item Cost (gp)`
+
+Used directly for common adventuring gear in the town stores:
+
+- Backpack 5 gp
+- Holy symbol 25 gp
+- Iron spikes 1 gp
+- Lantern 10 gp
+- Oil flask 2 gp
+- Pole 10' 1 gp
+- Rations, standard 7 days 5 gp
+- Rations, iron 7 days 15 gp
+- Rope 50' 1 gp
+- Tinder box 3 gp
+- Torches 6 for 1 gp
+- Waterskin 1 gp
+
+## Weapons and armour prices
+
+Receipts:
+
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s181`
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s183`
+
+Used directly for first store items:
+
+- Dagger 3 gp
+- Sword 10 gp
+- Short bow 25 gp
+- Leather armour 20 gp, AC 12
+- Chainmail 40 gp, AC 14
+- Shield 10 gp, +1 AC bonus in rules; current prototype records a simple AC contribution and needs a later AC calculation pass.
+
+## Deliberate prototype deviations / TODOs
+
+- One ability score swap is Joel-approved prototype shape, not a claimed OSE default.
+- Store categories like tavern/inn, apothecary, stable, hireling board, and local services are world scaffolding. Exact service pricing needs additional OSE/source lookup before being treated as canonical.
+- Current AC calculation is deliberately thin. Next pass should model base AC, armour, shield bonus, and Dexterity modifiers from source.

@@ -415,6 +415,86 @@ Results:
 - `/monitor` served HTML.
 - live Kimi round triggered threshold hazard from semantic movement action.
 
+## 2026-05-24 — AFK campaign goal checkpoint
+
+Joel set the active goal: build a realistic realtime prototype served at `agentdungeon.ai`, starting with Session 0 character creation, rolled gold, gear shopping, tavern start, persistent world, factions, survival pressure, dice ledger, and realtime monitor.
+
+Branch cut:
+
+```txt
+feat/realtime-agent-dungeon-campaign
+```
+
+Commits:
+
+- `9f836f2` — `feat: scaffold agent dungeon prototype`
+- `1dc09d4` — `feat: add campaign world session zero domain model`
+- `13504da` — `feat: add session zero and realtime monitor loop`
+
+Telegram progress pings were queued through `joelclaw notify send --telegram-only` after the branch/initial commit and after the Session 0/SSE checkpoint.
+
+### OSE source grounding
+
+Added stronger repo-local operating policy in `.pi/APPEND_SYSTEM.md`: OSE mechanics must be looked up in JoelClaw docs/PDF Brain before implementation. Captured source receipts in:
+
+- [[resources/ose-session-zero-source-receipts]]
+
+Current sourced procedures/items:
+
+- starting gold: `3d6 × 10 gp`
+- classic core classes
+- mundane adventuring gear prices
+- first weapons/armour prices
+
+### Implemented domain slice
+
+Added campaign-scale state:
+
+- campaign time: day + watch
+- persistent world map with tavern, urban hub, rural towns, wilderness, and adventure sites
+- faction records with public goals, hidden agendas, and clocks
+- starting town stores/services
+- character creation drafts and plans
+- rolled ability scores with one swap
+- rolled starting gold
+- manual gear purchases
+- ration-day tracking
+- XP/level fields
+- dice ledger with terms/results/reasons
+
+Added domain tests for:
+
+- character creation from `3d6` down the line + one swap
+- rolled gold + gear purchases + ration days
+- stocked town stores
+- faction clock advancement
+- hunger damage when out of food
+- existing fog-of-war and Referee audit boundaries
+
+### Implemented Worker/runtime slice
+
+Added Referee methods/routes:
+
+- `/api/create-game` — starts tavern Session 0 campaign
+- `/api/session-zero` — PlayerAgents build characters from rolled drafts and buy gear
+- `/api/advance-turn` — advances campaign time/faction clocks/supply pressure
+- `/events` — simple SSE stream of campaign state for monitor
+- `/monitor` — stock HTML monitor with EventSource updates
+
+### Validation
+
+Commands run:
+
+```bash
+pnpm check
+pnpm test
+```
+
+Results:
+
+- Typecheck passed.
+- Tests passed: 8 domain tests.
+
 ### Next learning question
 
-Should we deploy to `agentdungeon.ai` next, or add a one-way SSE monitor firehose first?
+Next slice should smoke test the local Worker Session 0 routes with real Kimi, then configure/deploy `agentdungeon.ai`.
