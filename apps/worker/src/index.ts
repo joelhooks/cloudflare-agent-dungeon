@@ -129,15 +129,16 @@ export class PlayerAgent extends Think<Env> {
       const result = await generateObject({
         model: this.getModel(),
         schema: CharacterCreationPlanSchema,
+        maxOutputTokens: 1200,
         prompt: [
           "Create your own level 1 Old School Essentials character for session 0.",
           "Use the rolled abilities and starting gold exactly as provided.",
           "You may make at most one ability score swap.",
           "Choose one core classic class: fighter, cleric, magic-user, thief, dwarf, elf, halfling.",
-          "Buy starting gear manually from the available store item ids. Food, light, containers, and tools matter.",
+          "Buy starting gear manually from available item ids. Food, light, containers, and tools matter.",
           "Do not buy more than the rolled starting gold can afford.",
           `Draft: ${JSON.stringify(draft)}`,
-          `Stores: ${JSON.stringify(stores)}`,
+          `Available items: ${compactStoreCatalog(stores)}`,
           `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
         ].join("\n")
       });
@@ -212,6 +213,12 @@ export class PlayerAgent extends Think<Env> {
     if (this.secrets.length === 0) return "No private notes.";
     return `${this.secrets.length} private note(s). Use them to shape play, but do not reveal them unless you choose to act on them.`;
   }
+}
+
+function compactStoreCatalog(stores: Record<StoreId, Store>): string {
+  return Object.values(stores)
+    .flatMap((store) => store.items.map((item) => `${item.id}:${item.name}:${item.costGp}gp`))
+    .join("; ");
 }
 
 function toCharacterCreationPlan(playerId: PlayerId, output: CharacterCreationPlanOutput): CharacterCreationPlan {
