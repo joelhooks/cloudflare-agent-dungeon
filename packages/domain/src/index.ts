@@ -42,6 +42,7 @@ export type Character = {
   supplies?: {
     rationDays: number;
   };
+  creationSource?: "kimi" | "repaired_kimi" | "fallback" | "unknown";
 };
 
 export type Room = {
@@ -108,6 +109,7 @@ export type CharacterCreationPlan = {
   deity?: string;
   reasonExceptional: string;
   purchases: Purchase[];
+  planSource?: "kimi" | "repaired_kimi" | "fallback" | "unknown";
 };
 
 export type ActionProposal = {
@@ -595,13 +597,14 @@ export function commitCharacterCreation(campaign: Campaign, draft: CharacterCrea
     alignment: plan.alignment,
     ...(plan.deity ? { deity: plan.deity } : {}),
     reasonExceptional: plan.reasonExceptional,
-    supplies: { rationDays: purchaseResult.rationDays }
+    supplies: { rationDays: purchaseResult.rationDays },
+    creationSource: plan.planSource ?? "unknown"
   };
 
   next.characters[character.id] = character;
   next.publicEvents.push(event(`${character.name}, a level 1 ${plan.className}, joins the table with ${purchaseResult.rationDays} ration day(s) and ${purchaseResult.remainingGoldGp} gp left.`, "session_zero", character.id));
   next.refereeAuditEvents.push(
-    audit(`Character created from 3d6 down the line with${plan.abilitySwap ? " one swap" : " no swap"}.`, {
+    audit(`Character created from 3d6 down the line with${plan.abilitySwap ? " one swap" : " no swap"} using ${plan.planSource ?? "unknown"} plan.`, {
       kind: "character_creation",
       playerId: plan.playerId,
       characterId: character.id

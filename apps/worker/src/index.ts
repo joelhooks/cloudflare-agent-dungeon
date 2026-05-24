@@ -258,7 +258,8 @@ function toCharacterCreationPlan(playerId: PlayerId, output: CharacterCreationPl
       .map((purchase) => ({
         itemId: normalizeItemId(purchase.itemId) as `item-${string}`,
         quantity: purchase.quantity
-      }))
+      })),
+    planSource: "kimi"
   };
 }
 
@@ -275,7 +276,7 @@ function trimPlanToBudget(plan: CharacterCreationPlan, stores: Record<StoreId, S
     purchases.push({ ...purchase, quantity: affordableQuantity });
   }
 
-  return { ...plan, purchases };
+  return { ...plan, purchases, planSource: plan.planSource === "kimi" ? "repaired_kimi" : (plan.planSource ?? "unknown") };
 }
 
 function normalizeItemId(itemId: string): string {
@@ -310,7 +311,8 @@ function fallbackCharacterPlan(playerId: PlayerId): CharacterCreationPlan {
         { itemId: "item-backpack", quantity: 1 },
         { itemId: "item-rope-50", quantity: 1 },
         { itemId: "item-dagger", quantity: 1 }
-      ]
+      ],
+      planSource: "fallback"
     };
   }
 
@@ -326,7 +328,8 @@ function fallbackCharacterPlan(playerId: PlayerId): CharacterCreationPlan {
       { itemId: "item-torches", quantity: 1 },
       { itemId: "item-sword", quantity: 1 },
       { itemId: "item-shield", quantity: 1 }
-    ]
+    ],
+    planSource: "fallback"
   };
 }
 
