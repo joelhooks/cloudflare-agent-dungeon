@@ -72,6 +72,7 @@ Hard correction: this is an **open-world, player-driven adventure**, not a scrip
 - OSE-faithful skill, XP, level, inventory, magic item, supply, food, and death pressure
 - a legitimate random dice service / ledger, not model vibes
 - autonomous mode advances open-world beats, not fixed story chapters
+- next prototype boundary is town/tavern, with persistent NPCs and conversational Session 0; see [[projects/tavern-town-open-world-prototype]]
 
 ## Requirements (R)
 

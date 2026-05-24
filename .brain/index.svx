@@ -11,6 +11,7 @@ created: 2026-05-24
 
 - [[projects/think-dnd-prototype]]
 - [[projects/prototype-build-log]]
+- [[projects/tavern-town-open-world-prototype]]
 
 ## Areas
 

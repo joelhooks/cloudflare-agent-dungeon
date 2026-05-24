@@ -1,0 +1,109 @@
+---
+title: Tavern Town Open World Prototype
+kind: project
+status: shaping
+created: 2026-05-24
+tags:
+  - prototype
+  - open-world
+  - tavern
+  - town
+  - session-zero
+  - ui
+---
+
+# Tavern Town Open World Prototype
+
+## Decision
+
+The next prototype boundary is **town/tavern**, not full wilderness/dungeon play.
+
+Town is the bounded open world. The tavern is the first table stage. This lets the system prove player-driven autonomy without pretending we have the whole OSE campaign loop yet.
+
+## Why this boundary works
+
+A tavern/town slice supports real open-world play while staying small:
+
+- Referee can build and persist a social place instead of a fixed route.
+- NPCs can have names, wants, pressures, rumors, secrets, and memory.
+- Players can create characters conversationally.
+- Party formation can happen through roleplay instead of instant assignment.
+- Shopping matters because supplies matter.
+- Hooks can emerge from NPC interaction and overheard trouble, not button-forced adventure selection.
+- The system can show reasoning/process clearly without needing full combat/loot/return loops yet.
+
+## Prototype loop
+
+Start button begins the town table daemon.
+
+The first useful autonomous slice:
+
+1. Referee builds the starting tavern/town premise.
+2. Referee populates and persists tavern NPCs.
+3. Referee invites PlayerAgents to the table.
+4. PlayerAgents do conversational Session 0 character creation.
+5. Referee balances the party by asking follow-up questions, not by forcing classes.
+6. PlayerAgents equip through shopping/tavern-town services.
+7. PlayerAgents roleplay first tavern interactions.
+8. NPCs reveal tensions, rumors, and hooks through conversation.
+9. Referee frames current affordances.
+10. PlayerAgents choose what to pursue, ignore, ask, buy, or investigate next.
+
+No fixed adventure path is required.
+
+## Persistent town entities
+
+Referee should persist town/NPC state as first-class campaign data:
+
+- tavern
+- innkeeper / bartender
+- locals
+- hirelings / retainers
+- shopkeepers
+- healer / shrine contact
+- faction-linked NPCs
+- rumors known and who knows them
+- NPC disposition toward each PC / party
+- promises, debts, insults, prices, and favors
+
+NPCs are not disposable flavor. They are part of the world graph.
+
+## UI requirement
+
+The monitor should focus on process and reasoning, not just final JSON.
+
+Desired UI shape:
+
+- newest turn at top
+- running process log
+- clear lanes:
+  - public table narration
+  - PlayerAgent visible speech/action
+  - Referee questions
+  - dice/procedure receipts
+  - dev-only reasoning / inner monologue / audit
+- Start World button disables while running
+- Pause / resume control
+- maybe speed switch later
+- visual status for current beat: observing, asking players, resolving, narrating, scheduled
+
+The UI should make the world feel like it is thinking and unfolding, not like a form got submitted.
+
+## Non-goals for this slice
+
+Do not build full dungeon exploration, combat, loot tables, or return-to-town reward loops yet.
+
+Do not script a tavern → hook → travel sequence.
+
+Do not make NPCs transient prompt text only.
+
+## Next implementation slice
+
+Build `runNextBeat()` for tavern/town mode:
+
+- derive current affordances from persisted town state,
+- ask relevant PlayerAgents for typed intents,
+- ask RefereeAgent for process/narration when needed,
+- mutate one beat of world/NPC/party state,
+- append process events newest-first in UI,
+- schedule next beat only while autoplay is enabled.
