@@ -162,3 +162,40 @@ The next real implementation step is not more UI polish. It is one real generati
 8. Schedule the next beat only while Start World/autoplay is enabled.
 
 The prototype should stay in the tavern/town boundary until this feels alive.
+
+## 2026-05-24 generative prototype pass
+
+Built the next throwaway prototype pass in `apps/worker/src/prototype-tavern-town-ui.ts`.
+
+Question being answered: does a console/TUI-like monitor make the autonomous tavern/town loop feel generative and player-driven?
+
+What changed:
+
+- Default variant is now `console`; `split` and `map` remain switchable.
+- Visual direction moved toward a TUI-like dark console with Geist Mono/pixel-ish density.
+- State stays in browser memory.
+- Added a throwaway generative endpoint: `POST /api/prototype/tavern-town-beat`.
+- Each beat consults JoelClaw OSE docs search for source receipts, then asks Kimi for one open-world tavern/town beat.
+- The prompt explicitly says rules validation comes from OSE rulebook receipts, not local code.
+- UI shows newest generated turn at top, current affordances, rule receipt IDs, NPC memory, party state, and visible state JSON.
+
+Local run command:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/worker dev
+```
+
+Tailnet run checked at:
+
+```txt
+https://dark-wizard.tail7af24.ts.net:8444/prototype/tavern-town?variant=console
+```
+
+Browser check:
+
+```txt
+Step One Beat -> generated beat 1
+stateBeat=1
+rule receipts rendered from JoelClaw docs ids
+newest generated turn appeared at top
+```

@@ -1,8 +1,80 @@
-// PROTOTYPE — THROWAWAY UI STUDY
-// Question: what should the autonomous tavern/town process monitor feel like?
+// PROTOTYPE — THROWAWAY UI + BEAT GENERATOR STUDY
+// Question: does a console/TUI-like monitor make the autonomous tavern/town loop feel generative and player-driven?
+// Assumption: this is a UI prototype with a tiny throwaway generative API. State lives in browser memory.
 // Run with: pnpm --filter @cloudflare-agent-dungeon/worker dev
-// Open: /prototype/tavern-town?variant=ledger|table|console
+// Open: /prototype/tavern-town?variant=console|split|map
 // Delete or absorb after Joel picks the useful shape.
+
+import { z } from "zod";
+
+const PrototypeNpcSchema = z.object({
+  name: z.string(),
+  role: z.string(),
+  want: z.string(),
+  memory: z.string(),
+  disposition: z.string()
+});
+
+const PrototypePartyMemberSchema = z.object({
+  player: z.string(),
+  character: z.string(),
+  goal: z.string(),
+  fear: z.string(),
+  inventory: z.array(z.string())
+});
+
+const PrototypeStateSchema = z.object({
+  mode: z.string(),
+  beat: z.number().int().nonnegative(),
+  location: z.string(),
+  premise: z.string(),
+  npcs: z.array(PrototypeNpcSchema),
+  party: z.array(PrototypePartyMemberSchema),
+  affordances: z.array(z.string()),
+  visibleThreads: z.array(z.string()),
+  ruleReceipts: z.array(z.string()),
+  log: z.array(z.unknown()).optional()
+});
+
+type PrototypeState = z.infer<typeof PrototypeStateSchema>;
+
+const GeneratedBeatSchema = z.object({
+  lane: z.enum(["referee", "player", "npc", "rules", "audit"]),
+  actor: z.string(),
+  title: z.string(),
+  tableText: z.string(),
+  processReasoning: z.string(),
+  devReasoning: z.string(),
+  nextAffordances: z.array(z.string()).min(3).max(10),
+  visibleThreads: z.array(z.string()).min(1).max(10),
+  npcUpdates: z.array(PrototypeNpcSchema).optional(),
+  partyUpdates: z.array(PrototypePartyMemberSchema).optional(),
+  rulesUsed: z.array(z.string()).optional()
+});
+
+type GeneratedBeat = z.infer<typeof GeneratedBeatSchema>;
+
+type RuleReceipt = {
+  id: string;
+  docId: string;
+  chunkIndex?: number;
+  headingPath?: string[];
+  snippet?: string;
+};
+
+export async function handlePrototypeTavernTownApi(request: Request, env: Env): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/prototype/tavern-town-beat") return null;
+  if (request.method !== "POST") return json({ error: "POST only" }, { status: 405 });
+
+  const input = await request.json().catch(() => ({}));
+  const state = PrototypeStateSchema.parse((input as { state?: unknown }).state ?? initialPrototypeState());
+  const receipts = await consultPrototypeRules(state);
+  const generated = await generatePrototypeBeat(env, state, receipts);
+  const nextState = applyGeneratedBeat(state, generated, receipts);
+
+  return json({ state: nextState, beat: nextState.log?.[0], receipts: receipts.map((receipt) => receipt.id) });
+}
 
 export function prototypeTavernTownUiPage(): Response {
   return new Response(`<!doctype html>
@@ -10,366 +82,339 @@ export function prototypeTavernTownUiPage(): Response {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PROTOTYPE — Tavern Town Runner</title>
+  <title>PROTOTYPE — Tavern Town Console</title>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700;800&display=swap');
     :root {
-      --paper: #fbf7eb;
-      --ink: #201711;
-      --muted: #6f6255;
-      --line: #d8c7a9;
-      --red: #8e2f22;
-      --gold: #b07722;
-      --green: #32684c;
-      --blue: #315f79;
-      --violet: #68466d;
-      --shadow: 0 18px 60px rgba(35, 24, 13, .16);
+      --bg: #070807;
+      --panel: #0e110f;
+      --panel2: #141812;
+      --ink: #eaf8de;
+      --muted: #8ca184;
+      --line: #2d3a2a;
+      --hot: #b7ff5a;
+      --amber: #ffd166;
+      --red: #ff6b57;
+      --blue: #6dd3ff;
+      --violet: #d6a4ff;
+      --grid: rgba(183, 255, 90, .08);
     }
-
     * { box-sizing: border-box; }
     body {
       margin: 0;
+      min-height: 100vh;
       color: var(--ink);
       background:
-        radial-gradient(circle at top left, rgba(176, 119, 34, .20), transparent 28rem),
-        linear-gradient(135deg, #fffdf6, var(--paper));
-      font: 18px/1.5 Georgia, 'Iowan Old Style', serif;
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+        radial-gradient(circle at 70% 10%, rgba(183,255,90,.12), transparent 28rem),
+        var(--bg);
+      background-size: 22px 22px, 22px 22px, auto, auto;
+      font: 15px/1.5 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: -.02em;
     }
-
     button, select {
       font: inherit;
       color: var(--ink);
-      background: #fffaf0;
-      border: 1px solid var(--ink);
-      border-radius: 999px;
-      padding: .55rem .9rem;
+      background: var(--panel2);
+      border: 1px solid var(--hot);
+      padding: .55rem .72rem;
+      text-transform: uppercase;
+      box-shadow: 0 0 0 1px rgba(183,255,90,.14), 0 0 18px rgba(183,255,90,.08);
       cursor: pointer;
-      box-shadow: 3px 3px 0 var(--ink);
     }
-
-    button:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
-    button:hover:not(:disabled), select:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--ink); }
-
-    .shell { width: min(1420px, calc(100vw - 32px)); margin: 0 auto; padding: 24px 0 112px; }
-    .prototype-ribbon {
-      display: inline-flex; gap: .5rem; align-items: center;
-      border: 1px solid var(--ink); border-radius: 999px; padding: .25rem .65rem;
-      background: #fff; box-shadow: 2px 2px 0 var(--ink); font-size: .78rem; text-transform: uppercase; letter-spacing: .08em;
-    }
-
-    header { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); gap: 28px; align-items: end; margin: 24px 0 28px; }
-    h1 { font-size: clamp(2.3rem, 6vw, 6rem); line-height: .92; letter-spacing: -.055em; margin: 0 0 12px; max-width: 12ch; }
-    h2 { margin: 0 0 .7rem; font-size: 1.1rem; text-transform: uppercase; letter-spacing: .08em; }
-    p { margin: 0 0 1rem; }
-    .lede { max-width: 68ch; color: #3b2c20; font-size: 1.08rem; }
-
-    .control-panel, .card, .feed-item, .state-card {
-      background: rgba(255, 252, 244, .84);
+    button:disabled { color: var(--muted); border-color: var(--line); cursor: not-allowed; box-shadow: none; }
+    button:hover:not(:disabled), select:hover { background: #1b2418; }
+    .shell { width: min(1500px, calc(100vw - 28px)); margin: 0 auto; padding: 18px 0 92px; }
+    .topbar, .bottombar {
       border: 1px solid var(--line);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(8px);
+      background: rgba(14,17,15,.92);
+      padding: 10px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
     }
-
-    .control-panel { padding: 16px; border-radius: 24px; }
-    .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    .status-line { margin-top: 12px; color: var(--muted); font-size: .95rem; }
-    .status-pill { display: inline-block; color: #fff; background: var(--green); border-radius: 999px; padding: .1rem .5rem; margin-right: .35rem; }
-
-    .app { display: grid; gap: 18px; }
-    body.variant-ledger .app { grid-template-columns: minmax(0, .95fr) minmax(460px, 1.2fr) minmax(320px, .8fr); }
-    body.variant-table .app { grid-template-columns: minmax(0, 1fr) minmax(440px, .86fr); }
-    body.variant-console .app { grid-template-columns: minmax(0, .78fr) minmax(520px, 1.22fr); }
-
-    .stack { display: grid; gap: 14px; align-content: start; }
-    .card { border-radius: 26px; padding: 18px; }
-    .town-map { min-height: 280px; position: relative; overflow: hidden; background: linear-gradient(145deg, rgba(255,255,255,.65), rgba(245,227,190,.65)); }
-    .road { position: absolute; left: -5%; right: -5%; top: 54%; height: 26px; background: rgba(107, 85, 58, .24); transform: rotate(-7deg); border-top: 1px dashed rgba(32,23,17,.3); border-bottom: 1px dashed rgba(32,23,17,.3); }
-    .place {
-      position: absolute; width: 128px; min-height: 76px; border: 1px solid var(--ink); border-radius: 18px;
-      background: #fff9eb; padding: 10px; box-shadow: 5px 5px 0 rgba(32,23,17,.85); font-size: .92rem;
+    h1 { margin: 0; font-size: clamp(1.7rem, 4vw, 4.6rem); line-height: .88; letter-spacing: -.08em; text-transform: uppercase; }
+    h2 { margin: 0 0 8px; color: var(--hot); font-size: .82rem; letter-spacing: .12em; text-transform: uppercase; }
+    .tag { color: var(--bg); background: var(--hot); padding: .14rem .42rem; font-weight: 800; text-transform: uppercase; }
+    .muted { color: var(--muted); }
+    .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, .7fr); gap: 14px; margin: 14px 0; align-items: stretch; }
+    .panel { border: 1px solid var(--line); background: rgba(14,17,15,.91); padding: 14px; min-width: 0; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .status { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--muted); }
+    .mode { color: var(--bg); background: var(--amber); padding: .12rem .45rem; font-weight: 800; }
+    .app { display: grid; gap: 14px; }
+    body.variant-console .app { grid-template-columns: minmax(0, 1.25fr) minmax(340px, .75fr); }
+    body.variant-split .app { grid-template-columns: minmax(340px, .7fr) minmax(0, 1fr) minmax(320px, .65fr); }
+    body.variant-map .app { grid-template-columns: minmax(0, 1fr) minmax(420px, .75fr); }
+    .feed { display: flex; flex-direction: column; gap: 10px; }
+    .turn {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(20,24,18,.96), rgba(10,12,10,.96));
+      padding: 12px;
+      position: relative;
+      overflow: hidden;
     }
-    .place strong { display: block; }
-    .place small { color: var(--muted); }
-    .p1 { left: 8%; top: 18%; } .p2 { right: 12%; top: 10%; } .p3 { left: 38%; top: 48%; } .p4 { right: 8%; bottom: 10%; }
-
-    .npc-grid, .party-grid { display: grid; gap: 10px; }
-    .npc, .pc, .affordance {
-      border: 1px solid var(--line); border-radius: 18px; padding: 12px; background: rgba(255,255,255,.58);
-    }
-    .npc strong, .pc strong, .affordance strong { display: block; }
-    .npc span, .pc span, .affordance span { color: var(--muted); font-size: .93rem; }
-
-    .feed { display: flex; flex-direction: column; gap: 12px; }
-    .feed-item { border-radius: 22px; padding: 14px 16px; animation: drop .28s ease-out both; }
-    .feed-item .meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
-    .lane { color: #fff; border-radius: 999px; padding: .1rem .46rem; background: var(--blue); }
-    .lane.referee { background: var(--red); }
-    .lane.player { background: var(--green); }
-    .lane.npc { background: var(--gold); color: #160f09; }
+    .turn:first-child { border-color: var(--hot); box-shadow: 0 0 0 1px rgba(183,255,90,.25), 0 0 34px rgba(183,255,90,.08); }
+    .turn:before { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(90deg, rgba(183,255,90,.08), transparent 24%); opacity: .55; }
+    .meta { position: relative; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
+    .lane { color: var(--bg); background: var(--blue); padding: .1rem .4rem; font-weight: 800; }
+    .lane.referee { background: var(--hot); }
+    .lane.player { background: var(--blue); }
+    .lane.npc { background: var(--amber); }
     .lane.rules { background: var(--violet); }
-    .lane.audit { background: #2c2b2a; }
-    .feed-item h3 { margin: 0 0 4px; font-size: 1.15rem; }
-    .feed-item p { margin: 0; }
-    .reason { margin-top: 10px; padding: 10px; border-left: 3px solid var(--line); color: #4a382a; background: rgba(255,255,255,.54); }
-
-    .state-card { border-radius: 22px; padding: 14px; }
-    .state-card pre { margin: 0; white-space: pre-wrap; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
-
-    .table-stage {
-      min-height: 560px; border-radius: 34px; border: 1px solid var(--ink); position: relative; overflow: hidden;
-      background:
-        radial-gradient(circle at 50% 48%, rgba(111, 70, 36, .35), transparent 11rem),
-        linear-gradient(145deg, #51301e, #1c120d 70%);
-      box-shadow: var(--shadow);
-      color: #ffecc9;
-      padding: 24px;
-    }
-    .table-stage h2 { color: #fff1cf; }
-    .round-table { position: absolute; left: 50%; top: 53%; transform: translate(-50%, -50%); width: min(66vw, 520px); aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle, #8a5431, #4b2919 66%); border: 10px solid #2a160e; box-shadow: inset 0 0 60px rgba(0,0,0,.35), 0 22px 70px rgba(0,0,0,.45); }
-    .token { position: absolute; width: 144px; border: 1px solid rgba(255,236,201,.5); background: rgba(25,14,9,.75); color: #fff1cf; border-radius: 18px; padding: 10px; }
-    .t1 { left: 7%; top: 18%; } .t2 { right: 8%; top: 20%; } .t3 { left: 12%; bottom: 10%; } .t4 { right: 13%; bottom: 12%; }
-
-    body.variant-table .ledger-only, body.variant-console .ledger-only { display: none; }
-    body.variant-ledger .table-only, body.variant-console .table-only { display: none; }
-    body.variant-ledger .console-only, body.variant-table .console-only { display: none; }
-
-    .console {
-      background: #11100e; color: #f4ead8; border-radius: 26px; padding: 18px; box-shadow: var(--shadow); min-height: 620px;
-      font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid #312820;
-    }
-    .console .feed-item { background: #191713; border: 1px solid #3c342d; box-shadow: none; border-radius: 12px; }
-    .console .reason { background: #211f1a; border-left-color: #b07722; color: #d8c7a9; }
-
-    .bottom-bar {
-      position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 10;
-      display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 24px);
-      background: rgba(255,255,255,.86); border: 1px solid var(--ink); border-radius: 999px; padding: 8px; box-shadow: 6px 6px 0 var(--ink);
-      backdrop-filter: blur(10px);
-    }
-    .bottom-bar a { text-decoration: none; color: var(--ink); border-radius: 999px; padding: .45rem .7rem; }
-    .bottom-bar a.active { background: var(--ink); color: #fff; }
-
-    @keyframes drop { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
-    @media (max-width: 1100px) { header, body.variant-ledger .app, body.variant-table .app, body.variant-console .app { grid-template-columns: 1fr; } }
+    .lane.audit { background: var(--red); }
+    .turn h3 { position: relative; margin: 0 0 6px; font-size: 1.06rem; color: #f6ffe9; text-transform: uppercase; letter-spacing: -.02em; }
+    .turn p { position: relative; margin: 0; }
+    .reason { position: relative; margin-top: 10px; padding: 9px 10px; border-left: 2px solid var(--hot); background: rgba(183,255,90,.05); color: #bdd3b4; }
+    .dev { border-left-color: var(--red); color: #d9aaa1; }
+    .stack { display: grid; gap: 14px; align-content: start; }
+    .kv { display: grid; gap: 8px; }
+    .row { border: 1px solid var(--line); background: rgba(255,255,255,.02); padding: 9px; }
+    .row strong { color: #f6ffe9; display: block; }
+    .row span { color: var(--muted); }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: #cfe7c6; font: 12px/1.45 'Geist Mono', ui-monospace, monospace; }
+    .mapbox { min-height: 430px; position: relative; overflow: hidden; background: radial-gradient(circle at 50% 50%, rgba(183,255,90,.12), transparent 11rem), #080908; }
+    .node { position: absolute; border: 1px solid var(--hot); background: #10150f; padding: 10px; width: 160px; box-shadow: 0 0 24px rgba(183,255,90,.1); }
+    .node small { color: var(--muted); }
+    .n1 { left: 7%; top: 12%; } .n2 { right: 8%; top: 16%; } .n3 { left: 38%; top: 48%; } .n4 { right: 18%; bottom: 10%; }
+    .variant-console .map-only, .variant-console .split-only { display: none; }
+    .variant-split .map-only { display: none; }
+    .variant-map .split-only { display: none; }
+    .switcher { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 20; display: flex; gap: 8px; background: rgba(7,8,7,.95); border: 1px solid var(--hot); padding: 8px; box-shadow: 0 0 35px rgba(183,255,90,.13); }
+    .switcher a { color: var(--ink); text-decoration: none; padding: .42rem .62rem; border: 1px solid var(--line); text-transform: uppercase; }
+    .switcher a.active { color: var(--bg); background: var(--hot); border-color: var(--hot); font-weight: 800; }
+    @media (max-width: 1100px) { .hero, body.variant-console .app, body.variant-split .app, body.variant-map .app { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <main class="shell">
-    <span class="prototype-ribbon">Prototype / wipe me</span>
-    <header>
-      <div>
-        <h1>Tavern Town Runner</h1>
-        <p class="lede">UI study for an autonomous, player-driven town/tavern loop. Newest turn stays on top. The monitor shows reasoning, table speech, NPC pressure, rules receipts, and dev-only audit lanes as the world thinks through one beat at a time.</p>
+    <div class="topbar"><span class="tag">Prototype / wipe me</span><span class="muted">Browser-memory state · one generated town beat per tick · newest turn first</span></div>
+    <section class="hero">
+      <div class="panel">
+        <h1>Tavern Town Console</h1>
+        <p class="muted">Open-world tavern prototype. The daemon advances beats, not a plot. Players can ask, buy, hire, stall, drink, leave, or dig sideways.</p>
       </div>
-      <section class="control-panel">
+      <div class="panel">
         <h2>World daemon</h2>
         <div class="controls">
           <button id="start">Start World</button>
           <button id="pause" disabled>Pause</button>
           <button id="step">Step One Beat</button>
-          <select id="speed" aria-label="speed">
-            <option value="1800">slow</option>
-            <option value="950" selected>table pace</option>
-            <option value="420">fast skim</option>
-          </select>
+          <select id="speed"><option value="7000">slow</option><option value="4200" selected>table pace</option><option value="1800">fast skim</option></select>
         </div>
-        <p class="status-line"><span class="status-pill" id="mode">idle</span><span id="statusText">No persistence. Simulated process only.</span></p>
-      </section>
-    </header>
+        <p class="status"><span class="mode" id="mode">idle</span><span id="statusText">No persistence. This calls a throwaway prototype AI endpoint.</span></p>
+      </div>
+    </section>
 
     <section class="app">
-      <div class="stack ledger-only">
-        <section class="card town-map">
-          <div class="road"></div>
-          <div class="place p1"><strong>Golden Eel</strong><small>smoke, debts, rumor</small></div>
-          <div class="place p2"><strong>Archmarket</strong><small>gear and bad prices</small></div>
-          <div class="place p3"><strong>Old Shrine</strong><small>healing, omens</small></div>
-          <div class="place p4"><strong>Retainer Board</strong><small>cowards, liars, gems</small></div>
-        </section>
-        <section class="card"><h2>Persistent NPCs</h2><div class="npc-grid" id="npcs"></div></section>
-      </div>
+      <section class="panel mapbox map-only">
+        <h2>Town graph</h2>
+        <div class="node n1"><strong>Golden Eel</strong><br><small>table, debts, rumor</small></div>
+        <div class="node n2"><strong>Archmarket</strong><br><small>gear, scarcity, gossip</small></div>
+        <div class="node n3"><strong>Old Shrine</strong><br><small>omens, healing, bells</small></div>
+        <div class="node n4"><strong>Retainer Board</strong><br><small>help with a price</small></div>
+      </section>
 
-      <section class="table-stage table-only">
-        <h2>The table view</h2>
-        <div class="round-table"></div>
-        <div class="token t1"><strong>Referee</strong><br>Frames affordances, not plot.</div>
-        <div class="token t2"><strong>Mara</strong><br>Cautious player, tests every surface.</div>
-        <div class="token t3"><strong>Tovin</strong><br>Bold player, wants a story worth retelling.</div>
-        <div class="token t4"><strong>NPCs</strong><br>Want things. Remember things.</div>
+      <section class="stack split-only">
+        <div class="panel"><h2>NPC memory</h2><div class="kv" id="npcs"></div></div>
+        <div class="panel"><h2>Party</h2><div class="kv" id="party"></div></div>
       </section>
 
       <section class="stack">
-        <h2>Newest turn first</h2>
-        <div class="feed" id="feed"></div>
+        <div class="panel"><h2>Process stream</h2><div class="feed" id="feed"></div></div>
       </section>
 
       <section class="stack">
-        <section class="card"><h2>Party / session 0</h2><div class="party-grid" id="party"></div></section>
-        <section class="card"><h2>Current affordances</h2><div class="party-grid" id="affordances"></div></section>
-        <section class="state-card"><h2>Visible state</h2><pre id="state"></pre></section>
+        <div class="panel"><h2>Affordances now</h2><div class="kv" id="affordances"></div></div>
+        <div class="panel"><h2>Rule receipts</h2><div class="kv" id="receipts"></div></div>
+        <div class="panel"><h2>Visible state</h2><pre id="state"></pre></div>
       </section>
-
-      <section class="console console-only"><h2>Process console</h2><div class="feed" id="consoleFeed"></div></section>
     </section>
   </main>
 
-  <nav class="bottom-bar" aria-label="Prototype variants">
-    <a data-variant="ledger" href="?variant=ledger">ledger</a>
-    <a data-variant="table" href="?variant=table">table</a>
+  <nav class="switcher" aria-label="Prototype variants">
     <a data-variant="console" href="?variant=console">console</a>
+    <a data-variant="split" href="?variant=split">split</a>
+    <a data-variant="map" href="?variant=map">map</a>
   </nav>
 
   <script>
     const params = new URLSearchParams(location.search);
-    const variant = params.get('variant') || 'ledger';
+    const variant = params.get('variant') || 'console';
     document.body.classList.add('variant-' + variant);
-    document.querySelectorAll('[data-variant]').forEach(function (link) {
-      link.classList.toggle('active', link.dataset.variant === variant);
-    });
+    document.querySelectorAll('[data-variant]').forEach(function (link) { link.classList.toggle('active', link.dataset.variant === variant); });
 
-    const beats = [
-      { lane: 'referee', title: 'Referee builds the boundary', text: 'Willowby is not a backdrop. It is the whole prototype map: Golden Eel tavern, Archmarket, old shrine, retainer board, muddy road out.', reason: 'Town is the sandbox. No dungeon route exists until players make one matter.' },
-      { lane: 'npc', title: 'NPCs persist into the graph', text: 'Hesta Vane wants debts paid. Rook the drover wants his brother found. Sister Elian wants the shrine bell left alone.', reason: 'NPCs get wants, memory, rumors, disposition, and pressure. Not disposable flavor.' },
-      { lane: 'referee', title: 'Players are invited to the table', text: 'The Referee asks each PlayerAgent what kind of nobody they are before the dice make it painful.', reason: 'Session 0 starts conversationally. The dice do not replace identity; they complicate it.' },
-      { lane: 'rules', title: 'Character creation procedure', text: '3d6 down the line. One ability swap. Roll gold. Buy gear manually. Food and light are not vibes.', reason: 'OSE procedure is the rail. It creates constraints without scripting behavior.' },
-      { lane: 'player', title: 'Mara shapes a cautious thief', text: '“I want someone who survives by touching nothing first and asking why everyone else is calm.”', reason: 'Inner monologue: if the party laughs at the pole, they can trigger the trap.' },
-      { lane: 'player', title: 'Tovin chooses pressure over safety', text: '“Give me a cleric who is brave because he is terrified of being ordinary.”', reason: 'The party is not balanced by force. It is balanced by questions, hiring, gear, and consequences.' },
-      { lane: 'referee', title: 'Referee notices gaps', text: 'No one bought rope. One character has light. Nobody hired a local. Hesta offers names, not orders.', reason: 'Balance is a conversation: expose risk and affordances, then let players choose badly or well.' },
-      { lane: 'npc', title: 'Tavern roleplay reveals hooks sideways', text: 'Rook slams a wet boot on the table: blue clay is packed in the heel, and he swears his brother walked home from Stagmere with no face.', reason: 'Hooks emerge from NPC wants and concrete details, not from a Choose Hook button.' },
-      { lane: 'player', title: 'Players ask instead of accepting', text: 'Mara asks who profits if Rook disappears. Tovin asks whether the shrine pays for recovered bodies.', reason: 'This is the open-world beat: players interrogate the situation before choosing a direction.' },
-      { lane: 'audit', title: 'Private reasoning stays dev-only', text: 'Referee notes: Hesta is hiding guild pressure; Rook is truthful but wrong about the cause.', reason: 'Public monitor shows process. Dev audit shows the machinery without leaking secrets to players.' }
-    ];
-
-    const world = {
-      mode: 'idle',
-      beat: 0,
-      tavern: 'Golden Eel',
-      npcs: [
-        { name: 'Hesta Vane', role: 'innkeeper', wants: 'debts paid before trouble arrives', memory: 'remembers who dodged last winter rent' },
-        { name: 'Rook Marlen', role: 'drover', wants: 'brother found or avenged', memory: 'knows the Blackfen Road by smell' },
-        { name: 'Sister Elian', role: 'shrine keeper', wants: 'old bell left buried', memory: 'tracks who lies near holy water' }
-      ],
-      party: [
-        { player: 'Mara', character: 'not rolled yet', pressure: 'wants survival tools before glory' },
-        { player: 'Tovin', character: 'not rolled yet', pressure: 'wants to matter immediately' }
-      ],
-      affordances: ['talk to Hesta', 'ask Rook about the blue clay', 'buy light/rope/food', 'read the retainer board', 'ignore everyone and drink']
-    };
-
-    const feed = document.getElementById('feed');
-    const consoleFeed = document.getElementById('consoleFeed');
-    const mode = document.getElementById('mode');
-    const statusText = document.getElementById('statusText');
+    let state = ${JSON.stringify(initialPrototypeState())};
+    let timer = null;
     const start = document.getElementById('start');
     const pause = document.getElementById('pause');
     const step = document.getElementById('step');
     const speed = document.getElementById('speed');
-    let timer = null;
+    const mode = document.getElementById('mode');
+    const statusText = document.getElementById('statusText');
 
-    function laneLabel(lane) { return lane === 'audit' ? 'dev audit' : lane; }
-    function itemHtml(item, index) {
-      return '<article class="feed-item">' +
-        '<div class="meta"><span class="lane ' + item.lane + '">' + laneLabel(item.lane) + '</span><span>beat ' + String(index + 1).padStart(2, '0') + '</span></div>' +
-        '<h3>' + item.title + '</h3>' +
-        '<p>' + item.text + '</p>' +
-        '<div class="reason"><strong>reasoning/process:</strong> ' + item.reason + '</div>' +
-      '</article>';
+    function escapeHtml(value) { return String(value).replace(/[&<>"']/g, function (ch) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]); }); }
+    function renderRows(id, rows, fn) { document.getElementById(id).innerHTML = rows.map(fn).join('') || '<div class="row"><span>none</span></div>'; }
+    function render() {
+      mode.textContent = state.mode;
+      renderRows('npcs', state.npcs, function (npc) { return '<div class="row"><strong>' + escapeHtml(npc.name) + ' / ' + escapeHtml(npc.role) + '</strong><span>wants: ' + escapeHtml(npc.want) + '</span><br><span>memory: ' + escapeHtml(npc.memory) + '</span><br><span>disposition: ' + escapeHtml(npc.disposition) + '</span></div>'; });
+      renderRows('party', state.party, function (pc) { return '<div class="row"><strong>' + escapeHtml(pc.player) + ' → ' + escapeHtml(pc.character) + '</strong><span>goal: ' + escapeHtml(pc.goal) + '</span><br><span>fear: ' + escapeHtml(pc.fear) + '</span><br><span>gear: ' + escapeHtml(pc.inventory.join(', ') || 'none') + '</span></div>'; });
+      renderRows('affordances', state.affordances, function (text) { return '<div class="row"><strong>' + escapeHtml(text) + '</strong><span>available, not mandatory</span></div>'; });
+      renderRows('receipts', state.ruleReceipts, function (text) { return '<div class="row"><span>' + escapeHtml(text) + '</span></div>'; });
+      document.getElementById('feed').innerHTML = (state.log || []).map(function (turn) {
+        return '<article class="turn"><div class="meta"><span class="lane ' + escapeHtml(turn.lane) + '">' + escapeHtml(turn.lane) + '</span><span>beat ' + escapeHtml(turn.beat) + '</span><span>' + escapeHtml(turn.actor) + '</span></div><h3>' + escapeHtml(turn.title) + '</h3><p>' + escapeHtml(turn.tableText) + '</p><div class="reason"><strong>process:</strong> ' + escapeHtml(turn.processReasoning) + '</div><div class="reason dev"><strong>dev/private:</strong> ' + escapeHtml(turn.devReasoning) + '</div></article>';
+      }).join('') || '<article class="turn"><div class="meta"><span class="lane referee">idle</span></div><h3>Waiting for Start World</h3><p>The tavern has not begun thinking yet.</p><div class="reason"><strong>process:</strong> Click Start World. The route will call the throwaway generative endpoint one beat at a time.</div></article>';
+      document.getElementById('state').textContent = JSON.stringify({ ...state, log: undefined }, null, 2);
     }
 
-    function mutateForBeat(item) {
-      if (item.title.includes('Mara')) world.party[0].character = 'cautious thief, gear-brained';
-      if (item.title.includes('Tovin')) world.party[1].character = 'fearful cleric, brave anyway';
-      if (item.title.includes('Referee notices')) world.affordances = ['buy rope', 'hire local guide', 'ask Hesta about guild debts', 'press Rook on his brother', 'leave without prep'];
-      if (item.title.includes('Tavern roleplay')) world.affordances = ['follow blue clay lead', 'question Sister Elian', 'inspect Rook boot', 'seek a retainer', 'keep drinking'];
-      if (item.title.includes('Players ask')) world.affordances = ['negotiate reward', 'buy supplies first', 'split questions between NPCs', 'leave tonight', 'sleep and risk clocks'];
-    }
-
-    function renderStatic() {
-      document.getElementById('npcs').innerHTML = world.npcs.map(function (npc) {
-        return '<div class="npc"><strong>' + npc.name + '</strong><span>' + npc.role + '</span><br>' + npc.wants + '<br><span>' + npc.memory + '</span></div>';
-      }).join('');
-      document.getElementById('party').innerHTML = world.party.map(function (pc) {
-        return '<div class="pc"><strong>' + pc.player + '</strong><span>' + pc.character + '</span><br>' + pc.pressure + '</div>';
-      }).join('');
-      document.getElementById('affordances').innerHTML = world.affordances.map(function (text) {
-        return '<div class="affordance"><strong>' + text + '</strong><span>available now, not mandatory</span></div>';
-      }).join('');
-      document.getElementById('state').textContent = JSON.stringify(world, null, 2);
-      mode.textContent = world.mode;
-    }
-
-    function renderFeeds() {
-      const shown = beats.slice(0, world.beat).reverse();
-      const html = shown.map(function (item, reversedIndex) {
-        return itemHtml(item, world.beat - reversedIndex - 1);
-      }).join('') || '<article class="feed-item"><h3>Waiting for Start World</h3><p>The table has not begun.</p><div class="reason"><strong>reasoning/process:</strong> The daemon should start the table, not a screenplay.</div></article>';
-      feed.innerHTML = html;
-      consoleFeed.innerHTML = html;
-    }
-
-    function render() { renderStatic(); renderFeeds(); }
-
-    function nextBeat() {
-      if (world.beat >= beats.length) {
-        stop('Prototype beat deck complete. Verdict time: which UI shape helps you think?');
-        return;
-      }
-      const item = beats[world.beat];
-      mutateForBeat(item);
-      world.beat += 1;
-      statusText.textContent = 'Streaming ' + item.title + '… newest turn stays on top.';
+    async function nextBeat() {
+      state.mode = 'generating'; render();
+      statusText.textContent = 'Asking prototype Referee for one open-world tavern beat…';
+      const response = await fetch('/api/prototype/tavern-town-beat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state }) });
+      const text = await response.text();
+      if (!response.ok) throw new Error(text || response.statusText);
+      const data = JSON.parse(text);
+      state = data.state;
+      state.mode = timer ? 'running' : 'stepping';
+      statusText.textContent = 'Generated beat ' + state.beat + '. Newest turn is at the top.';
       render();
     }
 
-    function schedule() {
-      clearInterval(timer);
-      timer = setInterval(nextBeat, Number(speed.value));
-    }
+    function schedule() { clearInterval(timer); timer = setInterval(function () { nextBeat().catch(stopWithError); }, Number(speed.value)); }
+    function stopWithError(error) { clearInterval(timer); timer = null; state.mode = 'failed'; start.disabled = false; pause.disabled = true; statusText.textContent = 'Error: ' + (error && error.message ? error.message : String(error)); render(); }
+    function pauseRun(message) { clearInterval(timer); timer = null; state.mode = 'paused'; start.disabled = false; pause.disabled = true; statusText.textContent = message; render(); }
 
-    function stop(message) {
-      clearInterval(timer);
-      timer = null;
-      world.mode = 'paused';
-      start.disabled = false;
-      pause.disabled = true;
-      pause.textContent = 'Pause';
-      statusText.textContent = message;
-      render();
-    }
-
-    start.addEventListener('click', function () {
-      world.mode = 'running';
-      start.disabled = true;
-      pause.disabled = false;
-      statusText.textContent = 'World daemon running. This is simulated throwaway UI state.';
-      nextBeat();
-      schedule();
+    start.addEventListener('click', function () { state.mode = 'running'; start.disabled = true; pause.disabled = false; render(); nextBeat().then(schedule).catch(stopWithError); });
+    pause.addEventListener('click', function () { pauseRun('Paused. Browser-memory state preserved.'); });
+    step.addEventListener('click', function () { nextBeat().catch(stopWithError); });
+    speed.addEventListener('change', function () { if (timer) schedule(); });
+    window.addEventListener('keydown', function (event) {
+      if (['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName || '')) return;
+      const variants = ['console','split','map'];
+      const idx = variants.indexOf(variant);
+      if (event.key === 'ArrowRight') location.search = '?variant=' + variants[(idx + 1) % variants.length];
+      if (event.key === 'ArrowLeft') location.search = '?variant=' + variants[(idx + variants.length - 1) % variants.length];
     });
-
-    pause.addEventListener('click', function () {
-      if (timer) {
-        stop('Paused. State remains in memory only.');
-      } else {
-        world.mode = 'running';
-        start.disabled = true;
-        pause.disabled = false;
-        statusText.textContent = 'Resumed.';
-        schedule();
-        render();
-      }
-    });
-
-    step.addEventListener('click', function () {
-      if (world.mode === 'idle') world.mode = 'stepping';
-      nextBeat();
-      render();
-    });
-
-    speed.addEventListener('change', function () {
-      if (timer) schedule();
-    });
-
     render();
   </script>
 </body>
 </html>`, { headers: { "content-type": "text/html;charset=utf-8" } });
+}
+
+function initialPrototypeState(): PrototypeState & { log: unknown[] } {
+  return {
+    mode: "idle",
+    beat: 0,
+    location: "The Golden Eel Tavern, Willowby",
+    premise: "A bounded open-world tavern/town prototype. Players are not on rails; NPCs and supplies pressure choices.",
+    npcs: [
+      { name: "Hesta Vane", role: "innkeeper", want: "debts paid before trouble arrives", memory: "remembers who dodged last winter rent", disposition: "watchful, practical" },
+      { name: "Rook Marlen", role: "drover", want: "his brother found or avenged", memory: "knows the Blackfen Road by smell", disposition: "frightened and loud" },
+      { name: "Sister Elian", role: "shrine keeper", want: "old bell left buried", memory: "tracks who lies near holy water", disposition: "kind until pressed" }
+    ],
+    party: [
+      { player: "Mara", character: "unrolled cautious nobody", goal: "survive long enough to matter", fear: "being mocked into fatal bravery", inventory: [] },
+      { player: "Tovin", character: "unrolled glory-hungry nobody", goal: "become a name in someone else's song", fear: "ordinary death", inventory: [] }
+    ],
+    affordances: ["ask Hesta what trouble pays", "ask Rook about his brother", "talk to Sister Elian", "buy food/light/rope", "read the retainer board", "drink and listen"],
+    visibleThreads: ["blue clay on Rook's boot", "Hesta's unpaid debts", "Sister Elian's buried bell"],
+    ruleReceipts: [],
+    log: []
+  };
+}
+
+async function consultPrototypeRules(state: PrototypeState): Promise<RuleReceipt[]> {
+  const query = state.beat < 2
+    ? "Old-School Essentials character creation 3d6 ability scores starting gold equipment"
+    : "Old-School Essentials equipment cost rations torches rope adventuring gear retainers reaction";
+  const url = `https://joelclaw.com/api/docs/search?q=${encodeURIComponent(query)}&perPage=4&semantic=false`;
+  const response = await fetch(url, { headers: { accept: "application/json" } });
+  if (!response.ok) return [];
+  const json = await response.json() as { result?: { hits?: Array<{ id?: string; docId?: string; chunkIndex?: number; headingPath?: string[]; snippet?: string }> } };
+  return (json.result?.hits ?? [])
+    .filter((hit): hit is Required<Pick<RuleReceipt, "id" | "docId">> & RuleReceipt => Boolean(hit.id && hit.docId))
+    .slice(0, 4)
+    .map((hit) => ({
+      id: hit.id,
+      docId: hit.docId,
+      ...(hit.chunkIndex === undefined ? {} : { chunkIndex: hit.chunkIndex }),
+      ...(hit.headingPath === undefined ? {} : { headingPath: hit.headingPath }),
+      snippet: stripMarks(hit.snippet ?? "")
+    }));
+}
+
+async function generatePrototypeBeat(env: Env, state: PrototypeState, receipts: RuleReceipt[]): Promise<GeneratedBeat> {
+  const prompt = [
+    "You are a THROWAWAY prototype Referee generator for Cloudflare Agent Dungeon.",
+    "Generate exactly ONE tavern/town beat. Do not run a scripted route. Do not force hook acceptance.",
+    "The town/tavern is the whole open world for now. Players can talk, buy, hire, wait, leave, ask sideways, or ignore pressure.",
+    "Use player-driven affordances. NPCs should want things and remember things.",
+    "Rules validation comes from OSE rulebook receipts supplied from JoelClaw docs. Code is not the rules authority.",
+    "Do not quote long rulebook text. You may cite receipt ids in rulesUsed.",
+    "Return compact JSON only matching this TypeScript-ish shape:",
+    "{ lane:'referee|player|npc|rules|audit', actor:string, title:string, tableText:string, processReasoning:string, devReasoning:string, nextAffordances:string[], visibleThreads:string[], npcUpdates?:Npc[], partyUpdates?:PartyMember[], rulesUsed?:string[] }",
+    `State: ${JSON.stringify({ ...state, log: (state.log ?? []).slice(0, 4) })}`,
+    `Rule receipts: ${JSON.stringify(receipts.map((receipt) => ({ id: receipt.id, docId: receipt.docId, headingPath: receipt.headingPath, snippet: receipt.snippet?.slice(0, 240) })))}`
+  ].join("\n");
+
+  const result = await env.AI.run("@cf/moonshotai/kimi-k2.6", {
+    messages: [{ role: "user", content: prompt }],
+    chat_template_kwargs: { thinking: false, enable_thinking: false },
+    reasoning_effort: null,
+    max_completion_tokens: 1400
+  });
+  return GeneratedBeatSchema.parse(parseJsonObject(extractWorkersAIText(result)));
+}
+
+function applyGeneratedBeat(state: PrototypeState, beat: GeneratedBeat, receipts: RuleReceipt[]): PrototypeState & { log: unknown[] } {
+  const receiptIds = [...new Set([...(state.ruleReceipts ?? []), ...receipts.map((receipt) => receipt.id), ...(beat.rulesUsed ?? [])])].slice(-12);
+  return {
+    ...state,
+    mode: "running",
+    beat: state.beat + 1,
+    npcs: beat.npcUpdates?.length ? beat.npcUpdates : state.npcs,
+    party: beat.partyUpdates?.length ? beat.partyUpdates : state.party,
+    affordances: beat.nextAffordances,
+    visibleThreads: beat.visibleThreads,
+    ruleReceipts: receiptIds,
+    log: [
+      {
+        beat: state.beat + 1,
+        lane: beat.lane,
+        actor: beat.actor,
+        title: beat.title,
+        tableText: beat.tableText,
+        processReasoning: beat.processReasoning,
+        devReasoning: beat.devReasoning,
+        rulesUsed: beat.rulesUsed ?? receipts.map((receipt) => receipt.id)
+      },
+      ...((state as PrototypeState & { log?: unknown[] }).log ?? [])
+    ].slice(0, 30)
+  };
+}
+
+function extractWorkersAIText(result: unknown): string {
+  const response = result as { response?: string; choices?: Array<{ message?: { content?: string }; text?: string }> };
+  return response.response ?? response.choices?.[0]?.message?.content ?? response.choices?.[0]?.text ?? "";
+}
+
+function parseJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) return JSON.parse(trimmed);
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) throw new Error(`No JSON object in model response: ${trimmed.slice(0, 200)}`);
+  return JSON.parse(trimmed.slice(start, end + 1));
+}
+
+function stripMarks(value: string): string {
+  return value.replace(/<\/?mark>/g, "");
+}
+
+function json(data: unknown, init?: ResponseInit): Response {
+  return Response.json(data, { headers: { "access-control-allow-origin": "*" }, ...init });
 }

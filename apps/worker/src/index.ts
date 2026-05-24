@@ -3,7 +3,7 @@ import { Think } from "@cloudflare/think";
 import { createWorkersAI } from "workers-ai-provider";
 import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
-import { prototypeTavernTownUiPage } from "./prototype-tavern-town-ui";
+import { handlePrototypeTavernTownApi, prototypeTavernTownUiPage } from "./prototype-tavern-town-ui";
 import {
   advanceCampaignTurn,
   commitAdventureChoice,
@@ -488,6 +488,9 @@ function json(data: unknown, init?: ResponseInit): Response {
 async function handleApi(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith("/api/")) return null;
+
+  const prototype = await handlePrototypeTavernTownApi(request, env);
+  if (prototype) return prototype;
 
   const campaignId = url.searchParams.get("campaign") ?? "agent-dungeon-campaign";
   const referee = await getAgentByName(env.Referee, campaignId);
