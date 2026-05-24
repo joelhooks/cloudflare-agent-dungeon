@@ -24,6 +24,7 @@ The autonomous runtime may manage process lifecycle, but it must not encode a pr
 The rails are the game rules and world constraints:
 
 - OSE procedures: turns, travel, encounters, reactions, morale, light, food, XP, treasure recovery, death.
+- Rules validation must be grounded in the actual OSE rulebooks through JoelClaw docs (`https://joelclaw.com/api/docs`), with doc/chunk receipts captured when procedures are used or changed. Code can enforce schemas, persistence, bounds, visibility, and already-sourced procedures, but code itself is not the authority for whether a gameplay ruling is OSE-valid.
 - The campaign world graph: locations, paths, NPCs, factions, clocks, rumors, hazards, treasures, unresolved threads.
 - Fog-of-war projections: players know only what the Referee reveals.
 - Capability boundaries: player tools cannot read hidden world state, other player secrets, or the rules corpus by default.

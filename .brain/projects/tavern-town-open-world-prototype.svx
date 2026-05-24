@@ -156,8 +156,9 @@ The next real implementation step is not more UI polish. It is one real generati
 2. Add `runTownBeat()` / `runNextBeat()` on `Referee`.
 3. Derive player-safe affordances from current tavern/town state.
 4. Ask PlayerAgents for typed tavern intents: talk, ask, buy, hire, observe, reveal backstory, leave, wait, other.
-5. Ask RefereeAgent to resolve the social beat and narrate public process while writing private reasoning to audit.
-6. Commit new public process events newest-first in the monitor.
-7. Schedule the next beat only while Start World/autoplay is enabled.
+5. Validate rules/procedure against JoelClaw OSE source docs when a beat touches rulebook procedure. Capture doc/chunk receipts in private Referee audit where useful. Do not treat hardcoded local code as the rules authority.
+6. Ask RefereeAgent to resolve the social beat and narrate public process while writing private reasoning to audit.
+7. Commit new public process events newest-first in the monitor.
+8. Schedule the next beat only while Start World/autoplay is enabled.
 
 The prototype should stay in the tavern/town boundary until this feels alive.
