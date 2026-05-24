@@ -206,3 +206,11 @@ Schema repair follow-up:
 - Root cause: strict Zod max arrays were being used directly on model output, so harmless over-generation became a 500.
 - Fix: parse a looser candidate, retry once with the schema error in the prompt, then repair by deduping/capping arrays and padding minimums from current state.
 - Browser check after fix: two consecutive `Step One Beat` actions reached `beat=2`, with 7 affordances and 7 visible threads, no schema error.
+
+Player intent follow-up:
+
+- Changed each generated beat into: PlayerAgent-like intent generation for each party member first, then Referee generation considers those intents.
+- The UI now shows player turns under the Referee outcome, with table speech, declared action, process reasoning, and dev/private inner monologue.
+- Referee process text explicitly records which player intents it considered.
+- Worker AI capacity errors (`3040`) showed up when calling player/referee generations; mitigated by running player intents sequentially and retrying Kimi calls with a small backoff.
+- Browser check: `Step One Beat` produced 3 turns for beat 1: Referee top, then Mara player choice, then Tovin player choice. `refereeConsidered=true`, `hasPlayerLane=true`.

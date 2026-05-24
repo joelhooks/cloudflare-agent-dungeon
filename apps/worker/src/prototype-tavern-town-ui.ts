@@ -60,6 +60,23 @@ const GeneratedBeatSchema = GeneratedBeatCandidateSchema.extend({
 type GeneratedBeat = z.infer<typeof GeneratedBeatSchema>;
 type GeneratedBeatCandidate = z.infer<typeof GeneratedBeatCandidateSchema>;
 
+const PrototypePlayerIntentSchema = z.object({
+  player: z.string(),
+  character: z.string(),
+  actor: z.string(),
+  title: z.string(),
+  tableSpeech: z.string(),
+  declaredAction: z.string(),
+  intentKind: z.enum(["talk", "ask", "buy", "hire", "observe", "reveal_backstory", "leave", "wait", "other"]),
+  target: z.string().optional(),
+  processReasoning: z.string(),
+  innerMonologue: z.string(),
+  privateGoal: z.string(),
+  privateFear: z.string()
+});
+
+type PrototypePlayerIntent = z.infer<typeof PrototypePlayerIntentSchema>;
+
 type RuleReceipt = {
   id: string;
   docId: string;
@@ -76,10 +93,11 @@ export async function handlePrototypeTavernTownApi(request: Request, env: Env): 
   const input = await request.json().catch(() => ({}));
   const state = PrototypeStateSchema.parse((input as { state?: unknown }).state ?? initialPrototypeState());
   const receipts = await consultPrototypeRules(state);
-  const generated = await generatePrototypeBeat(env, state, receipts);
-  const nextState = applyGeneratedBeat(state, generated, receipts);
+  const playerIntents = await generatePrototypePlayerIntents(env, state);
+  const generated = await generatePrototypeBeat(env, state, receipts, playerIntents);
+  const nextState = applyGeneratedBeat(state, generated, receipts, playerIntents);
 
-  return json({ state: nextState, beat: nextState.log?.[0], receipts: receipts.map((receipt) => receipt.id) });
+  return json({ state: nextState, beat: nextState.log?.[0], playerIntents, receipts: receipts.map((receipt) => receipt.id) });
 }
 
 export function prototypeTavernTownUiPage(): Response {
@@ -279,7 +297,7 @@ export function prototypeTavernTownUiPage(): Response {
 
     async function nextBeat() {
       state.mode = 'generating'; render();
-      statusText.textContent = 'Asking prototype Referee for one open-world tavern beat…';
+      statusText.textContent = 'Asking prototype PlayerAgents, then Referee, for one open-world tavern beat…';
       const response = await fetch('/api/prototype/tavern-town-beat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state }) });
       const text = await response.text();
       if (!response.ok) throw new Error(text || response.statusText);
@@ -353,17 +371,74 @@ async function consultPrototypeRules(state: PrototypeState): Promise<RuleReceipt
     }));
 }
 
-async function generatePrototypeBeat(env: Env, state: PrototypeState, receipts: RuleReceipt[]): Promise<GeneratedBeat> {
+async function generatePrototypePlayerIntents(env: Env, state: PrototypeState): Promise<PrototypePlayerIntent[]> {
+  const intents: PrototypePlayerIntent[] = [];
+  for (const member of state.party) {
+    intents.push(await generatePrototypePlayerIntent(env, state, member));
+  }
+  return intents;
+}
+
+async function generatePrototypePlayerIntent(env: Env, state: PrototypeState, member: PrototypeState["party"][number]): Promise<PrototypePlayerIntent> {
+  let validationError = "";
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const result = await runPrototypeKimi(env, buildPrototypePlayerIntentPrompt(state, member, validationError), 700);
+
+    try {
+      return PrototypePlayerIntentSchema.parse(parseJsonObject(extractWorkersAIText(result)));
+    } catch (error) {
+      validationError = summarizeValidationError(error);
+    }
+  }
+  throw new Error(`Prototype PlayerAgent intent failed for ${member.player}: ${validationError}`);
+}
+
+async function runPrototypeKimi(env: Env, prompt: string, maxCompletionTokens: number): Promise<unknown> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await env.AI.run("@cf/moonshotai/kimi-k2.6", {
+        messages: [{ role: "user", content: prompt }],
+        chat_template_kwargs: { thinking: false, enable_thinking: false },
+        reasoning_effort: null,
+        max_completion_tokens: maxCompletionTokens
+      });
+    } catch (error) {
+      lastError = error;
+      if (!/3040|capacity|temporarily exceeded/i.test(String(error)) || attempt === 3) break;
+      await sleep(700 * attempt);
+    }
+  }
+  throw lastError;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildPrototypePlayerIntentPrompt(state: PrototypeState, member: PrototypeState["party"][number], validationError: string): string {
+  return [
+    "You are a THROWAWAY prototype PlayerAgent in an Old School Essentials tavern/town campaign.",
+    "You are NOT the Referee. You do not know hidden NPC secrets, faction agendas, or rulebook text.",
+    "Narrate your own choice as a player/character from only the visible tavern state and available affordances.",
+    "Pick one action you actually want to attempt. You may choose an existing affordance or a closely related open-world action.",
+    "Return compact JSON only. No markdown. No extra keys.",
+    "Shape: { player:string, character:string, actor:string, title:string, tableSpeech:string, declaredAction:string, intentKind:'talk|ask|buy|hire|observe|reveal_backstory|leave|wait|other', target?:string, processReasoning:string, innerMonologue:string, privateGoal:string, privateFear:string }",
+    validationError ? `Previous attempt failed schema validation: ${validationError}. Retry with valid JSON.` : "",
+    `Your player/character: ${JSON.stringify(member)}`,
+    `Visible location: ${state.location}`,
+    `Visible threads: ${JSON.stringify(state.visibleThreads)}`,
+    `Available affordances: ${JSON.stringify(state.affordances)}`,
+    `Recent public log: ${JSON.stringify((state.log ?? []).slice(0, 4))}`
+  ].filter(Boolean).join("\n");
+}
+
+async function generatePrototypeBeat(env: Env, state: PrototypeState, receipts: RuleReceipt[], playerIntents: PrototypePlayerIntent[]): Promise<GeneratedBeat> {
   let validationError = "";
   let lastCandidate: GeneratedBeatCandidate | null = null;
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const result = await env.AI.run("@cf/moonshotai/kimi-k2.6", {
-      messages: [{ role: "user", content: buildPrototypeBeatPrompt(state, receipts, validationError) }],
-      chat_template_kwargs: { thinking: false, enable_thinking: false },
-      reasoning_effort: null,
-      max_completion_tokens: 1200
-    });
+    const result = await runPrototypeKimi(env, buildPrototypeBeatPrompt(state, receipts, playerIntents, validationError), 1200);
 
     try {
       const candidate = GeneratedBeatCandidateSchema.parse(parseJsonObject(extractWorkersAIText(result)));
@@ -378,12 +453,13 @@ async function generatePrototypeBeat(env: Env, state: PrototypeState, receipts: 
   throw new Error(`Prototype beat generation failed after retry: ${validationError}`);
 }
 
-function buildPrototypeBeatPrompt(state: PrototypeState, receipts: RuleReceipt[], validationError: string): string {
+function buildPrototypeBeatPrompt(state: PrototypeState, receipts: RuleReceipt[], playerIntents: PrototypePlayerIntent[], validationError: string): string {
   return [
     "You are a THROWAWAY prototype Referee generator for Cloudflare Agent Dungeon.",
     "Generate exactly ONE tavern/town beat. Do not run a scripted route. Do not force hook acceptance.",
     "The town/tavern is the whole open world for now. Players can talk, buy, hire, wait, leave, ask sideways, or ignore pressure.",
     "Use player-driven affordances. NPCs should want things and remember things.",
+    "You must explicitly consider the supplied PlayerAgent intents. The Referee outcome should respond to those choices, not ignore or replace them.",
     "Rules validation comes from OSE rulebook receipts supplied from JoelClaw docs. Code is not the rules authority.",
     "Do not quote long rulebook text. You may cite receipt ids in rulesUsed.",
     "Return compact JSON only. No markdown. No extra keys.",
@@ -391,6 +467,7 @@ function buildPrototypeBeatPrompt(state: PrototypeState, receipts: RuleReceipt[]
     "Hard limits: nextAffordances MUST contain 3-7 items. visibleThreads MUST contain 1-7 items. If you have more ideas, choose the best 7. Do not exceed these limits.",
     validationError ? `Previous attempt failed schema validation: ${validationError}. Retry with fewer array items and valid JSON.` : "",
     `State: ${JSON.stringify({ ...state, log: (state.log ?? []).slice(0, 4) })}`,
+    `PlayerAgent intents to consider: ${JSON.stringify(playerIntents)}`,
     `Rule receipts: ${JSON.stringify(receipts.map((receipt) => ({ id: receipt.id, docId: receipt.docId, headingPath: receipt.headingPath, snippet: receipt.snippet?.slice(0, 240) })))}`
   ].filter(Boolean).join("\n");
 }
@@ -425,12 +502,13 @@ function summarizeValidationError(error: unknown): string {
   return String(error);
 }
 
-function applyGeneratedBeat(state: PrototypeState, beat: GeneratedBeat, receipts: RuleReceipt[]): PrototypeState & { log: unknown[] } {
+function applyGeneratedBeat(state: PrototypeState, beat: GeneratedBeat, receipts: RuleReceipt[], playerIntents: PrototypePlayerIntent[]): PrototypeState & { log: unknown[] } {
   const receiptIds = [...new Set([...(state.ruleReceipts ?? []), ...receipts.map((receipt) => receipt.id), ...(beat.rulesUsed ?? [])])].slice(-12);
+  const beatNumber = state.beat + 1;
   return {
     ...state,
     mode: "running",
-    beat: state.beat + 1,
+    beat: beatNumber,
     npcs: beat.npcUpdates?.length ? beat.npcUpdates : state.npcs,
     party: beat.partyUpdates?.length ? beat.partyUpdates : state.party,
     affordances: beat.nextAffordances,
@@ -438,17 +516,30 @@ function applyGeneratedBeat(state: PrototypeState, beat: GeneratedBeat, receipts
     ruleReceipts: receiptIds,
     log: [
       {
-        beat: state.beat + 1,
+        beat: beatNumber,
         lane: beat.lane,
         actor: beat.actor,
         title: beat.title,
         tableText: beat.tableText,
-        processReasoning: beat.processReasoning,
+        processReasoning: `Referee considered player intents: ${playerIntents.map((intent) => `${intent.actor}: ${intent.declaredAction}`).join(" | ")}. ${beat.processReasoning}`,
         devReasoning: beat.devReasoning,
         rulesUsed: beat.rulesUsed ?? receipts.map((receipt) => receipt.id)
       },
+      ...playerIntents.map((intent) => playerIntentToLog(intent, beatNumber)),
       ...((state as PrototypeState & { log?: unknown[] }).log ?? [])
-    ].slice(0, 30)
+    ].slice(0, 36)
+  };
+}
+
+function playerIntentToLog(intent: PrototypePlayerIntent, beatNumber: number) {
+  return {
+    beat: beatNumber,
+    lane: "player",
+    actor: intent.actor,
+    title: intent.title,
+    tableText: intent.tableSpeech,
+    processReasoning: `${intent.declaredAction} [${intent.intentKind}]${intent.target ? ` targeting ${intent.target}` : ""}. ${intent.processReasoning}`,
+    devReasoning: `inner=${intent.innerMonologue} | goal=${intent.privateGoal} | fear=${intent.privateFear}`
   };
 }
 
