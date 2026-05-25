@@ -639,6 +639,14 @@ type RefereeState = Campaign & {
   prototypeTavernTown?: PrototypeTavernTownState;
 };
 
+const PROTOTYPE_TAVERN_GENERATION_LOCK_TIMEOUT_MS = 3 * 60 * 1000;
+
+function hasFreshPrototypeGenerationLock(state: PrototypeTavernTownState): boolean {
+  if (state.mode !== "generating") return false;
+  const startedAt = Date.parse(state.updatedAt ?? "");
+  return Number.isFinite(startedAt) && Date.now() - startedAt < PROTOTYPE_TAVERN_GENERATION_LOCK_TIMEOUT_MS;
+}
+
 export class Referee extends Agent<Env, RefereeState> {
   initialState: RefereeState = seedTavernCampaign("agent-dungeon-campaign");
 
@@ -800,11 +808,21 @@ export class Referee extends Agent<Env, RefereeState> {
 
   async stepPrototypeTavernTown(): Promise<PrototypeTavernTownState> {
     const state = this.requireRefereeState();
-    const current = state.prototypeTavernTown ?? initialPrototypeState();
-    if (current.mode === "generating") return current;
+    let current = state.prototypeTavernTown ?? initialPrototypeState();
+    if (current.mode === "generating") {
+      if (hasFreshPrototypeGenerationLock(current)) return current;
+      current = {
+        ...current,
+        mode: "running",
+        error: `Recovered stale generation lock from ${current.updatedAt ?? "unknown time"}`,
+        updatedAt: new Date().toISOString()
+      };
+    }
 
+    const { error: _staleError, ...currentWithoutError } = current;
+    void _staleError;
     const generating: PrototypeTavernTownState = {
-      ...current,
+      ...currentWithoutError,
       mode: "generating",
       updatedAt: new Date().toISOString()
     };

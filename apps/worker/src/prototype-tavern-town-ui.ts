@@ -329,6 +329,11 @@ export function prototypeTavernTownUiPage(): Response {
         if (!response.ok) throw new Error(text || response.statusText);
         const data = JSON.parse(text);
         state = data.state;
+        if (state.mode === 'generating') {
+          statusText.textContent = 'Server is already generating the next beat. This can take 60–120 seconds on Workers AI.';
+          render();
+          return;
+        }
         state.mode = autoRunning ? 'running' : 'stepping';
         statusText.textContent = 'Generated beat ' + state.beat + '. Newest turn is at the top.';
         render();

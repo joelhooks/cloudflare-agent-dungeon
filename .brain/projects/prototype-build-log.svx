@@ -1149,3 +1149,48 @@ pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts
 ```
 
 Results: all passed.
+
+## 2026-05-24 — Fixed stuck prototype advancement
+
+### Root cause
+
+The prototype got stuck with server state `mode="generating"` at beat 0 after a dev-server restart / interrupted generation. `stepPrototypeTavernTown()` treated any `generating` state as an active single-flight lock and returned immediately. After that, every UI click returned 200 in a few milliseconds but did not ask the agents for a new beat, so the page looked like it would not advance.
+
+Local receipt before fix:
+
+```txt
+GET /api/prototype/tavern-town-state -> beat 0 mode generating updatedAt 2026-05-25T01:21:43.671Z log 0
+Repeated POST /api/prototype/tavern-town-beat -> 200 OK in 2-7ms, no beat change
+```
+
+### What changed
+
+Updated `apps/worker/src/index.ts`:
+
+- Added a 3-minute prototype generation lock timeout.
+- `stepPrototypeTavernTown()` now returns a `generating` state only while the lock is fresh.
+- If the lock is stale, it recovers and starts a real beat instead of staying wedged forever.
+
+Updated `apps/worker/src/prototype-tavern-town-ui.ts`:
+
+- If the server is legitimately already generating, the UI now says it may take 60-120 seconds instead of claiming a beat was generated.
+
+### Verification
+
+After restart, the stale lock recovered:
+
+```txt
+POST /api/prototype/tavern-town-beat -> beat 1 mode running log 3
+Browser Step One Beat -> beat 2 mode running log 6
+Top turn: The Third Notch Hangs
+```
+
+Commands:
+
+```bash
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+```
+
+Results: all passed.
