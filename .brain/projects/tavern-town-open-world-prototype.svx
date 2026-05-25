@@ -232,3 +232,82 @@ Server persistence follow-up:
 - The UI loads/polls server state, so a fresh browser sees the currently running game.
 - Added server-side single-flight locking by persisting `mode="generating"`; overlapping beat requests return the in-progress state instead of starting another AI beat.
 - Parallel receipt: two overlapping POSTs from beat 1 returned beats `2` and `1/generating`; final server state was beat `2`, not beat `3`.
+
+## Agent Brain / skills direction
+
+Joel called the shape clearly: give the agents a Brain.
+
+Working metaphor: `/skill:second-brain-execution` + `/skill:para-operator`, but inside the campaign runtime.
+
+Proposed memory layers:
+
+1. Hot state in `Referee` Agent state / SQLite:
+   - current tavern state
+   - lock/status
+   - latest process log
+   - compact agent memory summaries needed for the next beat
+
+2. Agent-private Brain notes:
+   - each PlayerAgent keeps private notes: profile, current goals, fears, bonds, grudges, theories, promises, unresolved questions
+   - RefereeAgent keeps private notes: adjudication patterns, NPC pressure, unresolved fronts, rules receipts, hidden threads
+   - notes are compressed after each beat, not raw transcript dumped forever
+
+3. Skill cards:
+   - player skill cards: table habits, survival heuristics, asking good questions, mapping/supplies/caller-style responsibilities
+   - class skill cards: OSE class abilities and constraints, researched from JoelClaw OSE docs and exposed as player-safe summaries
+   - referee skill cards: private procedure/adjudication cards, rules lookup recipes, faction/NPC pressure handling, public-safety reminders
+
+Source receipts already found for shaping:
+
+- Caller / party organization: `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s191:n0`
+- Thief skills: `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s127:n0`
+- Character creation note class abilities: `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s70:n0`
+- Referee role / running adventures: `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s659:n0`
+
+Important boundary:
+
+- PlayerAgents should never query the full OSE corpus directly.
+- Referee/RefereeAgent researches OSE and emits bounded, player-safe skill cards with doc/chunk receipts.
+- Public monitor can show skill card names and safe summaries, not raw book chunks.
+
+Cloudflare Artifacts looks like the right durable long-term Brain store once the hot loop works:
+
+- Artifacts is Git-compatible versioned storage for agents.
+- Workers binding config shape from docs:
+
+```jsonc
+"artifacts": [
+  { "binding": "ARTIFACTS", "namespace": "default" }
+]
+```
+
+- Best-practice docs say to use least-privilege short-lived repo tokens and git notes for prompts/model output/harness metadata.
+- For this prototype: keep the hot beat loop in Agent state, then periodically commit compressed Brain files to Artifacts for history, diff, fork, rollback, and inspection.
+
+Likely repo layout per campaign:
+
+```txt
+/players/player-a/profile.md
+/players/player-a/current.md
+/players/player-a/skills/player-survival.md
+/players/player-a/skills/class-thief.md
+/players/player-a/memories/beat-0003.md
+
+/players/player-b/...
+
+/referee/fronts.md
+/referee/npcs/hesta-vane.md
+/referee/rules/receipts.md
+/referee/skills/reaction-checks.md
+/referee/skills/referee-role.md
+
+/table/revealed-rumors.md
+/table/party-log.md
+```
+
+Next useful code slice after the real Think beat routing:
+
+1. Add durable `PlayerAgentState` and `RefereeAgentState` with compact Brain summaries.
+2. After each tavern beat, call `rememberTavernBeat(...)` on each agent.
+3. Generate/update short Brain notes from the beat, not full transcript blobs.
+4. Add Artifacts binding + a tiny `AgentBrainStore` abstraction behind a feature flag, so local dev can use Agent state while production can sync compressed notes to Artifacts.
