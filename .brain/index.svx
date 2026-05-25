@@ -30,4 +30,5 @@ created: 2026-05-24
 - [[resources/stable-player-agent-turn-submission]]
 - [[resources/cloudflare-account-agentdungeon-zone]]
 - [[resources/ose-session-zero-source-receipts]]
+- [[resources/ose-agent-playbook-source-pointers]]
 - [[resources/session-handoff-prompt]]

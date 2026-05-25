@@ -269,7 +269,7 @@ Source receipts already found for shaping:
 Important boundary:
 
 - PlayerAgents should never query the full OSE corpus directly.
-- Referee/RefereeAgent researches OSE and emits bounded, player-safe agent skill/playbook cards with doc/chunk receipts.
+- Referee/RefereeAgent researches OSE and emits bounded, player-safe agent skill/playbook cards with doc/chunk receipts and lookup URLs. See [[resources/ose-agent-playbook-source-pointers]].
 - Public monitor can show skill card names and safe summaries, not raw book chunks.
 
 Cloudflare Artifacts looks like the right durable long-term Brain store once the hot loop works:

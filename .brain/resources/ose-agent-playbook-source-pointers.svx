@@ -1,0 +1,107 @@
+---
+title: OSE Agent Playbook Source Pointers
+kind: resource
+status: active
+created: 2026-05-24
+tags:
+  - ose
+  - agent-skills
+  - source-pointers
+  - joelclaw
+  - fog-of-war
+---
+
+# OSE Agent Playbook Source Pointers
+
+## Purpose
+
+Agent skills/playbooks should be OSE interfaces with source pointers, not free-floating vibes.
+
+Each playbook tells an agent **how to play or adjudicate** a bounded part of Old School Essentials, and includes URL pointers for the Referee/runtime to look up the underlying book chunks when needed.
+
+## Pointer shape
+
+Use JoelClaw docs chunk URLs as the durable pointer:
+
+```txt
+https://joelclaw.com/api/docs/chunks/{chunkId}?lite=true&includeEmbedding=false
+```
+
+For deeper Referee-only lookup:
+
+```txt
+https://joelclaw.com/api/docs/chunks/{chunkId}?lite=false&includeEmbedding=false
+```
+
+Search pointer shape:
+
+```txt
+https://joelclaw.com/api/docs/search?q={encodedQuery}&perPage=5&semantic=false
+```
+
+Discovery:
+
+```txt
+https://joelclaw.com/api/docs
+```
+
+## Playbook metadata shape
+
+A player-safe playbook should carry pointers, not raw book dumps:
+
+```yaml
+sourcePointers:
+  - label: Thief skills
+    docId: old-school-essentials-basic-rules-v1-4-a4d9608ea98b
+    chunkId: old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s127:n0
+    url: https://joelclaw.com/api/docs/chunks/old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s127:n0?lite=true&includeEmbedding=false
+    visibility: referee-source/player-safe-summary
+```
+
+## First useful pointers
+
+- Caller / party organization
+  - `chunkId`: `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s191:n0`
+  - URL: `https://joelclaw.com/api/docs/chunks/old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s191:n0?lite=true&includeEmbedding=false`
+
+- Thief skills
+  - `chunkId`: `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s127:n0`
+  - URL: `https://joelclaw.com/api/docs/chunks/old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s127:n0?lite=true&includeEmbedding=false`
+
+- Character creation / noting class abilities
+  - `chunkId`: `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s70:n0`
+  - URL: `https://joelclaw.com/api/docs/chunks/old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s70:n0?lite=true&includeEmbedding=false`
+
+- Referee role / running adventures
+  - `chunkId`: `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s659:n0`
+  - URL: `https://joelclaw.com/api/docs/chunks/old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s659:n0?lite=true&includeEmbedding=false`
+
+## Visibility rule
+
+PlayerAgent playbooks should include:
+
+- concise player-safe summaries,
+- allowed action/interface guidance,
+- source pointer IDs/URLs for audit,
+- no raw full book chunks.
+
+RefereeAgent playbooks may use deeper source lookup, but public/table output still gets only safe summaries and doc/chunk receipts.
+
+## Runtime idea
+
+When a PlayerAgent faces a situation, Referee provides only relevant playbooks:
+
+```txt
+PlayerAgent sees:
+  - player-survival.md
+  - class-thief.md
+  - table-caller.md
+  - current table state
+
+PlayerAgent does not see:
+  - raw OSE corpus
+  - Referee hidden notes
+  - other player private Brain repos
+```
+
+The URL pointers let the Referee/runtime refresh or verify a playbook against the book without giving every player mind direct corpus access.
