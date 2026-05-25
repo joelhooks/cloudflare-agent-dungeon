@@ -1,0 +1,123 @@
+---
+title: Per-Agent Artifacts Brain Repos
+kind: decision
+status: accepted
+created: 2026-05-24
+tags:
+  - artifacts
+  - brain
+  - fog-of-war
+  - player-agents
+  - referee
+---
+
+# Per-Agent Artifacts Brain Repos
+
+## Decision
+
+Each long-lived campaign mind gets its **own Cloudflare Artifacts repo**.
+
+Do not put all player Brain notes into one shared campaign repo.
+
+Canonical split:
+
+```txt
+artifact repo: agent-dungeon-campaign-{campaignId}-player-a
+  private PlayerAgent A Brain only
+
+artifact repo: agent-dungeon-campaign-{campaignId}-player-b
+  private PlayerAgent B Brain only
+
+artifact repo: agent-dungeon-campaign-{campaignId}-referee
+  private Referee / RefereeAgent Brain only
+
+artifact repo: agent-dungeon-campaign-{campaignId}-table
+  revealed shared table artifacts only
+```
+
+## Why
+
+Fog-of-war is a capability firewall, not just a prompt instruction.
+
+Per-agent repos make the privacy boundary structural:
+
+- `PlayerAgent[player-a]` cannot casually read `player-b` notes.
+- Player private goals, fears, theories, grudges, and plans stay in that player's repo.
+- Referee hidden fronts, NPC secrets, and raw/near-raw rule research stay in the Referee repo.
+- The table repo contains only revealed artifacts: party log, shared rumors, maps, visible inventory, public handouts.
+- Repo-scoped Artifacts tokens naturally match least-privilege access.
+- Repos can be inspected, forked, diffed, archived, or revoked independently.
+
+This matches Cloudflare Artifacts' intended grain better than one shared blob: one repo per agent/user/task, repo-scoped tokens, and versioned file trees that can be forked or inspected through Git.
+
+## Access model
+
+```txt
+PlayerAgent[player-a]
+  read/write: player-a repo
+  read: table repo
+  no access: player-b repo, referee repo, raw OSE corpus
+
+PlayerAgent[player-b]
+  read/write: player-b repo
+  read: table repo
+  no access: player-a repo, referee repo, raw OSE corpus
+
+Referee / RefereeAgent
+  read/write: referee repo
+  read/write: table repo
+  may read player public committed intents/events
+  should not read player-private repos by default
+
+Monitor
+  read: table projection only
+  optional dev mode: Referee audit projection, never player-private repos
+```
+
+## File shape
+
+Player repo:
+
+```txt
+/profile.md
+/current.md
+/goals.md
+/fears.md
+/theories.md
+/relationships.md
+/skills/player-survival.md
+/skills/class-thief.md
+/memories/beat-0003.md
+```
+
+Referee repo:
+
+```txt
+/fronts.md
+/npcs/hesta-vane.md
+/rules/receipts.md
+/skills/referee-role.md
+/skills/reaction-checks.md
+/hidden-threads.md
+```
+
+Table repo:
+
+```txt
+/party-log.md
+/revealed-rumors.md
+/shared-map-notes.md
+/visible-inventory.md
+/handouts/...
+```
+
+## Implementation notes
+
+Start hot and simple:
+
+1. Keep latest compact summaries in Agent state so beats do not need Git round trips.
+2. After each beat, append/update compressed Brain notes.
+3. Sync those notes to the appropriate Artifacts repo.
+4. Use Git commits/git notes for durable provenance: beat id, agent id, model, rule receipt ids, and summary.
+
+Do not store raw full OSE chunks in player repos or the table repo. Referee can store doc/chunk IDs and short private summaries in its own repo.

@@ -20,6 +20,7 @@ created: 2026-05-24
 ## Decisions
 
 - [[decisions/open-world-player-driven-adventure]]
+- [[decisions/per-agent-artifacts-brain-repos]]
 
 ## Resources
 

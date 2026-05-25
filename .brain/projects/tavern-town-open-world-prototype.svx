@@ -284,25 +284,49 @@ Cloudflare Artifacts looks like the right durable long-term Brain store once the
 - Best-practice docs say to use least-privilege short-lived repo tokens and git notes for prompts/model output/harness metadata.
 - For this prototype: keep the hot beat loop in Agent state, then periodically commit compressed Brain files to Artifacts for history, diff, fork, rollback, and inspection.
 
-Likely repo layout per campaign:
+Repo layout decision: **per-agent Artifacts repos**, not one shared campaign Brain repo. See [[decisions/per-agent-artifacts-brain-repos]].
+
+Canonical repo split:
 
 ```txt
-/players/player-a/profile.md
-/players/player-a/current.md
-/players/player-a/skills/player-survival.md
-/players/player-a/skills/class-thief.md
-/players/player-a/memories/beat-0003.md
+agent-dungeon-campaign-{campaignId}-player-a
+agent-dungeon-campaign-{campaignId}-player-b
+agent-dungeon-campaign-{campaignId}-referee
+agent-dungeon-campaign-{campaignId}-table
+```
 
-/players/player-b/...
+Player repo example:
 
-/referee/fronts.md
-/referee/npcs/hesta-vane.md
-/referee/rules/receipts.md
-/referee/skills/reaction-checks.md
-/referee/skills/referee-role.md
+```txt
+/profile.md
+/current.md
+/goals.md
+/fears.md
+/theories.md
+/relationships.md
+/skills/player-survival.md
+/skills/class-thief.md
+/memories/beat-0003.md
+```
 
-/table/revealed-rumors.md
-/table/party-log.md
+Referee repo example:
+
+```txt
+/fronts.md
+/npcs/hesta-vane.md
+/rules/receipts.md
+/skills/reaction-checks.md
+/skills/referee-role.md
+/hidden-threads.md
+```
+
+Table repo example:
+
+```txt
+/revealed-rumors.md
+/party-log.md
+/shared-map-notes.md
+/visible-inventory.md
 ```
 
 Next useful code slice after the real Think beat routing:
