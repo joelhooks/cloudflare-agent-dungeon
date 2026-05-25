@@ -122,6 +122,23 @@ Use `second-brain-execution` and `para-operator` when organizing durable knowled
 
 Do not let chat history be the only source of truth.
 
+## Brain data and receipt efficiency
+
+- Keep `.svx` notes readable and small. When a log or receipt stream grows, move records into `.brain/data/*.jsonl` and render them with project-local `.brain/components/*.svelte`.
+- For the prototype build log, append future entries to `.brain/data/prototype-build-log.jsonl` using schema `PrototypeBuildLogEntry.v1`; do not paste another giant markdown section into `.brain/projects/prototype-build-log.svx`.
+- Treat `.brain/projects/prototype-build-log.svx` as the composed shell: it should invoke `PrototypeBuildLogProvider`, `PrototypeBuildLogSummary`, and `PrototypeBuildLogTimeline` rather than storing bulky log text.
+- Do not create throwaway `/tmp/*-build-log.txt` files just to append Brain receipts. Use a heredoc, small script, or direct JSONL append, then clean scratch files.
+- Every data-backed Brain component must expose source path, schema, privacy, freshness, and side effects in the rendered surface.
+
+## Prototype runtime and cost guardrails
+
+- Assume every autonomous beat can spend real Workers AI money. Default to one explicit beat or a tiny capped run.
+- `Start World` / autoplay controls must cap AI calls by default and require an explicit continuous-$$$ opt-in to run indefinitely.
+- Schedule the next AI beat only after the previous beat finishes. Do not use blind intervals that can overlap model calls.
+- Keep single-flight locks around generation and add stale-lock recovery so interrupted dev servers do not wedge the prototype in `mode="generating"` forever.
+- Before sharing a local/tailnet prototype link, cycle the server when code changed, verify the current portless/Tailscale URL, and test the visible control path with agent-browser.
+- If the UI “doesn’t advance,” inspect `/api/prototype/tavern-town-state`, POST `/api/prototype/tavern-town-beat`, and Wrangler logs before patching. Fast 200s with unchanged beat usually means a stale generation lock, not a model success.
+
 ## Operating loop
 
 Joel is driving and learning. Do not bulldoze end-to-end.
