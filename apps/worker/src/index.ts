@@ -4,7 +4,7 @@ import { Think, type Session, type TurnConfig, type TurnContext } from "@cloudfl
 import { createWorkersAI } from "workers-ai-provider";
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
-import { Output, generateObject, tool, type LanguageModel, type ToolSet, type UIMessage } from "ai";
+import { Output, generateObject, streamObject, tool, type LanguageModel, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
 import {
   initialPrototypeState,
@@ -668,7 +668,8 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
       "You are the Old School Essentials Referee mind for Cloudflare Agent Dungeon.",
       "The Referee parent owns canonical truth, dice receipts, and visibility boundaries.",
       "Your job is the fun part: gameplay reasoning, pressure, consequences, anticipation, and table-safe narration.",
-      "Never reveal hidden faction agendas, private Referee notes, rules corpus text, or player-private secrets in publicNarration. Keep that in privateReasoning."
+      "Never reveal hidden faction agendas, private Referee notes, rules corpus text, or player-private secrets in publicNarration. Keep that in privateReasoning.",
+      "If a required context/tool/generation step does not happen, report that failure plainly in sanitized operational language instead of pretending the step worked."
     ].join(" ");
   }
 
@@ -786,7 +787,8 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
       "Prepare situations, not scripted outcomes. Build skeletons; players and dice add flesh.",
       "Referee owns hidden truth and public projection boundaries.",
       "Do not reveal hidden notes, raw rules/source corpus, or player-private data in public output.",
-      "For Town Forge, create Referee-owned graph records. NPCs are not separate agents in this slice."
+      "For Town Forge, create Referee-owned graph records. NPCs are not separate agents in this slice.",
+      "Reporting law: if you cannot load an expected context, call a required tool, produce the requested schema, or validate the graph, say exactly which step failed in sanitized process language. Never hide a failed step behind a generic success word like completed."
     ].join("\n");
   }
 
@@ -804,7 +806,8 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
       });
       const result = await this.saveMessages([userMessage([
         `Load the Town Forge runtime card now by calling load_context with label "${TOWN_FORGE_SKILL_LABEL}" and key "${TOWN_FORGE_SKILL_KEY}".`,
-        "Do not generate the town yet. The next turn will ask for the town graph."
+        "Do not generate the town yet. The next turn will ask for the town graph.",
+        `If load_context does not load ${TOWN_FORGE_SKILL_LABEL}:${TOWN_FORGE_SKILL_KEY}, report that exact failed load in your assistant response. Do not answer with a vague success word like completed.`
       ].join("\n"))]);
       const { expectedTownForgeTool: _expected, ...withoutExpected } = this.state ?? this.initialState;
       void _expected;
@@ -1546,6 +1549,8 @@ type RefereeState = Campaign & {
 };
 
 const PROTOTYPE_TAVERN_GENERATION_LOCK_TIMEOUT_MS = 3 * 60 * 1000;
+const TOWN_FORGE_STALE_RUN_TIMEOUT_MS = 45 * 1000;
+const TOWN_FORGE_EVENT_HISTORY_LIMIT = 240;
 
 type PrototypeSocketProcessLane = "socket" | "setup" | "player" | "referee" | "rules" | "artifacts" | "state" | "error";
 
@@ -1596,6 +1601,9 @@ type TownForgeSocketProcessEvent = {
   lane: TownForgeProcessLane;
   message: string;
   detail?: string;
+  reasoning?: string;
+  assetKind?: "location" | "npc" | "rumor" | "clock" | "encounter";
+  asset?: unknown;
   status?: "running" | "done" | "warning" | "error";
   at: string;
   campaignId: string;
@@ -1609,7 +1617,17 @@ type TownForgeSocketStateEvent = {
   campaignId: string;
 };
 
-type TownForgeSocketEvent = TownForgeSocketProcessEvent | TownForgeSocketStateEvent | {
+type TownForgeSocketRawChunkEvent = {
+  type: "town_forge.raw_chunk";
+  chunk: string;
+  index: number;
+  attempt: number;
+  totalChars: number;
+  at: string;
+  campaignId: string;
+};
+
+type TownForgeSocketEvent = TownForgeSocketProcessEvent | TownForgeSocketStateEvent | TownForgeSocketRawChunkEvent | {
   type: "town_forge.connected";
   at: string;
   campaignId: string;
@@ -1618,6 +1636,15 @@ type TownForgeSocketEvent = TownForgeSocketProcessEvent | TownForgeSocketStateEv
   message: string;
   at: string;
   campaignId: string;
+};
+
+type TownForgeLiveAsset = {
+  kind: NonNullable<TownForgeSocketProcessEvent["assetKind"]>;
+  key: string;
+  message: string;
+  detail: string;
+  reasoning: string;
+  asset: Record<string, unknown>;
 };
 
 type PrototypeSocketConnectionState = {
@@ -1664,6 +1691,11 @@ function isPrototypeMonitorSocketRequest(request: Request): boolean {
   return monitorSocketKind(request) !== null;
 }
 
+function isTownForgeRawSocketRequest(request: Request, env: Env): boolean {
+  const url = new URL(request.url);
+  return monitorSocketKind(request) === "town-forge" && url.searchParams.get("raw") === "1" && isPrototypeBrainDevRequest(request, env);
+}
+
 function isSameOriginPrototypeSocket(request: Request): boolean {
   const origin = request.headers.get("origin");
   if (!origin) return true;
@@ -1683,10 +1715,12 @@ function publicPrototypeError(error: unknown): string {
 
 export class Referee extends Agent<Env, RefereeState> {
   initialState: RefereeState = seedTavernCampaign("agent-dungeon-campaign");
+  private activeTownForgeAbort: AbortController | undefined;
+  private activeTownForgeRunId: string | undefined;
 
   override getConnectionTags(_connection: Connection, ctx: ConnectionContext): string[] {
     const kind = monitorSocketKind(ctx.request);
-    if (kind === "town-forge") return ["town-forge-monitor"];
+    if (kind === "town-forge") return isTownForgeRawSocketRequest(ctx.request, this.env) ? ["town-forge-monitor", "town-forge-raw-monitor"] : ["town-forge-monitor"];
     if (kind === "tavern-town") return ["prototype-monitor"];
     return [];
   }
@@ -1708,7 +1742,7 @@ export class Referee extends Agent<Env, RefereeState> {
     connection.setState({ ...(connection.state as PrototypeSocketConnectionState | undefined), monitorKind: kind, prototypeAutoStepsUsed: 0 });
     if (kind === "town-forge") {
       this.sendTownForgeSocketEvent(connection, { type: "town_forge.connected", at: new Date().toISOString(), campaignId: this.name });
-      this.sendTownForgeStateTo(connection, "connected");
+      this.sendTownForgeStateTo(connection, isTownForgeRawSocketRequest(ctx.request, this.env) ? "connected-raw-dev" : "connected");
       return;
     }
     this.sendPrototypeSocketEvent(connection, { type: "prototype.connected", at: new Date().toISOString(), campaignId: this.name });
@@ -1846,6 +1880,19 @@ export class Referee extends Agent<Env, RefereeState> {
     for (const connection of this.getConnections("town-forge-monitor")) connection.send(message);
   }
 
+  private emitTownForgeRawChunk(attempt: number, index: number, totalChars: number, chunk: string): void {
+    const message = JSON.stringify({
+      type: "town_forge.raw_chunk",
+      chunk,
+      index,
+      attempt,
+      totalChars,
+      at: new Date().toISOString(),
+      campaignId: this.name
+    } satisfies TownForgeSocketRawChunkEvent);
+    for (const connection of this.getConnections("town-forge-raw-monitor")) connection.send(message);
+  }
+
   private sendTownForgeStateTo(connection: Connection, reason: string): void {
     this.sendTownForgeSocketEvent(connection, {
       type: "town_forge.state",
@@ -1866,7 +1913,25 @@ export class Referee extends Agent<Env, RefereeState> {
     });
   }
 
-  private emitTownForgeProcess(lane: TownForgeProcessLane, message: string, options: { detail?: string; status?: TownForgeSocketProcessEvent["status"] } = {}): void {
+  private appendTownForgeEvent(event: TownForgeSocketProcessEvent): void {
+    const state = this.requireRefereeState();
+    const current = state.prototypeTownForge ? TownForgeStateSchema.safeParse(state.prototypeTownForge) : null;
+    if (!current?.success) return;
+    const next = TownForgeStateSchema.parse({
+      ...current.data,
+      events: [event, ...(current.data.events ?? [])].slice(0, TOWN_FORGE_EVENT_HISTORY_LIMIT),
+      updatedAt: event.at
+    });
+    this.setState({ ...state, prototypeTownForge: next });
+  }
+
+  private emitTownForgeProcess(lane: TownForgeProcessLane, message: string, options: {
+    detail?: string;
+    reasoning?: string;
+    assetKind?: TownForgeSocketProcessEvent["assetKind"];
+    asset?: unknown;
+    status?: TownForgeSocketProcessEvent["status"];
+  } = {}): void {
     const event: TownForgeSocketProcessEvent = {
       type: "town_forge.process",
       lane,
@@ -1875,7 +1940,11 @@ export class Referee extends Agent<Env, RefereeState> {
       campaignId: this.name
     };
     if (options.detail !== undefined) event.detail = options.detail;
+    if (options.reasoning !== undefined) event.reasoning = options.reasoning;
+    if (options.assetKind !== undefined) event.assetKind = options.assetKind;
+    if (options.asset !== undefined) event.asset = options.asset;
     if (options.status !== undefined) event.status = options.status;
+    this.appendTownForgeEvent(event);
     this.emitTownForgeSocketEvent(event);
   }
 
@@ -1891,6 +1960,442 @@ export class Referee extends Agent<Env, RefereeState> {
     this.emitTownForgeProcess("error", message, { status: "error" });
   }
 
+  private createTownForgeRunId(): string {
+    return `town-forge-${crypto.randomUUID()}`;
+  }
+
+  private isCurrentTownForgeRun(runId: string): boolean {
+    const state = this.state?.prototypeTownForge;
+    const parsed = state ? TownForgeStateSchema.safeParse(state) : null;
+    return Boolean(parsed?.success && parsed.data.mode === "forging" && parsed.data.runId === runId);
+  }
+
+  private townForgeResumeContext(state: TownForgeState): unknown {
+    const events = state.events ?? [];
+    return {
+      previousMode: state.mode,
+      previousError: state.error,
+      receiptSummary: state.receipts.map((receipt) => ({ kind: receipt.kind, status: receipt.status, title: receipt.title, summary: receipt.summary })).slice(-12),
+      graphDrafts: events
+        .filter((event) => event.lane === "graph")
+        .slice(0, 40)
+        .map((event) => ({ kind: event.assetKind, message: event.message, detail: event.detail, asset: event.asset })),
+      recentProcess: events
+        .filter((event) => event.lane !== "graph")
+        .slice(0, 20)
+        .map((event) => ({ lane: event.lane, status: event.status, message: event.message, detail: event.detail }))
+    };
+  }
+
+  private townForgeModel(): LanguageModel {
+    const workersai = createWorkersAI({ binding: this.env.AI });
+    return workersai("@cf/moonshotai/kimi-k2.6", {
+      sessionAffinity: `town-forge-${this.name}`,
+      reasoning_effort: null,
+      chat_template_kwargs: { enable_thinking: false, thinking: false } as any
+    }) as unknown as LanguageModel;
+  }
+
+  private summarizePartialTownGraph(value: unknown): { keys: string[]; counts: string[]; details: string[] } {
+    if (!value || typeof value !== "object") return { keys: [], counts: [], details: [] };
+    const partial = value as Record<string, unknown>;
+    const keys = Object.keys(partial).filter((key) => partial[key] !== undefined).sort();
+    const count = (key: string): number | undefined => Array.isArray(partial[key]) ? (partial[key] as unknown[]).length : undefined;
+    const counts = [
+      ["locations", count("locations"), "5-7"],
+      ["npcs", count("npcs"), "6-10"],
+      ["rumors", count("rumors"), "6"],
+      ["clocks", count("clocks"), "2-3"],
+      ["latent encounters", count("latentEncounters"), "4-6"]
+    ]
+      .filter((entry): entry is [string, number, string] => typeof entry[1] === "number")
+      .map(([label, actual, target]) => `${label} ${actual}/${target}`);
+    const details = this.partialTownGraphDetails(partial);
+    return { keys, counts, details };
+  }
+
+  private partialTownString(record: Record<string, unknown>, key: string, max = 140): string | undefined {
+    const value = record[key];
+    if (typeof value !== "string") return undefined;
+    const normalized = value.replace(/\s+/g, " ").trim();
+    if (!normalized) return undefined;
+    return normalized.length > max ? `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…` : normalized;
+  }
+
+  private partialTownNumber(record: Record<string, unknown>, key: string): number | undefined {
+    const value = record[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  }
+
+  private partialTownRecords(value: unknown, key: string): Record<string, unknown>[] {
+    if (!value || typeof value !== "object") return [];
+    const maybeArray = (value as Record<string, unknown>)[key];
+    if (!Array.isArray(maybeArray)) return [];
+    return maybeArray.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
+  }
+
+  private partialTownStringArray(record: Record<string, unknown>, key: string, max = 3): string[] | undefined {
+    const value = record[key];
+    if (!Array.isArray(value)) return undefined;
+    const strings = value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .slice(0, max);
+    return strings.length ? strings : undefined;
+  }
+
+  private partialTownGraphDetails(partial: Record<string, unknown>): string[] {
+    const details: string[] = [];
+    const townName = this.partialTownString(partial, "name", 90);
+    if (townName) details.push(`town name: ${townName}`);
+    const premise = this.partialTownString(partial, "premise", 120) ?? this.partialTownString(partial, "publicVibe", 120);
+    if (premise) details.push(`public premise/vibe: ${premise}`);
+    const latestLocation = this.partialTownRecords(partial, "locations").at(-1);
+    if (latestLocation) {
+      const name = this.partialTownString(latestLocation, "name", 70);
+      const description = this.partialTownString(latestLocation, "publicDescription", 110);
+      if (name || description) details.push(`latest location: ${[name, description].filter(Boolean).join(" — ")}`);
+    }
+    const latestNpc = this.partialTownRecords(partial, "npcs").at(-1);
+    if (latestNpc) {
+      const name = this.partialTownString(latestNpc, "name", 70);
+      const role = this.partialTownString(latestNpc, "role", 80);
+      const want = this.partialTownString(latestNpc, "want", 90);
+      if (name || role || want) details.push(`latest NPC: ${[name, role, want ? `wants ${want}` : undefined].filter(Boolean).join(" — ")}`);
+    }
+    const latestRumor = this.partialTownRecords(partial, "rumors").at(-1);
+    if (latestRumor) {
+      const text = this.partialTownString(latestRumor, "text", 130) ?? this.partialTownString(latestRumor, "publicClue", 130);
+      if (text) details.push(`latest rumor: ${text}`);
+    }
+    const latestClock = this.partialTownRecords(partial, "clocks").at(-1);
+    if (latestClock) {
+      const name = this.partialTownString(latestClock, "name", 70);
+      const pressure = this.partialTownString(latestClock, "pressure", 100);
+      const current = this.partialTownNumber(latestClock, "current");
+      const max = this.partialTownNumber(latestClock, "max");
+      if (name || pressure) details.push(`latest clock: ${[name, current !== undefined && max !== undefined ? `${current}/${max}` : undefined, pressure].filter(Boolean).join(" — ")}`);
+    }
+    const latestEncounter = this.partialTownRecords(partial, "latentEncounters").at(-1);
+    if (latestEncounter) {
+      const title = this.partialTownString(latestEncounter, "title", 80);
+      const stakes = this.partialTownString(latestEncounter, "stakes", 110);
+      if (title || stakes) details.push(`latest pressure node: ${[title, stakes].filter(Boolean).join(" — ")}`);
+    }
+    return details.slice(0, 4);
+  }
+
+  private partialTownGraphAssets(partial: Record<string, unknown>): TownForgeLiveAsset[] {
+    const assets: TownForgeLiveAsset[] = [];
+    for (const [index, location] of this.partialTownRecords(partial, "locations").entries()) {
+      const id = this.partialTownString(location, "id", 80) ?? `partial-location-${index}`;
+      const name = this.partialTownString(location, "name", 120);
+      const description = this.partialTownString(location, "publicDescription", 260);
+      if (!name || !description || description.length < 24) continue;
+      assets.push({
+        kind: "location",
+        key: `location:${id}`,
+        message: `Draft location: ${name}`,
+        detail: description,
+        reasoning: "Live public-safe location detail from the partial stream. Hidden notes remain withheld until final validation and artifact write.",
+        asset: {
+          id,
+          name,
+          kind: this.partialTownString(location, "kind", 80) ?? "other",
+          publicDescription: description,
+          visibleAffordances: this.partialTownStringArray(location, "visibleAffordances", 5) ?? []
+        }
+      });
+    }
+    for (const [index, npc] of this.partialTownRecords(partial, "npcs").entries()) {
+      const id = this.partialTownString(npc, "id", 80) ?? `partial-npc-${index}`;
+      const name = this.partialTownString(npc, "name", 120);
+      const role = this.partialTownString(npc, "role", 120);
+      const want = this.partialTownString(npc, "want", 160);
+      if (!name || !role) continue;
+      assets.push({
+        kind: "npc",
+        key: `npc:${id}`,
+        message: `Draft NPC record: ${name}`,
+        detail: [role, want ? `wants ${want}` : undefined].filter(Boolean).join("; "),
+        reasoning: "Live public-safe NPC record from the partial stream. Memory seeds and hidden notes are not streamed.",
+        asset: {
+          id,
+          name,
+          role,
+          publicTell: this.partialTownString(npc, "publicTell", 180) ?? "",
+          want: want ?? "",
+          publicDisposition: this.partialTownString(npc, "publicDisposition", 180) ?? ""
+        }
+      });
+    }
+    for (const [index, rumor] of this.partialTownRecords(partial, "rumors").entries()) {
+      const id = this.partialTownString(rumor, "id", 80) ?? `partial-rumor-${index}`;
+      const text = this.partialTownString(rumor, "text", 220);
+      if (!text || text.length < 20) continue;
+      assets.push({
+        kind: "rumor",
+        key: `rumor:${id}`,
+        message: `Draft rumor: ${id}`,
+        detail: text,
+        reasoning: "Live rumor text from the partial stream. Truth state is deliberately withheld from the monitor.",
+        asset: {
+          id,
+          text,
+          truthState: "withheld",
+          publicClue: this.partialTownString(rumor, "publicClue", 220) ?? ""
+        }
+      });
+    }
+    for (const [index, clock] of this.partialTownRecords(partial, "clocks").entries()) {
+      const id = this.partialTownString(clock, "id", 80) ?? `partial-clock-${index}`;
+      const name = this.partialTownString(clock, "name", 120);
+      const pressure = this.partialTownString(clock, "pressure", 220);
+      const current = this.partialTownNumber(clock, "current") ?? 0;
+      const max = this.partialTownNumber(clock, "max") ?? 0;
+      if (!name || !pressure || pressure.length < 18) continue;
+      assets.push({
+        kind: "clock",
+        key: `clock:${id}`,
+        message: `Draft clock: ${name}`,
+        detail: `${current}/${max || "?"}: ${pressure}`,
+        reasoning: "Live public pressure clock from the partial stream. Clock hidden notes are not streamed.",
+        asset: {
+          id,
+          name,
+          pressure,
+          current,
+          max,
+          publicSigns: this.partialTownStringArray(clock, "publicSigns", 5) ?? []
+        }
+      });
+    }
+    for (const [index, encounter] of this.partialTownRecords(partial, "latentEncounters").entries()) {
+      const id = this.partialTownString(encounter, "id", 80) ?? `partial-encounter-${index}`;
+      const title = this.partialTownString(encounter, "title", 140);
+      const stakes = this.partialTownString(encounter, "stakes", 220);
+      if (!title || !stakes || stakes.length < 18) continue;
+      assets.push({
+        kind: "encounter",
+        key: `encounter:${id}`,
+        message: `Draft latent encounter: ${title}`,
+        detail: stakes,
+        reasoning: "Live pressure-node detail from the partial stream. It is still unvalidated and does not force a scripted encounter.",
+        asset: {
+          id,
+          title,
+          type: this.partialTownString(encounter, "type", 80) ?? "discovery",
+          stakes,
+          tableVisibleClues: this.partialTownStringArray(encounter, "tableVisibleClues", 5) ?? [],
+          nonCombatOuts: this.partialTownStringArray(encounter, "nonCombatOuts", 5) ?? []
+        }
+      });
+    }
+    return assets;
+  }
+
+  private townForgeGenerationPrompt(context: unknown, generatedAt: string, validationError = ""): string {
+    return [
+      "You are the Referee mind for Cloudflare Agent Dungeon.",
+      "Use Think skills as on-demand rails, not as a substitute for judgment.",
+      "Prepare situations, not scripted outcomes. Build skeletons; players and dice add flesh.",
+      "Referee owns hidden truth and public projection boundaries.",
+      "Do not reveal hidden notes, raw rules/source corpus, or player-private data in public output.",
+      "For Town Forge, create Referee-owned graph records. NPCs are not separate agents in this slice.",
+      "Reporting law: if you cannot produce the requested schema or validate the graph, say exactly which step failed in sanitized process language.",
+      "Generate a genuinely fresh TownGraph.v1 for Cloudflare Agent Dungeon.",
+      "Use the operational card below as rails. It is a runtime skill-card body, not public-facing content.",
+      createVillageSkeletonSkillCard(),
+      "Hard no-fixture rule: do not use Brindlehook, The Hook and Hen, Marda Hook, Reeve Caldrin, Sister Owel, Jory Pike, Pell Stitch, Talla Reed, ferry-chain/bell/debtor setup, or any prior deterministic demo content.",
+      "This is Referee-only worldbuilding. No PlayerAgents. No character creation. No factions as first-class machinery.",
+      "Create a bounded town/village situation graph that supports open-world OSE play without a predetermined quest path.",
+      "NPCs are graph records in this slice, not separate agents.",
+      "Public fields must be safe. HiddenPressure and hiddenNotes are Referee-only.",
+      "Do not quote OSE, Game Angry, or any source corpus. Use no markdown.",
+      `Machine fields: schema must be TownGraph.v1, sourceSkill must be ${TOWN_FORGE_SKILL_KEY}, generatedAt must be ${generatedAt}.`,
+      validationError ? `Previous attempt rejected: ${validationError}` : "",
+      `Context: ${JSON.stringify(context)}`
+    ].filter(Boolean).join("\n");
+  }
+
+  private async generateTownForgeGraphWithTelemetry(context: unknown, runId: string): Promise<TownGraph> {
+    let validationError = "";
+    const generatedAt = new Date().toISOString();
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const started = Date.now();
+      let textChunks = 0;
+      let textChars = 0;
+      let partialObjects = 0;
+      let lastProgressKey = "";
+      let firstChunkSeen = false;
+      let lastObserved = "request submitted; no stream chunks received yet";
+      let lastPartialEventAt = 0;
+      let lastTextEventAt = 0;
+      const streamedAssetFingerprints = new Map<string, { fingerprint: string; at: number }>();
+
+      this.emitTownForgeProcess("referee", `Workers AI structured stream request submitted (attempt ${attempt}/2).`, {
+        status: "running",
+        detail: "No stream chunk has been received yet.",
+        reasoning: "This is the honest pre-first-byte state: the request is with Workers AI / the provider path, but the runtime has no internal model progress to report until streaming events arrive."
+      });
+
+      const heartbeat = setInterval(() => {
+        const elapsedSeconds = Math.round((Date.now() - started) / 1000);
+        this.emitTownForgeProcess("referee", `Workers AI stream still active (${elapsedSeconds}s).`, {
+          status: "running",
+          detail: lastObserved,
+          reasoning: firstChunkSeen
+            ? `Observed ${textChunks} JSON text chunk(s), ${textChars} streamed character(s), and ${partialObjects} partial object snapshot(s). ${lastObserved}`
+            : "No chunk has arrived yet. Workers AI does not expose queue/model internals here, so the monitor will not invent fake progress."
+        });
+      }, 8_000);
+      const abortController = new AbortController();
+      this.activeTownForgeAbort = abortController;
+      const abortTimeout = setTimeout(() => {
+        lastObserved = "stream aborted after 90s town-forge attempt timeout";
+        abortController.abort("town-forge-generation-timeout");
+      }, 90_000);
+
+      try {
+        const result = streamObject({
+          model: this.townForgeModel(),
+          schema: TownGraphSchema,
+          maxOutputTokens: 5000,
+          abortSignal: abortController.signal,
+          prompt: this.townForgeGenerationPrompt(context, generatedAt, validationError),
+          onError: ({ error }) => {
+            this.emitTownForgeProcess("referee", "Workers AI structured stream emitted an error event.", {
+              status: "error",
+              detail: String(error),
+              reasoning: "The stream reported an error before a schema-valid TownGraph was available. No fallback town will be substituted."
+            });
+          }
+        });
+
+        this.emitTownForgeProcess("referee", "AI SDK stream opened; consuming JSON/object events.", {
+          status: "running",
+          reasoning: "From here, updates reflect observed stream events: text deltas, partial object snapshots, finish, then final schema validation."
+        });
+
+        for await (const part of result.fullStream) {
+          if (part.type === "text-delta") {
+            textChunks += 1;
+            textChars += part.textDelta.length;
+            this.emitTownForgeRawChunk(attempt, textChunks, textChars, part.textDelta);
+            lastObserved = `text chunks ${textChunks}; streamed JSON characters ${textChars}`;
+            if (!firstChunkSeen) {
+              firstChunkSeen = true;
+              this.emitTownForgeProcess("referee", "First Workers AI JSON chunk received.", {
+                status: "running",
+                detail: `${part.textDelta.length} character(s) in first chunk.`,
+                reasoning: "The provider is now streaming response text. This is not raw chain-of-thought; it is the JSON object stream being assembled by the AI SDK."
+              });
+            } else if (textChunks % 100 === 0 && Date.now() - lastTextEventAt > 4_000) {
+              lastTextEventAt = Date.now();
+              this.emitTownForgeProcess("referee", "Workers AI is streaming TownGraph JSON.", {
+                status: "running",
+                detail: lastObserved,
+                reasoning: "Still receiving structured-output text from the provider. Partial object snapshots will appear when the AI SDK parser can assemble them."
+              });
+            }
+          } else if (part.type === "object") {
+            partialObjects += 1;
+            const progress = this.summarizePartialTownGraph(part.object);
+            const progressKey = [...progress.counts, ...progress.details].join("|") || progress.keys.join("|");
+            const countText = progress.counts.length ? progress.counts.join(" · ") : `keys ${progress.keys.join(", ") || "none yet"}`;
+            const detailText = progress.details.length ? `; ${progress.details.join("; ")}` : "";
+            lastObserved = `partial object ${partialObjects}; ${countText}${detailText}`;
+
+            for (const asset of this.partialTownGraphAssets(part.object as Record<string, unknown>)) {
+              const fingerprint = JSON.stringify(asset.asset);
+              const previous = streamedAssetFingerprints.get(asset.key);
+              const now = Date.now();
+              const changedEnough = previous === undefined || (now - previous.at > 15_000 && fingerprint !== previous.fingerprint && fingerprint.length - previous.fingerprint.length > 80);
+              if (!changedEnough) continue;
+              streamedAssetFingerprints.set(asset.key, { fingerprint, at: now });
+              this.emitTownForgeProcess("graph", asset.message, {
+                status: "running",
+                detail: asset.detail,
+                reasoning: asset.reasoning,
+                assetKind: asset.kind,
+                asset: asset.asset
+              });
+            }
+
+            
+
+            const now = Date.now();
+            const meaningfulChange = progressKey !== lastProgressKey;
+            const dueForUpdate = now - lastPartialEventAt > (meaningfulChange ? 4_000 : 12_000);
+            if (dueForUpdate) {
+              lastProgressKey = progressKey;
+              lastPartialEventAt = now;
+              this.emitTownForgeProcess("referee", "AI SDK parsed a partial TownGraph snapshot.", {
+                status: "running",
+                detail: lastObserved,
+                reasoning: progress.details.length
+                  ? "Observed public-safe town details in the streaming JSON. Hidden notes, memory seeds, and rumor truth state are still withheld until validation."
+                  : "This is observed parser progress from the streaming JSON. It is still unvalidated, so hidden graph content is not shown or added to the live graph panel yet."
+              });
+            }
+          } else if (part.type === "finish") {
+            const usage = part.usage ? `input ${part.usage.inputTokens ?? "?"}, output ${part.usage.outputTokens ?? "?"}, total ${part.usage.totalTokens ?? "?"}` : "usage unavailable";
+            lastObserved = `finish reason ${part.finishReason}; ${usage}`;
+            this.emitTownForgeProcess("validation", "Workers AI stream finished; validating final TownGraph schema.", {
+              status: "running",
+              detail: lastObserved,
+              reasoning: "The provider stream is complete. The next real step is AI SDK/Zod validation of the final object."
+            });
+          } else if (part.type === "error") {
+            lastObserved = `stream error: ${String(part.error)}`;
+            this.emitTownForgeProcess("referee", "Workers AI stream returned an error part.", {
+              status: "error",
+              detail: lastObserved,
+              reasoning: "The stream produced an error part before a validated graph existed. The run may still throw through the AI SDK result promise."
+            });
+          }
+        }
+
+        this.emitTownForgeProcess("validation", "Final stream consumed; awaiting structured object.", {
+          status: "running",
+          detail: lastObserved,
+          reasoning: "The text stream has ended. Now the runtime awaits the AI SDK's final object promise and validates it against TownGraph.v1."
+        });
+
+        const parsed = TownGraphSchema.parse({
+          ...(await result.object),
+          schema: "TownGraph.v1",
+          sourceSkill: TOWN_FORGE_SKILL_KEY,
+          generatedAt
+        });
+        this.emitTownForgeProcess("validation", "TownGraph.v1 validation passed.", {
+          status: "done",
+          detail: `${parsed.locations.length} locations · ${parsed.npcs.length} NPC records · ${parsed.rumors.length} rumors · ${parsed.clocks.length} clocks · ${parsed.latentEncounters.length} latent encounters`,
+          reasoning: "The final object passed the same Zod schema that protects artifact writes and public projection. Live graph asset events can now be emitted safely."
+        });
+        return parsed;
+      } catch (error) {
+        validationError = String(error);
+        this.emitTownForgeProcess("validation", `TownGraph generation attempt ${attempt} failed validation or streaming.`, {
+          status: attempt < 2 ? "warning" : "error",
+          detail: validationError,
+          reasoning: attempt < 2
+            ? "The first attempt did not produce a valid TownGraph. The Referee will make one repair attempt using the validation error as feedback."
+            : "The repair attempt also failed. The run will fail honestly with receipts and no generated town."
+        });
+      } finally {
+        clearInterval(heartbeat);
+        clearTimeout(abortTimeout);
+        if (this.activeTownForgeAbort === abortController) this.activeTownForgeAbort = undefined;
+        if (!this.isCurrentTownForgeRun(runId)) throw new Error("Town Forge run was cancelled or superseded before completion");
+      }
+    }
+
+    throw new Error(`Town Forge stream failed schema validation after retries: ${validationError}`);
+  }
+
   getTownForge(): TownForgeState {
     const state = this.requireRefereeState();
     const parsed = state.prototypeTownForge ? TownForgeStateSchema.safeParse(state.prototypeTownForge) : null;
@@ -1900,10 +2405,51 @@ export class Referee extends Agent<Env, RefereeState> {
       this.setState({ ...state, prototypeTownForge });
       return prototypeTownForge;
     }
-    return parsed.data;
+    const current = parsed.data;
+    if (current.mode === "forging") {
+      const updatedAt = Date.parse(current.updatedAt);
+      const isStale = Number.isFinite(updatedAt) && Date.now() - updatedAt > TOWN_FORGE_STALE_RUN_TIMEOUT_MS;
+      if (isStale) {
+        const at = new Date().toISOString();
+        const staleEvent: TownForgeSocketProcessEvent = {
+          type: "town_forge.process",
+          lane: "state",
+          message: "Recovered stale Town Forge run after reconnect.",
+          status: "warning",
+          detail: "The prior run stopped without a final ready/failed state. Marking it failed instead of leaving the UI wedged.",
+          reasoning: "Durable state survived, but no active generator was updating it. This is a resumability guard: keep the receipts, expose the failure, and let the operator start a new run.",
+          at,
+          campaignId: this.name
+        };
+        const failed = TownForgeStateSchema.parse({
+          ...current,
+          mode: "failed",
+          receipts: [
+            ...current.receipts,
+            townForgeReceipt({
+              kind: "generation",
+              status: "error",
+              title: "Town Forge run went stale",
+              summary: "The previous forge run stopped without a final state. No fixture content was substituted.",
+              at,
+              source: { staleAfterMs: TOWN_FORGE_STALE_RUN_TIMEOUT_MS, previousUpdatedAt: current.updatedAt }
+            })
+          ],
+          events: [staleEvent, ...(current.events ?? [])].slice(0, TOWN_FORGE_EVENT_HISTORY_LIMIT),
+          error: "Town Forge run went stale; start a new run.",
+          updatedAt: at
+        });
+        this.setState({ ...state, prototypeTownForge: failed });
+        return failed;
+      }
+    }
+    return current;
   }
 
   async resetTownForge(): Promise<TownForgeState> {
+    this.activeTownForgeAbort?.abort("town-forge-reset");
+    this.activeTownForgeAbort = undefined;
+    this.activeTownForgeRunId = undefined;
     const cleanup = await Promise.allSettled([this.deleteSubAgent(RefereeAgent, "town-forge-referee")]);
     const failedCleanup = cleanup.filter((result) => result.status === "rejected");
     if (failedCleanup.length) {
@@ -1918,73 +2464,113 @@ export class Referee extends Agent<Env, RefereeState> {
 
   async runTownForge(): Promise<TownForgeState> {
     const current = this.getTownForge();
+    if (current.mode === "ready") {
+      this.emitTownForgeProcess("state", "Town Forge already has a completed town; reset before forging a new one.", { status: "warning" });
+      this.emitTownForgeState(current, "already-ready");
+      return current;
+    }
     if (current.mode === "forging") {
       this.emitTownForgeProcess("state", "Town Forge is already running; refusing overlapping request.", { status: "running" });
       this.emitTownForgeState(current, "already-forging");
       return current;
     }
 
+    const isResume = current.mode === "failed";
+
     await this.deleteSubAgent(RefereeAgent, "town-forge-referee").catch((error) => {
       console.warn("[Referee] town forge could not clear prior child Referee before run", error);
       this.emitTownForgeProcess("state", "Continuing after child Referee cleanup warning; fresh run will fail honestly if state is dirty.", { status: "warning" });
     });
 
+    const runId = this.createTownForgeRunId();
     const forging: TownForgeState = TownForgeStateSchema.parse({
       ...current,
+      runId,
       mode: "forging",
       error: undefined,
+      receipts: isResume ? current.receipts : [],
+      events: isResume ? (current.events ?? []) : [],
       updatedAt: new Date().toISOString()
     });
+    this.activeTownForgeRunId = runId;
     this.setState({ ...this.requireRefereeState(), prototypeTownForge: forging });
-    this.emitTownForgeState(forging, "forge-started");
-    this.emitTownForgeProcess("state", "Town Forge started: Referee-only worldbuilding, no players, no character creation.", { status: "running" });
+    this.emitTownForgeState(forging, isResume ? "forge-resumed" : "forge-started");
+    this.emitTownForgeProcess("state", isResume ? "Resuming Town Forge from persisted failed state." : "Town Forge started: Referee-only worldbuilding, no players, no character creation.", {
+      status: "running",
+      ...(isResume ? { detail: `${forging.events.length} persisted event(s), ${forging.receipts.length} receipt(s) carried forward.` } : {}),
+      reasoning: isResume
+        ? "The previous failed run is treated as recoverable. Existing stream history and public-safe draft graph assets stay visible; reset is the only operation that clears them."
+        : "The Referee body is opening a single-flight forge run. It will either produce validated town graph data or fail honestly; no fixtures are allowed."
+    });
 
     try {
-      this.emitTownForgeProcess("skill", "Publishing create-village-skeleton compiled card to Artifacts and R2.", { status: "running" });
+      this.emitTownForgeProcess("skill", "Publishing create-village-skeleton compiled card to Artifacts and R2.", {
+        status: "running",
+        reasoning: "Artifacts remains the reviewable source of truth for runtime skill cards; R2 is only the deployed cache that Think can load."
+      });
       const { skillArtifact, r2Receipt } = await this.publishTownForgeSkillCard();
-      this.emitTownForgeProcess("skill", "Runtime skill card is available in R2 for Think load_context.", { status: "done", detail: TOWN_FORGE_R2_KEY });
+      this.emitTownForgeProcess("skill", "Runtime skill card is available in R2 for Think load_context.", {
+        status: "done",
+        detail: TOWN_FORGE_R2_KEY,
+        reasoning: "This proves the Brain/manual → compiled card → Artifacts → R2 path before any town graph is accepted."
+      });
 
       const referee = await this.subAgent(RefereeAgent, "town-forge-referee");
-      this.emitTownForgeProcess("skill", "RefereeAgent is loading create-village-skeleton through Think.", { status: "running" });
+      this.emitTownForgeProcess("skill", "RefereeAgent is loading create-village-skeleton through Think.", {
+        status: "running",
+        reasoning: "The Referee mind gets the design rail on demand instead of carrying campaign-design instructions in baseline context."
+      });
       const loadResult = await referee.loadTownForgeSkill();
-      this.emitTownForgeProcess("skill", loadResult.loaded ? "Think loaded the Town Forge card." : "Think skill load did not confirm; continuing with direct generated-object validation.", {
+      const skillLoadReport = loadResult.loaded
+        ? `Loaded ${TOWN_FORGE_SKILL_LABEL}:${TOWN_FORGE_SKILL_KEY}. Loaded keys: ${loadResult.loadedKeys.join(" | ")}.`
+        : `Expected ${TOWN_FORGE_SKILL_LABEL}:${TOWN_FORGE_SKILL_KEY} was not loaded. Result status: ${loadResult.resultStatus}. Loaded keys: ${loadResult.loadedKeys.join(" | ") || "none"}.`;
+      this.emitTownForgeProcess("skill", loadResult.loaded ? "Think loaded the Town Forge card." : "Think skill load did not confirm; reporting the missing context load.", {
         status: loadResult.loaded ? "done" : "warning",
-        detail: loadResult.loadedKeys.join(" | ") || loadResult.resultStatus
+        detail: skillLoadReport,
+        reasoning: loadResult.loaded
+          ? "The Referee mind confirmed the runtime card is present in its loaded Think context."
+          : "The Referee mind did not confirm the required context key. The run continues through direct generated-object validation, but the missing context load is reported as a warning receipt."
       });
 
       const skillLoadReceipt = townForgeReceipt({
         kind: "skill-load",
         status: loadResult.loaded ? "ok" : "warning",
         title: "Think load_context attempted",
-        summary: loadResult.loaded ? "RefereeAgent loaded create-village-skeleton from R2 via Think." : "RefereeAgent did not confirm loaded skill state; generation still used the compiled skill card directly. No fixture fallback is allowed.",
+        summary: loadResult.loaded ? "RefereeAgent loaded create-village-skeleton from R2 via Think." : skillLoadReport,
         source: { label: TOWN_FORGE_SKILL_LABEL, key: TOWN_FORGE_SKILL_KEY, loadedKeys: loadResult.loadedKeys, resultStatus: loadResult.resultStatus }
       });
 
-      this.emitTownForgeProcess("referee", "Referee is drafting the town skeleton from the compiled campaign-design rails.", { status: "running" });
+      this.emitTownForgeProcess("referee", "Referee is drafting the town skeleton from the compiled campaign-design rails.", {
+        status: "running",
+        reasoning: "The requested output is a situation graph: places, NPC records, rumors, clocks, latent encounters, and a player-safe public projection. This box shows sanitized process notes, not raw chain-of-thought."
+      });
       let town: TownGraph;
       let generationReceipt: TownForgeReceipt;
       try {
-        town = await referee.generateTownForgeGraph({
+        town = await this.generateTownForgeGraphWithTelemetry({
           campaignId: this.name,
           route: "/prototype/town-forge",
           sourceSkill: TOWN_FORGE_SKILL_KEY,
+          ...(isResume ? { resume: this.townForgeResumeContext(current) } : {}),
           constraints: [
             "Referee-only worldbuilding; no PlayerAgents and no character creation.",
             "Use real town graph shape: locations, NPC records, rumors, clocks, latent encounters, public projection.",
             "No factions first-class in this slice.",
             "NPCs are graph records, not separate agents.",
             "Public projection must omit hidden notes and rumor truth states.",
-            "No fixtures, canned demo data, or deterministic fake town fallback. Fail honestly if generation fails."
+            "No fixtures, canned demo data, or deterministic fake town fallback. Fail honestly if generation fails.",
+            "If resuming, reuse the public-safe draft direction from prior persisted events when it is coherent, but still produce a fresh validated TownGraph.v1."
           ]
-        });
+        }, runId);
         generationReceipt = townForgeReceipt({
           kind: "generation",
           status: "ok",
-          title: "RefereeAgent generated TownGraph.v1",
+          title: "Referee generated TownGraph.v1 from a streamed Workers AI object",
           summary: `${town.name}: ${town.locations.length} locations, ${town.npcs.length} NPCs, ${town.rumors.length} rumors, ${town.clocks.length} clocks, ${town.latentEncounters.length} latent encounters.`,
           source: { loadedSkillConfirmed: loadResult.loaded, loadedKeys: loadResult.loadedKeys }
         });
       } catch (error) {
+        if (!this.isCurrentTownForgeRun(runId)) return this.getTownForge();
         const receipts = [
           ...(forging.receipts ?? []),
           r2Receipt,
@@ -1992,7 +2578,7 @@ export class Referee extends Agent<Env, RefereeState> {
           townForgeReceipt({
             kind: "generation",
             status: "error",
-            title: "RefereeAgent generation failed",
+            title: "Referee streamed generation failed",
             summary: "No town was produced. Runtime prototypes must fail honestly instead of substituting fixture content.",
             source: { error: String(error) }
           })
@@ -2003,20 +2589,80 @@ export class Referee extends Agent<Env, RefereeState> {
           runId: this.name,
           receipts,
           artifacts: { skill: skillArtifact, r2Key: TOWN_FORGE_R2_KEY },
+          events: this.getTownForge().events ?? [],
           error: "Town Forge generation failed; no fixture fallback is allowed.",
           updatedAt: new Date().toISOString()
         });
         this.setState({ ...this.requireRefereeState(), prototypeTownForge: failed });
-        this.emitTownForgeProcess("referee", "Generation failed honestly. No town fixture was substituted.", { status: "error", detail: String(error) });
+        this.activeTownForgeRunId = undefined;
+        this.emitTownForgeProcess("referee", "Generation failed honestly. No town fixture was substituted.", {
+          status: "error",
+          detail: String(error),
+          reasoning: "The no-runtime-fixtures rule wins over visual polish. If Workers AI or schema validation fails, the monitor stays empty and the receipt explains why."
+        });
         this.emitTownForgeState(failed, "forge-generation-failed");
         return failed;
       }
 
-      for (const location of town.locations) this.emitTownForgeProcess("graph", `Location: ${location.name}`, { status: "done", detail: location.publicDescription });
-      for (const npc of town.npcs) this.emitTownForgeProcess("graph", `NPC record: ${npc.name}`, { status: "done", detail: `${npc.role}; wants ${npc.want}` });
-      this.emitTownForgeProcess("graph", `Rumor web: ${town.rumors.length} rumors drafted.`, { status: "done" });
-      this.emitTownForgeProcess("graph", `Clock panel: ${town.clocks.length} pressure clocks drafted.`, { status: "done" });
-      this.emitTownForgeProcess("graph", `Latent encounter stack: ${town.latentEncounters.length} pressure nodes drafted.`, { status: "done" });
+      if (!this.isCurrentTownForgeRun(runId)) return this.getTownForge();
+
+      for (const location of town.locations) {
+        const { hiddenNotes: _hiddenNotes, ...publicLocation } = location;
+        void _hiddenNotes;
+        this.emitTownForgeProcess("graph", `Location: ${location.name}`, {
+          status: "done",
+          detail: location.publicDescription,
+          reasoning: "Location assets define where player choices can attach. Hidden notes stay in the Referee artifact, not the live public monitor.",
+          assetKind: "location",
+          asset: publicLocation
+        });
+      }
+      for (const npc of town.npcs) {
+        const { hiddenNotes: _hiddenNotes, memorySeed: _memorySeed, ...publicNpc } = npc;
+        void _hiddenNotes;
+        void _memorySeed;
+        this.emitTownForgeProcess("graph", `NPC record: ${npc.name}`, {
+          status: "done",
+          detail: `${npc.role}; wants ${npc.want}`,
+          reasoning: "NPCs are still graph records in this slice. They get wants and dispositions, but not their own agent minds yet.",
+          assetKind: "npc",
+          asset: publicNpc
+        });
+      }
+      for (const rumor of town.rumors) {
+        const { hiddenNotes: _hiddenNotes, truthState: _truthState, ...publicRumor } = rumor;
+        void _hiddenNotes;
+        void _truthState;
+        this.emitTownForgeProcess("graph", `Rumor: ${rumor.id}`, {
+          status: "done",
+          detail: rumor.text,
+          reasoning: "Rumors are player-facing handles into hidden truth. The live monitor withholds truth state until play reveals it.",
+          assetKind: "rumor",
+          asset: { ...publicRumor, truthState: "withheld" }
+        });
+      }
+      for (const clock of town.clocks) {
+        const { hiddenNotes: _hiddenNotes, ...publicClock } = clock;
+        void _hiddenNotes;
+        this.emitTownForgeProcess("graph", `Clock: ${clock.name}`, {
+          status: "done",
+          detail: `${clock.current}/${clock.max}: ${clock.pressure}`,
+          reasoning: "Clocks make the village move without scripting scenes. They are pressure meters, not plot rails.",
+          assetKind: "clock",
+          asset: publicClock
+        });
+      }
+      for (const encounter of town.latentEncounters) {
+        const { hiddenNotes: _hiddenNotes, ...publicEncounter } = encounter;
+        void _hiddenNotes;
+        this.emitTownForgeProcess("graph", `Latent encounter: ${encounter.title}`, {
+          status: "done",
+          detail: `${encounter.type}; ${encounter.stakes}`,
+          reasoning: "Latent encounters are pressure nodes that can surface from player choices. They include outs so danger does not collapse into forced combat.",
+          assetKind: "encounter",
+          asset: publicEncounter
+        });
+      }
 
       const validationReceipt = townForgeReceipt({
         kind: "validation",
@@ -2033,9 +2679,15 @@ export class Referee extends Agent<Env, RefereeState> {
         validationReceipt
       ];
 
-      this.emitTownForgeProcess("validation", "Rendering data-backed SVX components and graph artifacts.", { status: "running" });
+      this.emitTownForgeProcess("validation", "Rendering data-backed SVX components and graph artifacts.", {
+        status: "running",
+        reasoning: "After graph validation, the same typed data feeds the live monitor and the reviewable Brain/SVX dossier. No prose dump drift."
+      });
       const files = renderTownForgeArtifacts(town, receipts);
-      this.emitTownForgeProcess("artifacts", "Syncing Town Forge SVX dossier to Artifacts.", { status: "running" });
+      this.emitTownForgeProcess("artifacts", "Syncing Town Forge SVX dossier to Artifacts.", {
+        status: "running",
+        reasoning: "The generated town is only durable once graph.json, receipts.jsonl, and component-backed SVX pages land in Artifacts."
+      });
       const townArtifact = await syncArtifactFiles({
         artifacts: (this.env as Env & { ARTIFACTS?: Artifacts }).ARTIFACTS,
         ...((this.env as Env & { ARTIFACTS_ACCOUNT_ID?: string }).ARTIFACTS_ACCOUNT_ID ? { accountId: (this.env as Env & { ARTIFACTS_ACCOUNT_ID?: string }).ARTIFACTS_ACCOUNT_ID } : {}),
@@ -2064,20 +2716,30 @@ export class Referee extends Agent<Env, RefereeState> {
           town: townArtifact,
           r2Key: TOWN_FORGE_R2_KEY
         },
+        events: this.getTownForge().events ?? [],
         updatedAt: new Date().toISOString()
       });
+      if (!this.isCurrentTownForgeRun(runId)) return this.getTownForge();
       this.setState({ ...this.requireRefereeState(), prototypeTownForge: ready });
+      this.activeTownForgeRunId = undefined;
       this.emitTownForgeState(ready, "forge-complete");
-      this.emitTownForgeProcess("state", `Town Forge complete: ${town.name}.`, { status: "done", detail: `${town.locations.length} locations · ${town.npcs.length} NPC records · ${town.latentEncounters.length} latent encounters` });
+      this.emitTownForgeProcess("state", `Town Forge complete: ${town.name}.`, {
+        status: "done",
+        detail: `${town.locations.length} locations · ${town.npcs.length} NPC records · ${town.latentEncounters.length} latent encounters`,
+        reasoning: "The Referee now has a validated town skeleton plus a public projection. Players can enter later without receiving hidden graph truth."
+      });
       return ready;
     } catch (error) {
+      if (!this.isCurrentTownForgeRun(runId)) return this.getTownForge();
       const failed: TownForgeState = TownForgeStateSchema.parse({
         ...forging,
         mode: "failed",
+        events: this.getTownForge().events ?? [],
         error: "Town Forge failed. See Wrangler logs for private details.",
         updatedAt: new Date().toISOString()
       });
       this.setState({ ...this.requireRefereeState(), prototypeTownForge: failed });
+      this.activeTownForgeRunId = undefined;
       this.emitTownForgeState(failed, "forge-failed");
       this.emitTownForgeError(error);
       throw error;

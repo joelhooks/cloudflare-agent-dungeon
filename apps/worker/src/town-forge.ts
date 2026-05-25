@@ -117,6 +117,21 @@ export const TownForgeReceiptSchema = z.object({
 
 export type TownForgeReceipt = z.infer<typeof TownForgeReceiptSchema>;
 
+export const TownForgeStoredProcessEventSchema = z.object({
+  type: z.literal("town_forge.process"),
+  lane: z.enum(["socket", "skill", "referee", "graph", "validation", "artifacts", "state", "error"]),
+  message: z.string().min(1).max(1200),
+  detail: z.string().max(8000).optional(),
+  reasoning: z.string().max(8000).optional(),
+  assetKind: z.enum(["location", "npc", "rumor", "clock", "encounter"]).optional(),
+  asset: z.unknown().optional(),
+  status: z.enum(["running", "done", "warning", "error"]).optional(),
+  at: z.string().datetime(),
+  campaignId: z.string().min(1)
+});
+
+export type TownForgeStoredProcessEvent = z.infer<typeof TownForgeStoredProcessEventSchema>;
+
 const ArtifactSyncStatusSchema = z.object({
   repoName: z.string(),
   remote: z.string().optional(),
@@ -140,6 +155,7 @@ export const TownForgeStateSchema = z.object({
     town: ArtifactSyncStatusSchema.optional(),
     r2Key: z.string().optional()
   }).optional(),
+  events: z.array(TownForgeStoredProcessEventSchema).default([]),
   updatedAt: z.string().datetime(),
   error: z.string().optional()
 });
@@ -533,27 +549,55 @@ export function townForgeUiPage(): Response {
     .panel { border:1px solid var(--line); background:rgba(14,17,15,.91); padding:14px; min-width:0; }
     .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     .status { margin-top:10px; color:var(--muted); }
-    .app { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(360px,.8fr); gap:14px; }
-    .feed { display:flex; flex-direction:column; gap:10px; }
-    .turn { border:1px solid var(--line); background:linear-gradient(180deg,rgba(20,24,18,.96),rgba(10,12,10,.96)); padding:12px; position:relative; overflow:hidden; }
+    .led-row { margin-top:12px; display:flex; align-items:center; gap:10px; color:var(--muted); text-transform:uppercase; font-size:.78rem; letter-spacing:.1em; }
+    .led { width:13px; height:13px; border-radius:999px; background:var(--red); box-shadow:0 0 18px rgba(255,107,87,.62); border:1px solid rgba(255,255,255,.4); }
+    .led.connected { background:var(--hot); box-shadow:0 0 20px rgba(183,255,90,.85); }
+    .led.connecting { background:var(--amber); box-shadow:0 0 20px rgba(255,209,102,.7); animation:pulse 1s infinite alternate; }
+    @keyframes pulse { from { opacity:.42; transform:scale(.86); } to { opacity:1; transform:scale(1.08); } }
+    .app { display:grid; gap:14px; align-items:start; }
+    .overview { display:grid; grid-template-columns:minmax(320px,.45fr) minmax(520px,1fr); gap:14px; align-items:start; }
+    .summary-stack { display:grid; gap:14px; align-content:start; }
+    .lower { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+    .stream-panel { min-height:0; display:flex; flex-direction:column; }
+    .feed { flex:1; min-height:340px; max-height:58vh; overflow:auto; display:grid; grid-auto-rows:min-content; align-content:start; gap:12px; padding-right:4px; }
+    .turn { border:1px solid var(--line); background:linear-gradient(180deg,rgba(20,24,18,.96),rgba(10,12,10,.96)); padding:14px; position:relative; overflow:visible; min-height:min-content; }
     .turn:first-child { border-color:var(--hot); box-shadow:0 0 0 1px rgba(183,255,90,.25),0 0 34px rgba(183,255,90,.08); }
-    .turn:before { content:''; position:absolute; inset:0; pointer-events:none; background:linear-gradient(90deg,rgba(183,255,90,.08),transparent 24%); opacity:.55; }
+    .turn:before { content:''; position:absolute; inset:0; pointer-events:none; background:linear-gradient(90deg,rgba(183,255,90,.08),transparent 24%); opacity:.36; }
     .meta { position:relative; display:flex; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
     .lane { color:var(--bg); background:var(--blue); padding:.1rem .4rem; font-weight:800; }
     .lane.referee,.lane.validation { background:var(--hot); }
     .lane.skill,.lane.artifacts { background:var(--amber); }
     .lane.graph,.lane.state { background:var(--violet); }
     .lane.error { background:var(--red); }
-    .turn h3 { position:relative; margin:0 0 6px; font-size:1.04rem; color:#f6ffe9; text-transform:uppercase; }
+    .turn h3 { position:relative; margin:0 0 8px; font-size:1.02rem; line-height:1.32; color:#f6ffe9; text-transform:none; letter-spacing:0; overflow-wrap:anywhere; }
     .turn p { position:relative; margin:0; }
-    .detail { position:relative; margin-top:8px; color:#d7efcf; background:rgba(255,255,255,.035); border-left:3px solid rgba(183,255,90,.55); padding:.55rem .65rem; line-height:1.55; }
-  .detail strong { color:#f6ffe9; }
+    .detail { position:relative; margin-top:8px; color:#d7efcf; background:rgba(255,255,255,.045); border-left:3px solid rgba(183,255,90,.55); padding:.7rem .75rem; line-height:1.62; font-size:.94rem; overflow-wrap:anywhere; }
+    .detail strong { color:#f6ffe9; }
+    .turn[data-status="error"] { border-color:rgba(255,107,87,.8); }
+    .turn[data-status="warning"] { border-color:rgba(255,209,102,.75); }
     .stack { display:grid; gap:14px; align-content:start; }
     .kv { display:grid; gap:8px; }
     .row { border-bottom:1px solid var(--line); padding-bottom:8px; }
     .row strong { display:block; color:#f6ffe9; }
-    pre { white-space:pre-wrap; word-break:break-word; margin:0; color:#cfe7c6; }
-    @media (max-width: 980px) { .hero,.app { grid-template-columns:1fr; } }
+    .health-good strong { color:var(--hot); }
+    .health-warn strong { color:var(--amber); }
+    .health-bad strong { color:var(--red); }
+    .live-grid { display:grid; gap:10px; grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .asset-column { border:1px solid var(--line); background:rgba(7,8,7,.5); min-height:140px; padding:10px; }
+    .asset-column h3 { margin:0 0 8px; color:var(--blue); font-size:.78rem; letter-spacing:.1em; text-transform:uppercase; display:flex; justify-content:space-between; gap:8px; }
+    .asset-list { display:grid; gap:8px; }
+    .asset { border:1px solid rgba(183,255,90,.22); background:rgba(183,255,90,.045); padding:8px; }
+    .asset strong { display:block; color:#f6ffe9; margin-bottom:3px; }
+    .asset span { color:#bdd3b4; font-size:.86rem; }
+    .reasoning-box { min-height:220px; max-height:42vh; overflow:auto; display:grid; grid-auto-rows:min-content; gap:8px; }
+    .reasoning-item { border-left:3px solid var(--violet); background:rgba(214,164,255,.055); padding:.55rem .65rem; color:#e9d8ff; }
+    .reasoning-item strong { display:block; color:#f6e9ff; font-size:.78rem; text-transform:uppercase; letter-spacing:.08em; margin-bottom:4px; }
+    .raw-panel { display:none; }
+    .raw-panel.enabled { display:block; }
+    .raw-log { min-height:240px; max-height:44vh; overflow:auto; background:#030403; border:1px solid rgba(109,211,255,.25); padding:10px; color:#d9fff2; white-space:pre-wrap; word-break:break-all; font-size:.82rem; line-height:1.5; }
+    .raw-note { margin:.25rem 0 .75rem; color:var(--amber); }
+    pre { white-space:pre-wrap; word-break:break-word; margin:0; color:#cfe7c6; max-height:34vh; overflow:auto; }
+    @media (max-width: 980px) { .hero,.overview,.lower,.live-grid { grid-template-columns:1fr; } .stream-panel { min-height:auto; } .feed { max-height:70vh; min-height:280px; } }
   </style>
 </head>
 <body>
@@ -564,24 +608,40 @@ export function townForgeUiPage(): Response {
       <div class="panel">
         <h2>Controls</h2>
         <div class="controls"><button id="forge">Forge Town</button><button id="reset">Reset</button></div>
+        <div class="led-row"><span id="led" class="led connecting"></span><span id="connectionLabel">Connecting</span></div>
         <p id="status" class="status">Connecting to Referee socket…</p>
       </div>
     </section>
     <section class="app">
-      <div><h2>Realtime Referee Stream</h2><div id="feed" class="feed"></div></div>
-      <aside class="stack">
-        <section class="panel"><h2>Town State</h2><div id="summary" class="kv"></div></section>
+      <section class="overview">
+        <aside class="summary-stack">
+          <section class="panel"><h2>Run Health</h2><div id="health" class="kv"></div></section>
+          <section class="panel"><h2>Town State</h2><div id="summary" class="kv"></div></section>
+          <section class="panel"><h2>Reasoning / Sanitized Referee Process</h2><div id="reasoning" class="reasoning-box"></div></section>
+        </aside>
+        <section class="panel"><h2>Live Brain Graph</h2><div id="brainGraph" class="live-grid"></div></section>
+      </section>
+      <section class="lower">
         <section class="panel"><h2>Public Projection</h2><pre id="projection">Waiting.</pre></section>
         <section class="panel"><h2>Artifacts</h2><pre id="artifacts">Waiting.</pre></section>
-      </aside>
+      </section>
+      <section id="rawPanel" class="panel raw-panel"><h2>Raw JSON Chunks · Dev</h2><p class="raw-note">Raw structured-output chunks may include Referee-only fields. This panel only connects with <code>?dev=1&amp;raw=1</code>.</p><pre id="rawLog" class="raw-log">Waiting for raw chunks…</pre></section>
+      <section class="panel stream-panel"><h2>Realtime Referee Stream</h2><div id="feed" class="feed"></div></section>
     </section>
   </main>
   <script>
     const forgeButton = document.getElementById('forge');
     const resetButton = document.getElementById('reset');
     const statusText = document.getElementById('status');
+    const led = document.getElementById('led');
+    const connectionLabel = document.getElementById('connectionLabel');
     const feed = document.getElementById('feed');
+    const brainGraph = document.getElementById('brainGraph');
+    const reasoning = document.getElementById('reasoning');
+    const health = document.getElementById('health');
     const summary = document.getElementById('summary');
+    const rawPanel = document.getElementById('rawPanel');
+    const rawLog = document.getElementById('rawLog');
     const projection = document.getElementById('projection');
     const artifacts = document.getElementById('artifacts');
     let socket = null;
@@ -589,9 +649,41 @@ export function townForgeUiPage(): Response {
     let busy = false;
     let state = null;
     let events = [];
+    let reasoningItems = [];
+    let assets = { locations: [], npcs: [], rumors: [], clocks: [], encounters: [] };
+    let autoRecover = localStorage.getItem('townForgeAutoRecover') !== 'off';
+    let lastAutoRecoverAt = 0;
+    const params = new URLSearchParams(location.search);
+    const rawEnabled = params.get('raw') === '1' && params.get('dev') === '1';
+    let rawChunks = [];
 
     function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, function (char) { return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[char]; }); }
-    function socketUrl() { const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'; return protocol + '//' + location.host + '/agents/referee/town-forge-prototype?monitor=town-forge'; }
+    function socketUrl() { const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'; const query = rawEnabled ? '?monitor=town-forge&dev=1&raw=1' : '?monitor=town-forge'; return protocol + '//' + location.host + '/agents/referee/town-forge-prototype' + query; }
+    function setConnection(kind) {
+      led.className = 'led ' + (kind === 'connected' ? 'connected' : kind === 'connecting' ? 'connecting' : '');
+      connectionLabel.textContent = kind === 'connected' ? 'Socket live' : kind === 'connecting' ? 'Connecting' : 'Disconnected';
+    }
+    function emptyAssets() { return { locations: [], npcs: [], rumors: [], clocks: [], encounters: [] }; }
+    function assetBucket(kind) { return kind === 'location' ? 'locations' : kind === 'npc' ? 'npcs' : kind === 'rumor' ? 'rumors' : kind === 'clock' ? 'clocks' : kind === 'encounter' ? 'encounters' : null; }
+    function rememberAsset(event) {
+      const bucket = assetBucket(event.assetKind);
+      if (!bucket || !event.asset) return;
+      const id = event.asset.id || event.message;
+      assets[bucket] = [event.asset].concat(assets[bucket].filter(function (item) { return (item.id || item.name) !== id; })).slice(0, 16);
+    }
+    function hydrateAssets(publicTown) {
+      assets = emptyAssets();
+      if (!publicTown) return;
+      assets.locations = publicTown.locations || [];
+      assets.npcs = publicTown.npcs || [];
+      assets.rumors = publicTown.rumors || [];
+      assets.clocks = publicTown.clocks || [];
+      assets.encounters = publicTown.latentEncounters || [];
+    }
+    function rememberReasoning(event) {
+      const text = event.reasoning || event.detail || summarizeEvent(event);
+      reasoningItems = [{ lane: event.lane || 'state', text, at: event.at || new Date().toISOString() }].concat(reasoningItems).slice(0, 18);
+    }
     function summarizeEvent(event) {
       if (event.detail) return event.detail;
       if (event.summary) return event.summary;
@@ -604,24 +696,100 @@ export function townForgeUiPage(): Response {
       }
       if (event.type === 'town_forge.error') return 'Public-safe error frame. Private stack traces stay in Wrangler logs.';
       if (event.lane === 'skill') return 'Runtime skill-card step: Artifacts is authoritative; R2 is the Think-facing cache.';
-      if (event.lane === 'referee') return 'Referee generation step. If Think/tool JSON fails, the prototype falls back so the visual/artifact path still proves out.';
+      if (event.lane === 'referee') return 'Referee generation step. If generation fails, the prototype fails honestly; no fixture town is substituted.';
       if (event.lane === 'graph') return 'Town graph record emitted. These are Referee-owned records, not separate NPC agents yet.';
       if (event.lane === 'validation') return 'Schema/public-projection boundary check before writing artifacts.';
       if (event.lane === 'artifacts') return 'Artifact write step for reviewable SVX pages, graph.json, and receipts.jsonl.';
       if (event.lane === 'state') return 'Lifecycle state change from the Referee.';
       return 'Town Forge monitor event.';
     }
-    function pushEvent(event) { events = [event].concat(events).slice(0, 80); render(); }
+    function newestEventTime() {
+      const newest = events[0] && events[0].at ? Date.parse(events[0].at) : 0;
+      const stateTime = state && state.updatedAt ? Date.parse(state.updatedAt) : 0;
+      return Math.max(Number.isFinite(newest) ? newest : 0, Number.isFinite(stateTime) ? stateTime : 0);
+    }
+    function lastUpdateAgeSeconds() {
+      const t = newestEventTime();
+      return t ? Math.max(0, Math.round((Date.now() - t) / 1000)) : null;
+    }
+    function eventKey(event) { return [event.type || 'process', event.lane || '', event.message || '', event.at || ''].join('|'); }
+    function rebuildDerivedStateFromEvents() {
+      const replay = events.slice().reverse();
+      reasoningItems = [];
+      assets = emptyAssets();
+      replay.forEach(function (event) {
+        rememberAsset(event);
+        rememberReasoning(event);
+      });
+    }
+    function hydrateStoredEvents(storedEvents) {
+      if (!Array.isArray(storedEvents) || !storedEvents.length) return;
+      const seen = new Set();
+      events = storedEvents.concat(events).filter(function (event) {
+        const key = eventKey(event);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).sort(function (a, b) { return String(b.at || '').localeCompare(String(a.at || '')); }).slice(0, 80);
+      rebuildDerivedStateFromEvents();
+    }
+    function pushEvent(event) { events = [event].concat(events).slice(0, 80); rememberAsset(event); rememberReasoning(event); render(); }
+    function assetTitle(item) { return item.name || item.title || item.id || 'asset'; }
+    function assetText(kind, item) {
+      if (kind === 'locations') return item.publicDescription || (item.kind || '') + ' ' + (item.visibleAffordances || []).slice(0, 2).join(' · ');
+      if (kind === 'npcs') return (item.role || 'npc') + (item.want ? '; wants ' + item.want : '');
+      if (kind === 'rumors') return item.text || item.publicClue || '';
+      if (kind === 'clocks') return (item.current ?? 0) + '/' + (item.max ?? '?') + ' ' + (item.pressure || '');
+      if (kind === 'encounters') return (item.type || 'encounter') + (item.stakes ? '; ' + item.stakes : '');
+      return '';
+    }
+    function renderAssetColumn(label, kind) {
+      const list = assets[kind] || [];
+      return '<section class="asset-column"><h3><span>' + escapeHtml(label) + '</span><span>' + list.length + '</span></h3><div class="asset-list">' + (list.length ? list.map(function (item) { return '<article class="asset"><strong>' + escapeHtml(assetTitle(item)) + '</strong><span>' + escapeHtml(assetText(kind, item)) + '</span></article>'; }).join('') : '<article class="asset"><span>Waiting for live graph data.</span></article>') + '</div></section>';
+    }
+
+    function renderRawChunk(event) {
+      if (!rawEnabled) return;
+      rawChunks.push(event.chunk);
+      if (rawChunks.length > 2000) rawChunks = rawChunks.slice(-2000);
+      rawLog.textContent = rawChunks.join('');
+      rawLog.scrollTop = rawLog.scrollHeight;
+    }
 
     function render() {
-      forgeButton.disabled = !socketReady || busy;
-      resetButton.disabled = !socketReady || busy;
+      rawPanel.classList.toggle('enabled', rawEnabled);
+      const forging = state && state.mode === 'forging';
+      const failed = state && state.mode === 'failed';
+      const ready = state && state.mode === 'ready';
+      const age = lastUpdateAgeSeconds();
+      const stale = forging && age !== null && age > 30;
+      forgeButton.textContent = forging ? 'Forging…' : failed ? 'Resume Forge' : ready ? 'Town Ready' : 'Forge Town';
+      forgeButton.disabled = !socketReady || forging || ready;
+      resetButton.textContent = forging ? 'Cancel / Reset' : 'Reset';
+      resetButton.disabled = !socketReady;
+      health.innerHTML = [
+        ['Socket', socketReady ? 'live' : 'disconnected', socketReady ? 'health-good' : 'health-bad'],
+        ['Forge', stale ? 'quiet / checking recovery' : (state ? state.mode : 'connecting'), stale ? 'health-warn' : failed ? 'health-bad' : forging ? 'health-good' : ''],
+        ['Last update', age === null ? 'none yet' : age + 's ago', stale ? 'health-warn' : ''],
+        ['Auto recovery', autoRecover ? 'on until reset' : 'off after reset', autoRecover ? 'health-good' : 'health-warn']
+      ].map(function (row) { return '<div class="row ' + row[2] + '"><strong>' + escapeHtml(row[0]) + '</strong><span>' + escapeHtml(row[1]) + '</span></div>'; }).join('');
       feed.innerHTML = events.map(function (event) {
         const lane = event.lane || 'socket';
         const status = event.status || 'live';
         const summary = summarizeEvent(event);
-        return '<article class="turn"><div class="meta"><span class="lane ' + escapeHtml(lane) + '">' + escapeHtml(lane) + '</span><span>' + escapeHtml(status) + '</span><span>' + escapeHtml(event.at ? new Date(event.at).toLocaleTimeString() : 'now') + '</span></div><h3>' + escapeHtml(event.message || event.type || 'event') + '</h3><p class="detail"><strong>Summary:</strong> ' + escapeHtml(summary) + '</p></article>';
+        return '<article class="turn" data-status="' + escapeHtml(status) + '"><div class="meta"><span class="lane ' + escapeHtml(lane) + '">' + escapeHtml(lane) + '</span><span>' + escapeHtml(status) + '</span><span>' + escapeHtml(event.at ? new Date(event.at).toLocaleTimeString() : 'now') + '</span></div><h3>' + escapeHtml(event.message || event.type || 'event') + '</h3><p class="detail"><strong>Summary:</strong> ' + escapeHtml(summary) + '</p></article>';
       }).join('') || '<article class="turn"><div class="meta"><span class="lane socket">socket</span></div><h3>Waiting for Referee</h3><p class="detail"><strong>Summary:</strong> Connect, then click Forge Town. Every event will show what happened, why it matters, and what stayed hidden.</p></article>';
+
+      brainGraph.innerHTML = [
+        renderAssetColumn('Locations', 'locations'),
+        renderAssetColumn('NPC records', 'npcs'),
+        renderAssetColumn('Rumors', 'rumors'),
+        renderAssetColumn('Clocks', 'clocks'),
+        renderAssetColumn('Latent encounters', 'encounters')
+      ].join('');
+      reasoning.innerHTML = reasoningItems.length ? reasoningItems.map(function (item) {
+        return '<article class="reasoning-item"><strong>' + escapeHtml(item.lane) + ' · ' + escapeHtml(item.at ? new Date(item.at).toLocaleTimeString() : 'now') + '</strong>' + escapeHtml(item.text) + '</article>';
+      }).join('') : '<article class="reasoning-item"><strong>sanitized process</strong>Waiting for Referee process notes. This panel does not stream raw chain-of-thought or hidden graph truth.</article>';
 
       const publicTown = state && state.publicTown;
       summary.innerHTML = publicTown ? [
@@ -639,38 +807,72 @@ export function townForgeUiPage(): Response {
     }
 
     function send(type) {
-      if (!socketReady || !socket || socket.readyState !== WebSocket.OPEN) return;
+      if (!socketReady || !socket || socket.readyState !== WebSocket.OPEN) return false;
       socket.send(JSON.stringify({ type }));
+      return true;
+    }
+    function maybeAutoRecover() {
+      if (!socketReady || !state || !autoRecover) return;
+      const age = lastUpdateAgeSeconds();
+      if (state.mode === 'forging' && age !== null && age > 30) {
+        send('town_forge.get_state');
+      }
+      if (state.mode !== 'failed') return;
+      if (Date.now() - lastAutoRecoverAt < 8000) return;
+      lastAutoRecoverAt = Date.now();
+      busy = true;
+      pushEvent({ lane: 'socket', status: 'running', message: 'Auto resume requested after failed/stalled forge.', detail: 'Auto recovery is enabled. Reset is the explicit cancel/clear action.', reasoning: 'The monitor detected a recoverable failed Town Forge and requested another server-side resume without clearing persisted draft graph history.', at: new Date().toISOString() });
+      send('town_forge.start');
     }
 
     function connect() {
+      setConnection('connecting');
       socket = new WebSocket(socketUrl());
-      socket.addEventListener('open', function () { socketReady = true; statusText.textContent = 'Referee socket connected.'; render(); });
-      socket.addEventListener('close', function () { socketReady = false; busy = false; statusText.textContent = 'Socket disconnected; reconnecting…'; render(); setTimeout(connect, 1200); });
-      socket.addEventListener('error', function () { statusText.textContent = 'Socket error; waiting for reconnect…'; render(); });
+      socket.addEventListener('open', function () { socketReady = true; setConnection('connected'); statusText.textContent = 'Referee socket connected.'; render(); });
+      socket.addEventListener('close', function () { socketReady = false; busy = false; setConnection('disconnected'); statusText.textContent = 'Socket disconnected; reconnecting…'; render(); setTimeout(connect, 1200); });
+      socket.addEventListener('error', function () { setConnection('disconnected'); statusText.textContent = 'Socket error; waiting for reconnect…'; render(); });
       socket.addEventListener('message', function (message) {
         let event;
         try { event = JSON.parse(message.data); } catch { return; }
-        if (event.type === 'town_forge.connected') pushEvent({ type: 'town_forge.connected', lane: 'socket', status: 'done', message: 'Connected to Town Forge socket.', at: event.at });
+        if (event.type === 'town_forge.connected') {
+          const connectedEvent = { type: 'town_forge.connected', lane: 'socket', status: 'done', message: 'Connected to Town Forge socket.', reasoning: 'LED is green: browser is receiving Referee monitor frames over the native Agent socket.', at: event.at };
+          pushEvent(connectedEvent);
+        }
         if (event.type === 'town_forge.process') {
           if (event.status === 'running') busy = true;
           if (event.status === 'done' && (event.lane === 'state' || event.message || '').toLowerCase().includes('complete')) busy = false;
           if (event.status === 'error') busy = false;
           pushEvent(event);
         }
+        if (event.type === 'town_forge.raw_chunk') {
+          renderRawChunk(event);
+        }
         if (event.type === 'town_forge.state') {
           state = event.state;
+          hydrateStoredEvents(state && state.events);
+          if (state && state.publicTown && !(assets.locations.length || assets.npcs.length || assets.rumors.length || assets.clocks.length || assets.encounters.length)) hydrateAssets(state.publicTown);
           busy = state && state.mode === 'forging';
           statusText.textContent = 'Town Forge state: ' + (state ? state.mode : 'unknown') + '.';
-          pushEvent({ type: 'town_forge.state', lane: 'state', status: state && state.mode === 'failed' ? 'error' : state && state.mode === 'ready' ? 'done' : 'running', message: 'State update: ' + (state ? state.mode : 'unknown'), state, at: event.at, detail: summarizeEvent(event) });
+          const stateEvent = { type: 'town_forge.state', lane: 'state', status: state && state.mode === 'failed' ? 'error' : state && state.mode === 'ready' ? 'done' : 'running', message: 'State update: ' + (state ? state.mode : 'unknown'), state, at: event.at, detail: summarizeEvent(event) };
+          pushEvent(stateEvent);
           render();
         }
-        if (event.type === 'town_forge.error') { busy = false; pushEvent({ lane: 'error', status: 'error', message: event.message, at: event.at, detail: summarizeEvent(event) }); render(); }
+        if (event.type === 'town_forge.error') { busy = false; const errorEvent = { lane: 'error', status: 'error', message: event.message, at: event.at, detail: summarizeEvent(event), reasoning: 'Error frame is public-safe. Use receipts/Wrangler logs for private details.' }; pushEvent(errorEvent); render(); }
       });
     }
 
-    forgeButton.addEventListener('click', function () { events = []; busy = true; pushEvent({ lane: 'socket', status: 'running', message: 'Forge Town requested.', at: new Date().toISOString() }); send('town_forge.start'); render(); });
-    resetButton.addEventListener('click', function () { events = []; busy = true; pushEvent({ lane: 'socket', status: 'running', message: 'Town Forge reset requested.', at: new Date().toISOString() }); send('town_forge.reset'); render(); });
+    forgeButton.addEventListener('click', function () {
+      autoRecover = true;
+      localStorage.setItem('townForgeAutoRecover', 'on');
+      const resume = state && state.mode === 'failed';
+      if (!resume) { events = []; reasoningItems = []; assets = emptyAssets(); rawChunks = []; rawLog.textContent = rawEnabled ? 'Waiting for raw chunks…' : ''; }
+      busy = true;
+      pushEvent({ lane: 'socket', status: 'running', message: resume ? 'Resume Forge requested.' : 'Forge Town requested.', reasoning: resume ? 'Operator requested a recover/resume run. Persisted stream history and public-safe draft graph assets stay visible; only explicit reset clears them.' : 'Manual operator requested one Forge run. The page will build graph panels from live typed asset events as they arrive.', at: new Date().toISOString() });
+      send('town_forge.start');
+      render();
+    });
+    resetButton.addEventListener('click', function () { autoRecover = false; localStorage.setItem('townForgeAutoRecover', 'off'); events = []; reasoningItems = []; assets = emptyAssets(); rawChunks = []; rawLog.textContent = rawEnabled ? 'Waiting for raw chunks…' : ''; busy = true; pushEvent({ lane: 'socket', status: 'running', message: 'Town Forge reset requested.', reasoning: 'Reset explicitly cancels any active run, disables auto recovery, clears the monitor graph, and asks the Referee body to clear Town Forge state.', at: new Date().toISOString() }); send('town_forge.reset'); render(); });
+    setInterval(function () { maybeAutoRecover(); render(); }, 3000);
     connect();
     render();
   </script>
