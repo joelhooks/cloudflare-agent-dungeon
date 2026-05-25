@@ -7,8 +7,8 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "build": "tsgo -p tsconfig.json",
+    "check": "tsgo -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "devDependencies": {

@@ -139,12 +139,64 @@ type PrototypeRuleReceipt = {
   snippet?: string;
 };
 
+type BrainMemoryEntry = {
+  beat: number;
+  at: string;
+  summary: string;
+};
+
+type PlayerAgentState = {
+  playerId?: PlayerId;
+  brainSummary: string;
+  currentGoal?: string;
+  currentFear?: string;
+  privateTheories: string[];
+  relationships: string[];
+  recentMemories: BrainMemoryEntry[];
+  updatedAt?: string;
+};
+
+type RefereeAgentState = {
+  brainSummary: string;
+  npcMemory: string[];
+  frontNotes: string[];
+  rulesNotes: string[];
+  unresolvedQuestions: string[];
+  recentMemories: BrainMemoryEntry[];
+  updatedAt?: string;
+};
+
+type PlayerTavernMemoryInput = {
+  current: PrototypeTavernTownState;
+  committed: PrototypeTavernTownState;
+  intent: TavernIntent;
+  beat: TavernBeat;
+  receipts: PrototypeRuleReceipt[];
+};
+
+type RefereeTavernMemoryInput = {
+  current: PrototypeTavernTownState;
+  committed: PrototypeTavernTownState;
+  playerIntents: TavernIntent[];
+  beat: TavernBeat;
+  receipts: PrototypeRuleReceipt[];
+};
+
 /**
  * Long-lived referee mind. It reasons over validated player choices and dice
  * receipts, then generates table-safe outcomes while keeping private reasoning
  * in the Referee audit lane.
  */
-export class RefereeAgent extends Think<Env> {
+export class RefereeAgent extends Think<Env, RefereeAgentState> {
+  initialState: RefereeAgentState = {
+    brainSummary: "No Referee tavern memories yet.",
+    npcMemory: [],
+    frontNotes: [],
+    rulesNotes: [],
+    unresolvedQuestions: [],
+    recentMemories: []
+  };
+
   override getModel(): LanguageModel {
     const workersai = createWorkersAI({ binding: this.env.AI });
     return workersai("@cf/moonshotai/kimi-k2.6", {
@@ -179,6 +231,7 @@ export class RefereeAgent extends Think<Env> {
           "privateReasoning: your actual Referee reasoning from the supplied public and audit context. This is dev/private only.",
           "Respect dice receipts and canonical state. Do not override rolls. Do not invent exact distances, inventory, injuries, or backstory not present in context.",
           "Never include the words hidden agenda, secret agenda, hiddenAgenda, private note, or unrevealed in publicNarration, pressure, or nextQuestion.",
+          `Private Referee brain summary: ${this.getBrainSummary()}`,
           validationError ? `Previous attempt rejected: ${validationError}` : "",
           `Context: ${JSON.stringify(context)}`
         ].filter(Boolean).join("\n")
@@ -211,6 +264,7 @@ export class RefereeAgent extends Think<Env> {
             "devReasoning: private/dev Referee reasoning only. Keep under 420 characters.",
             "nextAffordances: 3-7 concrete available actions after this beat. visibleThreads: 1-7 public threads.",
             "Rules receipts are IDs only; do not quote rulebook text.",
+            `Private Referee brain summary: ${this.getBrainSummary()}`,
             validationError ? `Previous attempt rejected: ${validationError}` : "",
             `Context: ${JSON.stringify(context)}`
           ].filter(Boolean).join("\n")
@@ -221,6 +275,42 @@ export class RefereeAgent extends Think<Env> {
       }
     }
     throw new Error(`Referee tavern beat failed validation: ${validationError}`);
+  }
+
+  getBrainSummary(): string {
+    const state = this.state ?? this.initialState;
+    return [
+      state.brainSummary,
+      state.npcMemory.length ? `NPC memory: ${state.npcMemory.join(" | ")}` : "NPC memory: none yet.",
+      state.frontNotes.length ? `Fronts/pressure: ${state.frontNotes.join(" | ")}` : "Fronts/pressure: none yet.",
+      state.rulesNotes.length ? `Rules/procedure receipts: ${state.rulesNotes.join(" | ")}` : "Rules/procedure receipts: none yet.",
+      state.unresolvedQuestions.length ? `Open questions: ${state.unresolvedQuestions.join(" | ")}` : "Open questions: none yet."
+    ].join("\n");
+  }
+
+  rememberTavernBeat(input: RefereeTavernMemoryInput): RefereeAgentState {
+    const previous = this.state ?? this.initialState;
+    const at = new Date().toISOString();
+    const intentSummary = input.playerIntents.map((intent) => `${intent.actor}: ${intent.declaredAction}`).join(" | ");
+    const receiptIds = input.receipts.map((receipt) => receipt.id);
+    const memorySummary = compactText(
+      `Beat ${input.committed.beat}: ${input.beat.title}. Player intents: ${intentSummary || "none"}. Outcome: ${input.beat.tableText} Process: ${input.beat.processReasoning}`,
+      900
+    );
+    const nextState: RefereeAgentState = {
+      brainSummary: compactText(memorySummary, 900),
+      npcMemory: takeUniqueStrings([
+        ...(input.beat.npcUpdates ?? []).map((npc) => `${npc.name}: ${npc.memory}; wants ${npc.want}; disposition ${npc.disposition}`),
+        ...previous.npcMemory
+      ], 10),
+      frontNotes: takeUniqueStrings([input.beat.processReasoning, ...input.committed.visibleThreads, ...previous.frontNotes], 10),
+      rulesNotes: takeUniqueStrings([...receiptIds, ...(input.beat.rulesUsed ?? []), ...previous.rulesNotes], 12),
+      unresolvedQuestions: takeUniqueStrings(input.committed.affordances.concat(previous.unresolvedQuestions), 10),
+      recentMemories: [{ beat: input.committed.beat, at, summary: memorySummary }, ...previous.recentMemories].slice(0, 12),
+      updatedAt: at
+    };
+    this.setState(nextState);
+    return nextState;
   }
 }
 
@@ -251,8 +341,18 @@ function takeUniqueStrings(values: string[], max: number): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, max);
 }
 
-export class PlayerAgent extends Think<Env> {
-  private secrets: string[] = [];
+function compactText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+export class PlayerAgent extends Think<Env, PlayerAgentState> {
+  initialState: PlayerAgentState = {
+    brainSummary: "No player tavern memories yet.",
+    privateTheories: [],
+    relationships: [],
+    recentMemories: []
+  };
 
   override getModel(): LanguageModel {
     const workersai = createWorkersAI({ binding: this.env.AI });
@@ -284,7 +384,7 @@ export class PlayerAgent extends Think<Env> {
         "Do not buy more than the rolled starting gold can afford.",
         `Draft: ${JSON.stringify(draft)}`,
         `Available items: ${compactStoreCatalog(stores)}`,
-        `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
+        `Private brain summary available to you only: ${this.privateContextSummary()}`
       ].join("\n");
       const result = await this.env.AI.run("@cf/moonshotai/kimi-k2.6", {
         messages: [{ role: "user", content: prompt }],
@@ -311,7 +411,7 @@ export class PlayerAgent extends Think<Env> {
           "Include tableSpeech, innerMonologue, goal, and fear. This is the gameplay: stress, desire, anticipation, and reasoning.",
           "Your choice should reflect your player personality and your character sheet, not a railroad.",
           `Context: ${JSON.stringify(context)}`,
-          `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
+          `Private brain summary available to you only: ${this.privateContextSummary()}`
         ].join("\n")
       });
       const choice = toAdventureChoice((context as { playerId: PlayerId }).playerId, result.object);
@@ -343,7 +443,7 @@ export class PlayerAgent extends Think<Env> {
             "Return structured JSON only. No markdown. Keep strings short and sharp.",
             validationError ? `Previous attempt rejected: ${validationError}` : "",
             `Context: ${JSON.stringify(context)}`,
-            `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
+            `Private brain summary available to you only: ${this.privateContextSummary()}`
           ].filter(Boolean).join("\n")
         });
         return {
@@ -361,9 +461,43 @@ export class PlayerAgent extends Think<Env> {
     throw new Error(`PlayerAgent tavern intent failed for ${playerId}: ${validationError}`);
   }
 
+  getBrainSummary(): string {
+    return this.privateContextSummary();
+  }
+
+  rememberTavernBeat(input: PlayerTavernMemoryInput): PlayerAgentState {
+    const previous = this.state ?? this.initialState;
+    const at = new Date().toISOString();
+    const memorySummary = compactText(
+      `Beat ${input.committed.beat}: I chose ${input.intent.declaredAction} (${input.intent.intentKind}). I said/did: ${input.intent.tableSpeech}. I wanted: ${input.intent.privateGoal}. I feared: ${input.intent.privateFear}. Referee outcome: ${input.beat.tableText}`,
+      800
+    );
+    const nextState: PlayerAgentState = {
+      playerId: input.intent.playerId,
+      brainSummary: compactText(memorySummary, 800),
+      currentGoal: input.intent.privateGoal,
+      currentFear: input.intent.privateFear,
+      privateTheories: takeUniqueStrings([input.intent.innerMonologue, ...previous.privateTheories], 8),
+      relationships: takeUniqueStrings([
+        ...(input.beat.npcUpdates ?? []).map((npc) => `${npc.name}: ${npc.disposition}`),
+        ...previous.relationships
+      ], 8),
+      recentMemories: [{ beat: input.committed.beat, at, summary: memorySummary }, ...previous.recentMemories].slice(0, 10),
+      updatedAt: at
+    };
+    this.setState(nextState);
+    return nextState;
+  }
+
   private privateContextSummary(): string {
-    if (this.secrets.length === 0) return "No private notes.";
-    return `${this.secrets.length} private note(s). Use them to shape play, but do not reveal them unless you choose to act on them.`;
+    const state = this.state ?? this.initialState;
+    return [
+      state.brainSummary,
+      state.currentGoal ? `Current private goal: ${state.currentGoal}` : "Current private goal: unset.",
+      state.currentFear ? `Current private fear: ${state.currentFear}` : "Current private fear: unset.",
+      state.privateTheories.length ? `Private theories: ${state.privateTheories.join(" | ")}` : "Private theories: none yet.",
+      state.relationships.length ? `Relationships: ${state.relationships.join(" | ")}` : "Relationships: none yet."
+    ].join("\n");
   }
 }
 
@@ -677,7 +811,19 @@ export class Referee extends Agent<Env, RefereeState> {
       ruleReceipts: receipts.map((receipt) => ({ id: receipt.id, docId: receipt.docId, headingPath: receipt.headingPath, snippet: receipt.snippet?.slice(0, 220) }))
     });
 
-    return this.commitTavernBeat(current, beat, playerIntents, receipts);
+    const committed = this.commitTavernBeat(current, beat, playerIntents, receipts);
+    const [playerAIntent, playerBIntent] = playerIntents;
+    if (!playerAIntent || !playerBIntent) throw new Error("Tavern beat did not produce both player intents");
+    const memoryResults = await Promise.allSettled([
+      playerA.rememberTavernBeat({ current, committed, intent: playerAIntent, beat, receipts }),
+      playerB.rememberTavernBeat({ current, committed, intent: playerBIntent, beat, receipts }),
+      referee.rememberTavernBeat({ current, committed, playerIntents, beat, receipts })
+    ]);
+    for (const result of memoryResults) {
+      if (result.status === "rejected") console.warn("[Referee] tavern beat memory update failed", result.reason);
+    }
+
+    return committed;
   }
 
   private tavernIntentContext(state: PrototypeTavernTownState, playerId: PlayerId) {

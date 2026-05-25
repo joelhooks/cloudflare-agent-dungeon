@@ -968,3 +968,78 @@ auditHasInner=true
 auditHasReasoning=true
 stillLoading=false
 ```
+
+## 2026-05-24 — Tavern Think memory summaries and tsgo checks
+
+### Question being answered
+
+Can the tavern/town agent loop remember enough between beats to feel like the same PlayerAgents and RefereeAgent are continuing play, without exposing player-private memory or dumping raw transcripts?
+
+### What changed
+
+Updated `apps/worker/src/index.ts`:
+
+- `PlayerAgent` now extends `Think<Env, PlayerAgentState>`.
+- `RefereeAgent` now extends `Think<Env, RefereeAgentState>`.
+- Added compact state-backed Brain summaries:
+  - `PlayerAgent.getBrainSummary()`
+  - `PlayerAgent.rememberTavernBeat(...)`
+  - `RefereeAgent.getBrainSummary()`
+  - `RefereeAgent.rememberTavernBeat(...)`
+- `chooseTavernIntent(...)` now includes the player-private Brain summary in the prompt.
+- `generateTavernBeat(...)` / `generateOutcome(...)` now include the Referee-private Brain summary in the prompt.
+- After each committed tavern beat, the Referee asks each child mind to remember its lane:
+  - Player A stores what it did, wanted, feared, theorized, and noticed.
+  - Player B stores its own private version.
+  - Referee stores NPC memory, fronts/pressure, rule receipt IDs, and unresolved questions.
+- Memory update failures are logged but do not roll back a committed public beat.
+
+This is still hot Agent/Think state, not Artifacts yet. It establishes the interface needed for per-agent Artifacts Brain repos next.
+
+### tsgo note
+
+Joel noted we should be on `tsgo`. Added `@typescript/native-preview` and switched package `check`/`build` scripts from `tsc` to `tsgo` where typechecking happens.
+
+### Validation
+
+Commands:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/worker check
+pnpm --filter @cloudflare-agent-dungeon/domain check
+pnpm check
+pnpm --filter @cloudflare-agent-dungeon/domain test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+```
+
+Results:
+
+- `tsgo` worker check passed.
+- `tsgo` domain check passed.
+- Full Turborepo check passed.
+- Domain tests passed: 9 tests.
+- Wrangler dry-run passed.
+
+Local browser/API validation:
+
+```txt
+https://agent-dungeon-memory.localhost:1355/prototype/tavern-town?variant=console
+```
+
+Receipts:
+
+```txt
+POST /api/prototype/tavern-town-reset -> beat 0
+POST /api/prototype/tavern-town-beat -> beat 1, mode running, lanes referee/player/player
+POST /api/prototype/tavern-town-beat -> beat 2, mode running, log 6
+Browser Step One Beat -> beat 3, mode running, log 9
+Fresh browser reload showed same server game at beat 3
+```
+
+The visible turn sequence stayed coherent across beats: Mara followed Hesta to the cellar, Tovin confronted the three watchers, and the Referee split the scene while carrying prior tavern pressure forward.
+
+### Still missing
+
+- Per-agent Artifacts repos.
+- OSE playbook loading from source-pointer files.
+- Real Think `Session` context blocks / self-updating memory. Current memory is explicit Agent state summaries, which is the right first small slice.
