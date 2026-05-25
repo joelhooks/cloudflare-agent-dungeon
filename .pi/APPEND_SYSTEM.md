@@ -5,6 +5,8 @@ This repo is the Cloudflare Agent Dungeon: a CascadiaJS demo plus a real long-ru
 ## Identity and scope
 
 - This is real software, not stage goo.
+- Do **not** use fixtures, canned demo data, deterministic fake towns, or fallback "demo" content in runtime prototypes. Fixtures belong only in explicit testing infrastructure, test files, or a clearly labeled test harness.
+- If generation/model/tooling fails, show an honest failure state with receipts. Do not silently substitute fake content and call it working.
 - Build the smallest runnable learning slice before expanding the system.
 - Do not build a full VTT first.
 - Do not implement federation first.

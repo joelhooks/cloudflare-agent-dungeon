@@ -1,0 +1,95 @@
+---
+title: Town Graph SVX Artifact Format
+kind: resource
+status: shaping
+created: 2026-05-25
+tags:
+  - town-forge
+  - brain
+  - svx
+  - artifacts
+  - graph
+  - runtime
+---
+
+# Town Graph SVX Artifact Format
+
+Town Forge should use Brain-style `.svx` artifacts for graph building and review.
+
+The point is not to make a pretty export after the fact. The `.svx` file is the working town dossier: readable by Joel, readable by build agents, source-linkable, diffable in Artifacts, and compatible with pi-notes / future `agentdungeon.ai` manual rendering.
+
+## Shape
+
+Use a small set of MDSvX/SVX artifacts in the authoritative Artifacts repo. The `.svx` pages should be **data-backed composed component shells**, not giant hand-written prose dumps.
+
+```txt
+agent-dungeon-town-forges/
+  towns/<town-id>/index.svx
+  towns/<town-id>/referee.svx
+  towns/<town-id>/public-projection.svx
+  towns/<town-id>/graph.json
+  towns/<town-id>/receipts.jsonl
+  towns/<town-id>/components.md
+```
+
+Recommended meanings:
+
+- `index.svx` — human/agent-readable town dossier and navigation, composed from `graph.json`.
+- `referee.svx` — private Referee-only skeleton, composed from hidden graph sections: pressures, NPC secrets, clocks, latent encounters, unresolved questions.
+- `public-projection.svx` — player/table-safe starting view, composed from public projection data only.
+- `graph.json` — typed runtime snapshot from the forge result; useful for code, tests, deterministic rehydration, and component rendering.
+- `receipts.jsonl` — generation steps, loaded skill card IDs, source doc/chunk IDs, validation receipts, publish receipts.
+- `components.md` — optional component contract notes when the town artifact uses project/manual components not obvious from the SVX.
+
+## Why SVX first
+
+SVX is the right artifact surface because the town graph is partly structured data and partly operational prose. Pure JSON is too dead to review. Pure Markdown is too mushy for runtime.
+
+The sweet spot is semantic components over typed data: `<TownOverview>`, `<LocationGraph>`, `<NpcRoster>`, `<RumorWeb>`, `<ClockPanel>`, `<LatentEncounterStack>`, `<PublicProjection>`, and `<ForgeReceipts>` can render the same graph differently for Joel, build agents, the Referee Screen, and eventually `agentdungeon.ai`.
+
+Joel's correction: do the real SVX/component path in the first Town Forge slice. Do not fake this with placeholder component names and plain sections. The prototype should validate that data-backed composed SVX artifacts are the working graph surface.
+
+Validation should use schemas. Current repo already uses Zod in `apps/worker`, so Zod is the default for this slice unless we explicitly choose Valibot later. The schema should validate both model output and artifact data before writing SVX/JSON/JSONL to Artifacts.
+
+SVX gives us:
+
+- frontmatter for identity, privacy, status, source card, generated date, and graph id;
+- headings for stable sections;
+- links to Brain notes and source receipts;
+- embedded data-backed components later;
+- readable diffs in Artifacts;
+- an easy path to `agentdungeon.ai` manual/review pages.
+
+## Runtime boundary
+
+The running Referee should not scrape `agentdungeon.ai` pages. Runtime state still enters the game through Referee-owned typed state/projections.
+
+Use the SVX artifact as the authoritative reviewed dossier, and keep `graph.json` as the typed runtime snapshot used by code and components. Do not let hand-edited prose silently diverge from runtime graph state; the composed components should make the source data path, schema, privacy, freshness, and side effects visible.
+
+First implementation should include real component contracts and validation:
+
+- `TownGraphSchema` / `TownPublicProjectionSchema` / `TownForgeReceiptSchema` in code, likely Zod first.
+- component surfaces that declare source path, schema, privacy, freshness, and side effects.
+- `index.svx`, `referee.svx`, and `public-projection.svx` composed from the validated data.
+- an Artifacts write that includes the SVX shells, `graph.json`, and `receipts.jsonl` together.
+
+## Public/private split
+
+- `index.svx` may include overview and links, but must mark privacy clearly.
+- `referee.svx` is private. It may include hidden notes and source pointers.
+- `public-projection.svx` is safe for table/player/public monitor.
+- `graph.json` may contain hidden data and must be treated as private unless explicitly projected.
+- `receipts.jsonl` may include internal IDs and should not quote raw copyrighted corpus text.
+
+## First Town Forge output
+
+The first prototype should stream process events while generating these artifacts, then commit a minimal set:
+
+- town name and premise;
+- 5-7 locations;
+- 6-10 NPC graph records;
+- 6 rumors;
+- 2-3 clocks;
+- 4-6 latent encounter nodes;
+- public starting projection;
+- receipts for loaded runtime card and validation checks.

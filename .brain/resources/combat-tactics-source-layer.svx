@@ -1,0 +1,89 @@
+---
+title: Combat Tactics Source Layer
+kind: resource
+status: shaping
+created: 2026-05-25
+tags:
+  - combat
+  - tactics
+  - monster-tactics
+  - player-tactics
+  - source-pointers
+  - agent-skills
+---
+
+# Combat Tactics Source Layer
+
+## Question
+
+How should combat/tactics sources inform future Referee and PlayerAgent skills without confusing them with OSE procedure authority?
+
+## Bottom line
+
+Keep tactics skills separate from OSE procedure skills.
+
+- **OSE Reference / Procedure** is the rules authority layer: what procedure applies, what to roll, what the game state legally means.
+- **Monster Tactics** is a Referee-facing behavior/scenario layer: how hostile or dangerous creatures might pursue goals, exploit terrain, retreat, parley, or escalate.
+- **Player Survival / Tactics** is a PlayerAgent-facing layer: how players think tactically, protect themselves, coordinate, and make survivable choices from their visible projection.
+
+Do not mix "rules say" with "smart combatants tend to". Different knives, different drawers.
+
+## Source pointers
+
+### The Monsters Know What They're Doing
+
+Referee-facing tactics/combat scenario source.
+
+- docId: `the-monsters-know-what-they-re-doing-comb-keith--32d22bead925`
+- search receipt:
+
+```bash
+curl -sS "https://joelclaw.com/api/docs/search?q=The%20Monsters%20Know%20What%20They%27re%20Doing&perPage=5&semantic=false"
+curl -sS "https://joelclaw.com/api/docs/search?q=monster%20tactics%20combat%20scenarios&perPage=5&semantic=false"
+```
+
+Example pointers found:
+
+- `the-monsters-know-what-they-re-doing-comb-keith--32d22bead925:s273:n0` — title/index pointer.
+- `the-monsters-know-what-they-re-doing-comb-keith--32d22bead925:s211:n0` — combat/social scenario-related pointer.
+
+### Live to Tell the Tale
+
+Player-facing tactics/survival source.
+
+- docId: `live-to-tell-the-tale-combat-tactics-for-keith-a-d5116e95e846`
+- search receipt:
+
+```bash
+curl -sS "https://joelclaw.com/api/docs/search?q=Live%20to%20Tell%20the%20Tale&perPage=5&semantic=false"
+curl -sS "https://joelclaw.com/api/docs/search?q=Live%20to%20Tell%20the%20Tale%20players&perPage=5&semantic=false"
+```
+
+Example pointers found:
+
+- `live-to-tell-the-tale-combat-tactics-for-keith-a-d5116e95e846:s99`
+- `live-to-tell-the-tale-combat-tactics-for-keith-a-d5116e95e846:s97`
+- `live-to-tell-the-tale-combat-tactics-for-keith-a-d5116e95e846:s96`
+
+## Skill implication
+
+Future skill/playbook candidates:
+
+1. `monster-tactics`
+   - Referee-only.
+   - Helps choose monster/NPC behavior, pressure, retreats, ambushes, negotiation, morale-like posture, and combat-risk escalation.
+   - Must not override OSE rules/procedure.
+
+2. `player-survival-tactics`
+   - PlayerAgent-safe.
+   - Helps PlayerAgents ask better questions, choose safer approaches, coordinate, retreat, use terrain, protect weak characters, and treat combat as dangerous.
+   - Must only use player-visible state and player-safe summaries.
+
+3. `ose-reference-procedure`
+   - Referee authoritative procedure lookup.
+   - Produces bounded rule receipts/doc IDs.
+   - May emit player-safe rule reminders through table artifacts.
+
+## Boundary
+
+Both Ammann books are D&D-oriented tactics sources, not OSE procedure sources. Use them for tactical posture and scenario thinking, not for OSE legality. When a concrete OSE procedure matters, query the OSE docs and cite OSE doc/chunk IDs.

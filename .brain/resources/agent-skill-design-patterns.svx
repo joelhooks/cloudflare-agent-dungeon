@@ -1,0 +1,143 @@
+---
+title: Agent Skill Design Patterns
+kind: resource
+status: shaping
+created: 2026-05-25
+tags:
+  - agent-skills
+  - playbooks
+  - prompt-budget
+  - source-pointers
+---
+
+# Agent Skill Design Patterns
+
+## Question
+
+How should Cloudflare Agent Dungeon design Referee/Player agent skills and playbooks so they stay useful, small, and source-grounded?
+
+## Source pointer
+
+Joel pointed to Peter Steinberger's `skill-cleaner` skill as a basis for skill design:
+
+- `https://github.com/steipete/agent-scripts/blob/main/skills/skill-cleaner/SKILL.md`
+- raw receipt read with:
+
+```bash
+curl -L -sS https://raw.githubusercontent.com/steipete/agent-scripts/main/skills/skill-cleaner/SKILL.md
+```
+
+## Extracted pattern
+
+The useful pattern is not the specific analyzer script. It is the shape of a tight operational skill and a disciplined skillset:
+
+- short frontmatter name and description
+- clear "Use this when..." trigger sentence
+- numbered workflow, not vague doctrine
+- compact notes about edge cases and assumptions
+- explicit output policy / safety policy
+- preserve trigger nouns in descriptions so agents can find the skill
+- suggest first; edit/apply only when asked or when the operating loop requires it
+
+The `skill-cleaner` principles also matter at the **skillset architecture** level:
+
+- keep descriptions compact because every visible skill listing spends prompt budget
+- avoid duplicate skills with near-identical purpose
+- preserve trigger nouns: role, procedure, source, action, object
+- keep repo-local policy skills when they encode live project rules
+- prefer deleting/merging overlap once a sharper canonical skill exists
+- separate capability buckets when they have different authority, audience, or privacy level
+- do not make a giant omnibus skill when smaller operational cards can be loaded on demand
+- maintain an obvious manifest of what is active, unused, duplicate, or future
+
+## Dungeon implication
+
+Agent Dungeon runtime skills/playbooks should be small operational cards, not essays.
+
+Capability split for Referee runtime/manual cards:
+
+- **Referee Soul** — Game Angry foundation, table posture, skeleton/flesh philosophy, public/private boundary.
+- **Referee Campaign Design** — setup-time and maintenance skills for building/refactoring the situation graph: village skeletons, hooks, clocks, latent encounter stacks, NPC motives, rumor webs, and campaign notes.
+- **Referee Procedure** — OSE rules/procedure authority: reaction, morale, surprise, encounters, light, supplies, attacks, damage, retainers.
+- **Referee Tactics** — monster/NPC tactics and combat-risk behavior; inspiration, not rules authority.
+- **Player Survival** — player-facing tactics and table behavior from player-safe projections.
+- **Table** — shared party workspace, projections, public recap, handouts, revealed map/rumor notes.
+
+Referee Campaign Design cards are allowed to touch hidden worldbuilding and Referee Brain. They should mostly run during setup, between beats, or explicit maintenance/reflection phases. They must not rewrite established facts casually mid-resolution; changes should be logged as Referee Brain updates or typed world mutations.
+
+## Volatility layers
+
+Skills are the rails and guidewires for this mostly generative system. Because the runtime has minimal deterministic story rails, the skill/manual layer must say which parts of play are almost immutable and which parts are improvisable.
+
+Working volatility gradient:
+
+1. **Core rules / safety / capability boundaries** — change super rarely. Example: fog-of-war, Referee owns truth, PlayerAgents cannot read hidden state or raw corpus.
+2. **Deep lore / campaign truths** — change rarely and only by explicit Referee Brain update or discovered contradiction.
+3. **Mechanics / OSE procedures** — change rarely and only with source receipts. These are rules rails, not vibes.
+4. **Situation skeleton** — changes through setup and explicit world-maintenance beats: locations, hooks, clocks, latent encounters, NPC motives, rumor webs.
+5. **Beat-level adjudication** — changes every beat through player intent, dice, NPC memory, consequences, and Referee narration.
+6. **Color / local improv** — most flexible: tavern names, daily specials, smells, insults, micro-details, table-facing texture.
+
+Example: the daily special at the Cock and Balls Inn can be invented freely; whether a PlayerAgent knows a hidden shrine exists cannot.
+
+Good Referee skill card shape:
+
+```md
+---
+name: referee-frame-situation
+description: Frame the current table-visible situation from the Referee Situation Graph without railroading player action.
+---
+
+# Referee Frame Situation
+
+Use this when the Referee needs to present the next table situation, visible affordances, or consequences after a beat.
+
+## Workflow
+
+1. Read the table projection only.
+2. Identify the current location, visible NPCs, active clocks, revealed rumors, and immediate pressures.
+3. State what is visible and actionable.
+4. Offer affordances, not a menu of forced choices.
+5. Do not reveal hidden graph nodes, player private notes, or raw rules text.
+
+## Output Policy
+
+Return table-facing narration plus concise process notes. Hidden Referee notes go to the Referee Brain, not the public monitor.
+```
+
+## Authoring and publishing direction
+
+For now, author these as Brain notes / manual pages first, not runtime-ingested skills.
+
+Reason: the philosophy and procedure cards need human review before they are loaded into every agent beat. Brain notes are easier to diff, render, link, source-ground, and revise. Once stable, selected cards can be compiled/synced into per-agent Artifacts runtime brains.
+
+Target public surface: `agentdungeon.ai` can become a readable "manual" for the project — a browsable set of source-grounded Referee, PlayerAgent, OSE procedure, and tactics pages. Public manual pages must preserve source boundaries and avoid raw copyrighted corpus leakage.
+
+Design reference: `https://isitagentready.com/` — simple agent-readiness scan/manual energy, but more readable for Joel. Think: clear categories, short checks, plain explanations, strong headings, lots of whitespace, no dense prompt sludge. The manual should be agent-structured and human-readable.
+
+Think runtime fit: Cloudflare Think treats skills as Session context through `SkillProvider`s, not as magic files. A skill block lists available documents in the system prompt, then the model can call `load_context` / `unload_context` to pull full content on demand. The docs point at `R2SkillProvider`.
+
+Runtime backing decision: use **R2 and Artifacts**, not worker-local static cards. Artifacts is authoritative for versioned compiled card repos and receipts; R2 is the Think-facing runtime cache via `R2SkillProvider`. See [[decisions/runtime-skills-r2-artifacts]].
+
+Important boundary correction from Joel: **running game agents should not browse or depend on `agentdungeon.ai` website pages for gameplay details**. The website/manual is for Joel and build-assistant agents shaping the system. Runtime RefereeAgent/PlayerAgents should receive reviewed, compiled, bounded cards through their configured Think context providers / Artifacts / table projections, not scrape the public website.
+
+Recommended pipeline:
+
+1. Draft skill/playbook as `.brain/resources/*.svx` or `.brain/areas/*.svx`.
+2. Include source doc/chunk IDs and short safe summaries.
+3. Review in pi-notes / Document Host.
+4. Publish safe manual pages to `agentdungeon.ai` for Joel and system-building agents.
+5. Compile selected cards into runtime-specific Think skill/context docs for RefereeAgent, PlayerAgents, or table.
+6. Give runtime agents only the compiled cards/projections they are allowed to know.
+
+Compilation should be **manual/curated** at first, not automatic by tag or folder. The manifest of runtime-loaded cards should be obvious enough for Joel and future build agents to inspect: which card, target role, source note, source doc/chunk IDs, privacy level, last reviewed date, and why it is safe. Auto-ingesting all matching Brain notes is too easy to poison with hidden Referee context or source text.
+
+The first data-backed manifest lives at [[resources/agent-skill-manifest]] with machine-readable records in `.brain/data/agent-skill-manifest.jsonl`. It includes Think-facing fields early: provider label, load key, target agents, baseline vs on-demand, max token budget, privacy level, and source pointers.
+
+Joel's runtime preference: **skills/cards should be on-demand by default**. Hard capability boundaries and tiny role identity can live in baseline system/context, but the full Game Angry, OSE, tactics, campaign design, and projection cards should be loaded through Think only when relevant. This keeps context light and makes skill usage visible.
+
+Near-term prototype direction: actually run these cards through Think `SkillProvider` / `load_context` soon, instead of only documenting them, and expand the party from 2 PlayerAgents to 4 once the graph/projection boundary is ready.
+
+## Boundary
+
+Do not let skills become a second rules corpus. Game Angry / OSE / other source-derived skills need doc/chunk IDs and should preserve source boundaries. Player-facing skills get bounded summaries; Referee-facing skills may carry private source pointers.

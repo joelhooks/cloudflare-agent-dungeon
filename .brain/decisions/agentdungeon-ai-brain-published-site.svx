@@ -1,0 +1,76 @@
+---
+title: agentdungeon.ai Publishes the Project Brain
+kind: decision
+status: deferred
+created: 2026-05-25
+tags:
+  - agentdungeon-ai
+  - brain
+  - publishing
+  - svx
+  - privacy
+  - manual
+---
+
+# agentdungeon.ai Publishes the Project Brain
+
+## Deferred direction
+
+Joel likes the idea that `agentdungeon.ai` should eventually publish the Cloudflare Agent Dungeon `.brain` graph, but this is deferred and should not block the next Town Forge prototype.
+
+The site should not become a separate CMS that drifts from the project memory. Brain notes, Brain data, and Brain components are the source material for the future public manual/review site.
+
+## Critical boundary
+
+Publish the **public projection of Brain**, not raw `.brain` blindly.
+
+The repo Brain contains design notes, source receipts, private Referee concepts, and potentially source-derived/copyright-sensitive pointers. The public site needs an explicit privacy/export layer.
+
+Default rule: private until marked safe.
+
+## Publishing model
+
+Recommended shape:
+
+```txt
+.brain/**/*.svx
+.brain/data/**/*
+.brain/components/**/*
+  ↓ public export filter
+agentdungeon.ai
+  manual / design graph / agent-readiness surface
+```
+
+Required metadata for publishable notes:
+
+- `visibility: public | private | dev | referee-only`
+- `publish: true | false`
+- `canonicalUrl` or generated route
+- `sourcePrivacy` for data-backed components
+- source/corpus leakage check when source-derived
+
+## Site behavior
+
+The site should feel like the project manual and agent-readiness dashboard:
+
+- readable for Joel;
+- structured for build-assistant agents;
+- source-linked but not source-leaking;
+- component/data-backed, not giant markdown dumps;
+- black text on white for manual pages unless a prototype/stage surface needs terminal mode;
+- terminal-like surfaces for live Referee/Town Forge streams.
+
+## Runtime boundary
+
+Running RefereeAgent / PlayerAgents still do not browse `agentdungeon.ai` for gameplay details.
+
+Runtime agents consume curated compiled cards through Think/R2/Artifacts/projections. `agentdungeon.ai` is for Joel, build agents, review, and public/manual readers.
+
+## Open implementation question
+
+Decide whether the first publishing implementation is:
+
+1. a Worker route that renders project Brain directly, or
+2. a build/export step that compiles safe Brain pages into static/public assets.
+
+Recommendation: start with an explicit export/filter step so private Brain notes cannot accidentally route to production.

@@ -82,6 +82,21 @@ Rules:
 - Public monitor output must not leak raw private/copyrighted corpus text.
 - Internal events may keep doc/chunk IDs as receipts.
 
+## Generative rails and volatility
+
+The game is generative with minimal deterministic story rails. Skills/playbooks are the rails and guidewires.
+
+Future agents should classify every rule/card/skill by volatility:
+
+- core rules, privacy, and capability boundaries: change super rarely;
+- deep lore/campaign truths: change rarely and through Referee Brain updates;
+- OSE mechanics/procedures: change only with source receipts;
+- situation skeleton: updated at setup or explicit maintenance beats;
+- beat adjudication: updated through player intent, dice, and consequences;
+- local color/improv: flexible table-facing texture.
+
+Do not treat flexible color like law, and do not treat hidden truths or OSE procedure like improv.
+
 ## Project skills to create
 
 Create project-local skills under `.pi/skills/`:

@@ -1,4 +1,5 @@
-import { Agent, getAgentByName, routeAgentRequest } from "agents";
+import { Agent, getAgentByName, routeAgentRequest, type Connection, type ConnectionContext, type WSMessage } from "agents";
+import { R2SkillProvider } from "agents/experimental/memory/session";
 import { Think, type Session, type TurnConfig, type TurnContext } from "@cloudflare/think";
 import { createWorkersAI } from "workers-ai-provider";
 import git from "isomorphic-git";
@@ -10,6 +11,27 @@ import {
   prototypeTavernTownUiPage,
   type PrototypeTavernTownState
 } from "./prototype-tavern-town-ui";
+import {
+  createVillageSkeletonSkillCard,
+  initialTownForgeState,
+  renderTownForgeArtifacts,
+  sanitizeTownGraphForMonitor,
+  townForgeMonitorState,
+  townForgeReceipt,
+  townForgeUiPage,
+  TOWN_FORGE_ARTIFACT_REPO,
+  TOWN_FORGE_R2_KEY,
+  TOWN_FORGE_R2_PREFIX,
+  TOWN_FORGE_SKILL_ARTIFACT_REPO,
+  TOWN_FORGE_SKILL_KEY,
+  TOWN_FORGE_SKILL_LABEL,
+  TownForgeStateSchema,
+  TownGraphSchema,
+  type ArtifactSyncStatus,
+  type TownForgeReceipt,
+  type TownForgeState,
+  type TownGraph
+} from "./town-forge";
 import { MemoryFS } from "./memory-fs";
 import {
   advanceCampaignTurn,
@@ -23,6 +45,7 @@ import {
   travelToChosenHook,
   type AdventureChoice,
   type Campaign,
+  type Character,
   type CharacterCreationDraft,
   type CharacterCreationPlan,
   type HookId,
@@ -139,7 +162,19 @@ const TavernBeatSchema = z.object({
   rulesUsed: z.array(z.string()).optional()
 });
 
+const TavernSetupSchema = z.object({
+  location: z.string().min(1).max(140),
+  premise: z.string().min(1).max(420),
+  openingScene: z.string().min(1).max(1000),
+  npcs: z.array(PrototypeNpcSchema).min(3).max(5),
+  startingAffordances: z.array(z.string().min(1).max(180)).min(3).max(7),
+  visibleThreads: z.array(z.string().min(1).max(180)).min(3).max(7),
+  refereeProcess: z.string().min(1).max(420),
+  devReasoning: z.string().min(1).max(420)
+});
+
 type TavernBeat = z.infer<typeof TavernBeatSchema>;
+type TavernSetup = z.infer<typeof TavernSetupSchema>;
 
 type PrototypeRuleReceipt = {
   id: string;
@@ -234,7 +269,9 @@ type RefereeAgentState = {
   unresolvedQuestions: string[];
   recentMemories: BrainMemoryEntry[];
   expectedTavernTool?: "submit_referee_beat" | "referee_beat_object";
+  expectedTownForgeTool?: "load_create_village_skeleton" | "submit_town_forge" | "town_forge_object";
   lastSubmittedTavernBeat?: TavernBeat & { at: string; requestBeat?: number };
+  lastSubmittedTownGraph?: TownGraph & { at: string };
   updatedAt?: string;
 };
 
@@ -496,6 +533,112 @@ function getAgentBrainStore(env: Env): AgentBrainStore | null {
   return artifacts ? new ArtifactsAgentBrainStore(artifacts, (env as Env & { ARTIFACTS_ACCOUNT_ID?: string }).ARTIFACTS_ACCOUNT_ID) : null;
 }
 
+type ArtifactFilesSyncInput = {
+  artifacts?: Artifacts;
+  accountId?: string;
+  repoName: string;
+  description: string;
+  files: Record<string, string>;
+  message: string;
+  namespace?: string;
+};
+
+async function syncArtifactFiles(input: ArtifactFilesSyncInput): Promise<ArtifactSyncStatus> {
+  if (!input.artifacts) {
+    return {
+      repoName: input.repoName,
+      lastSyncedAt: new Date().toISOString(),
+      status: "skipped",
+      error: "ARTIFACTS binding unavailable"
+    };
+  }
+
+  const namespace = input.namespace ?? "default";
+  async function resolveRemote(repoLike: unknown): Promise<string> {
+    try {
+      return await artifactRepoRemote(repoLike);
+    } catch (error) {
+      if (!input.accountId) throw error;
+      return `https://${input.accountId}.artifacts.cloudflare.net/git/${namespace}/${input.repoName}.git`;
+    }
+  }
+
+  let createdOrExisting: { remote: string; token: string; created: boolean };
+  try {
+    const created = await input.artifacts.create(input.repoName, {
+      description: input.description,
+      setDefaultBranch: "main"
+    });
+    const createdRepo = (created as unknown as { repo?: unknown }).repo ?? created;
+    createdOrExisting = {
+      remote: await resolveRemote(createdRepo),
+      token: await artifactCreateToken(createdRepo, created.token),
+      created: true
+    };
+  } catch (error) {
+    if (!isArtifactsErrorCode(error, "ALREADY_EXISTS")) throw error;
+    const repo = await input.artifacts.get(input.repoName);
+    createdOrExisting = {
+      remote: await resolveRemote(repo),
+      token: await artifactCreateToken(repo),
+      created: false
+    };
+  }
+
+  const fs = new MemoryFS();
+  const dir = "/workspace";
+  let cloned = false;
+  if (!createdOrExisting.created) {
+    try {
+      await git.clone({
+        fs,
+        http,
+        dir,
+        url: createdOrExisting.remote,
+        ref: "main",
+        singleBranch: true,
+        depth: 1,
+        onAuth: () => ({ username: "x", password: createdOrExisting.token })
+      });
+      cloned = true;
+    } catch (error) {
+      throw new Error(`Artifacts clone failed for existing repo ${input.repoName}; refusing to overwrite history: ${String(error)}`);
+    }
+  }
+  if (!cloned) await git.init({ fs, dir, defaultBranch: "main" });
+
+  for (const [filepath, content] of Object.entries(input.files)) {
+    await fs.promises.writeFile(`${dir}/${filepath}`, content);
+    await git.add({ fs, dir, filepath });
+  }
+
+  const commit = await git.commit({
+    fs,
+    dir,
+    message: input.message,
+    author: { name: "Cloudflare Agent Dungeon", email: "agent-dungeon@example.invalid" }
+  });
+  await git.writeRef({ fs, dir, ref: "refs/heads/main", value: commit, force: true });
+  await git.push({
+    fs,
+    http,
+    dir,
+    url: createdOrExisting.remote,
+    ref: "refs/heads/main",
+    remoteRef: "refs/heads/main",
+    force: true,
+    onAuth: () => ({ username: "x", password: createdOrExisting.token })
+  });
+
+  return {
+    repoName: input.repoName,
+    remote: createdOrExisting.remote,
+    lastCommit: commit,
+    lastSyncedAt: new Date().toISOString(),
+    status: "synced"
+  };
+}
+
 /**
  * Long-lived referee mind. It reasons over validated player choices and dice
  * receipts, then generates table-safe outcomes while keeping private reasoning
@@ -531,6 +674,11 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
 
   override configureSession(session: Session): Session {
     return session
+      .withContext("soul", {
+        description: "Read-only Referee identity and hard campaign boundaries.",
+        maxTokens: 1000,
+        provider: { get: async () => this.getRefereeSoul() }
+      })
       .withContext("brain", {
         description: "Private Referee brain summary, NPC memory, fronts, rule receipts, and unresolved questions.",
         maxTokens: 1800,
@@ -540,6 +688,11 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
         description: "Source-pointer OSE playbooks for Referee adjudication. Pointers only; do not quote rules corpus into public output.",
         maxTokens: 2200,
         provider: { get: async () => formatOsePlaybookContext("referee") }
+      })
+      .withContext(TOWN_FORGE_SKILL_LABEL, {
+        description: "On-demand Referee campaign-design cards loaded from R2. Use load_context when town/worldbuilding skills are relevant.",
+        maxTokens: 1200,
+        provider: new R2SkillProvider(this.env.RUNTIME_SKILLS, { prefix: TOWN_FORGE_R2_PREFIX, keys: [TOWN_FORGE_SKILL_KEY] })
       })
       .withCachedPrompt();
   }
@@ -564,11 +717,50 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
           });
           return { accepted: true, title: parsed.title };
         }
+      }),
+      submit_town_forge: tool({
+        description: "Submit one validated TownGraph.v1 Referee town skeleton for the Town Forge prototype.",
+        inputSchema: TownGraphSchema,
+        execute: async (input) => {
+          const parsed = TownGraphSchema.parse(input);
+          const previous = this.state ?? this.initialState;
+          const at = new Date().toISOString();
+          this.setState({
+            ...previous,
+            lastSubmittedTownGraph: { ...parsed, at },
+            updatedAt: at
+          });
+          return { accepted: true, town: parsed.name, locations: parsed.locations.length, npcs: parsed.npcs.length };
+        }
       })
     };
   }
 
   override beforeTurn(_ctx: TurnContext): TurnConfig | void {
+    if (this.state?.expectedTownForgeTool === "load_create_village_skeleton") {
+      return {
+        activeTools: ["load_context"],
+        toolChoice: { type: "tool", toolName: "load_context" } as TurnConfig["toolChoice"],
+        maxSteps: 2,
+        maxOutputTokens: 600
+      };
+    }
+    if (this.state?.expectedTownForgeTool === "submit_town_forge") {
+      return {
+        activeTools: ["submit_town_forge", "load_context"],
+        toolChoice: { type: "tool", toolName: "submit_town_forge" } as TurnConfig["toolChoice"],
+        maxSteps: 2,
+        maxOutputTokens: 4200
+      };
+    }
+    if (this.state?.expectedTownForgeTool === "town_forge_object") {
+      return {
+        activeTools: [],
+        output: Output.object({ schema: TownGraphSchema }) as TurnConfig["output"],
+        maxSteps: 1,
+        maxOutputTokens: 4200
+      };
+    }
     if (this.state?.expectedTavernTool === "submit_referee_beat") {
       return {
         activeTools: ["submit_referee_beat"],
@@ -585,6 +777,103 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
         maxOutputTokens: 1500
       };
     }
+  }
+
+  private getRefereeSoul(): string {
+    return [
+      "You are the Referee mind for Cloudflare Agent Dungeon.",
+      "Use Think skills as on-demand rails, not as a substitute for judgment.",
+      "Prepare situations, not scripted outcomes. Build skeletons; players and dice add flesh.",
+      "Referee owns hidden truth and public projection boundaries.",
+      "Do not reveal hidden notes, raw rules/source corpus, or player-private data in public output.",
+      "For Town Forge, create Referee-owned graph records. NPCs are not separate agents in this slice."
+    ].join("\n");
+  }
+
+  async loadTownForgeSkill(): Promise<{ loaded: boolean; loadedKeys: string[]; resultStatus: string }> {
+    try {
+      await ensureThinkSession(this);
+      const stable = await this.waitUntilStable({ timeout: 30_000 });
+      if (!stable) return { loaded: false, loadedKeys: [], resultStatus: "not-stable" };
+      await this.session.refreshSystemPrompt();
+
+      this.setState({
+        ...(this.state ?? this.initialState),
+        expectedTownForgeTool: "load_create_village_skeleton",
+        updatedAt: new Date().toISOString()
+      });
+      const result = await this.saveMessages([userMessage([
+        `Load the Town Forge runtime card now by calling load_context with label "${TOWN_FORGE_SKILL_LABEL}" and key "${TOWN_FORGE_SKILL_KEY}".`,
+        "Do not generate the town yet. The next turn will ask for the town graph."
+      ].join("\n"))]);
+      const { expectedTownForgeTool: _expected, ...withoutExpected } = this.state ?? this.initialState;
+      void _expected;
+      this.setState({ ...withoutExpected, updatedAt: new Date().toISOString() });
+
+      const loadedKeys = [...(await this.session.getLoadedSkillKeys())];
+      return {
+        loaded: loadedKeys.includes(`${TOWN_FORGE_SKILL_LABEL}:${TOWN_FORGE_SKILL_KEY}`),
+        loadedKeys,
+        resultStatus: result.status
+      };
+    } catch (error) {
+      const { expectedTownForgeTool: _expected, ...withoutExpected } = this.state ?? this.initialState;
+      void _expected;
+      this.setState({ ...withoutExpected, updatedAt: new Date().toISOString() });
+      return { loaded: false, loadedKeys: [], resultStatus: `error:${String(error)}` };
+    }
+  }
+
+  async generateTownForgeGraph(context: unknown): Promise<TownGraph> {
+    await ensureThinkSession(this);
+    const stable = await this.waitUntilStable({ timeout: 30_000 });
+    if (!stable) throw new Error("RefereeAgent conversation was not stable before town forge generation");
+    await this.session.refreshSystemPrompt();
+
+    let validationError = "";
+    const generatedAt = new Date().toISOString();
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const result = await generateObject({
+        model: this.getModel(),
+        schema: TownGraphSchema,
+        maxOutputTokens: 5000,
+        prompt: [
+          this.getRefereeSoul(),
+          "Generate a genuinely fresh TownGraph.v1 for Cloudflare Agent Dungeon.",
+          "Use the operational card below as rails. It is a runtime skill-card body, not public-facing content.",
+          createVillageSkeletonSkillCard(),
+          "Hard no-fixture rule: do not use Brindlehook, The Hook and Hen, Marda Hook, Reeve Caldrin, Sister Owel, Jory Pike, Pell Stitch, Talla Reed, ferry-chain/bell/debtor setup, or any prior deterministic demo content.",
+          "This is Referee-only worldbuilding. No PlayerAgents. No character creation. No factions as first-class machinery.",
+          "Create a bounded town/village situation graph that supports open-world OSE play without a predetermined quest path.",
+          "NPCs are graph records in this slice, not separate agents.",
+          "Public fields must be safe. HiddenPressure and hiddenNotes are Referee-only.",
+          "Do not quote OSE, Game Angry, or any source corpus. Use no markdown.",
+          `Machine fields: schema must be TownGraph.v1, sourceSkill must be ${TOWN_FORGE_SKILL_KEY}, generatedAt must be ${generatedAt}.`,
+          validationError ? `Previous attempt rejected: ${validationError}` : "",
+          `Context: ${JSON.stringify(context)}`
+        ].filter(Boolean).join("\n")
+      });
+
+      try {
+        const parsed = TownGraphSchema.parse({
+          ...result.object,
+          schema: "TownGraph.v1",
+          sourceSkill: TOWN_FORGE_SKILL_KEY,
+          generatedAt
+        });
+        const at = new Date().toISOString();
+        this.setState({
+          ...(this.state ?? this.initialState),
+          lastSubmittedTownGraph: { ...parsed, at },
+          updatedAt: at
+        });
+        return parsed;
+      } catch (error) {
+        validationError = String(error);
+      }
+    }
+
+    throw new Error(`Town Forge graph failed validation: ${validationError}`);
   }
 
   async generateOutcome(context: unknown): Promise<RefereeOutcome> {
@@ -616,6 +905,42 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
       }
     }
     throw new Error(`Referee outcome failed public-safety validation: ${validationError}`);
+  }
+
+  async generateTavernSetup(context: unknown): Promise<TavernSetup> {
+    await ensureThinkSession(this);
+    const stable = await this.waitUntilStable({ timeout: 30_000 });
+    if (!stable) throw new Error("RefereeAgent conversation was not stable before tavern setup generation");
+    await this.session.refreshSystemPrompt();
+
+    let validationError = "";
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const result = await generateObject({
+        model: this.getModel(),
+        schema: TavernSetupSchema,
+        maxOutputTokens: 1500,
+        prompt: [
+          "Build a fresh opening tavern/town setup for Cloudflare Agent Dungeon.",
+          "You are the Referee mind. This is Session 0 / town setup before normal play starts.",
+          "Do not reuse The Golden Eel, Hesta Vane, Rook Marlen, Sister Elian, Willowby, blue clay, buried bells, or the prior fixed seed.",
+          "Create a bounded open-world tavern/town with 3-5 NPCs, each with a visible role, want, memory, and disposition.",
+          "The setup must create pressure and choices, not a predetermined quest path. Players can ignore hooks, buy gear, hire help, ask sideways, leave, or wait.",
+          "Public fields must be safe for players/audience. Do not include hidden agendas or unrevealed secrets in openingScene, NPC memory, visibleThreads, or affordances.",
+          "Do not quote rulebook text. Character rolls are supplied separately by code; react to them as table facts.",
+          "Return structured JSON only. No markdown. No extra keys.",
+          "Shape: { location, premise, openingScene, npcs, startingAffordances, visibleThreads, refereeProcess, devReasoning }.",
+          "Hard limits: openingScene <= 1000 chars; 3-7 affordances; 3-7 visibleThreads; reasoning <= 420 chars.",
+          validationError ? `Previous attempt rejected: ${validationError}` : "",
+          `Context: ${JSON.stringify(context)}`
+        ].filter(Boolean).join("\n")
+      });
+      try {
+        return repairTavernSetup(result.object);
+      } catch (error) {
+        validationError = String(error);
+      }
+    }
+    throw new Error(`Referee tavern setup failed validation: ${validationError}`);
   }
 
   async generateTavernBeat(context: unknown): Promise<TavernBeat> {
@@ -758,6 +1083,15 @@ function repairTavernBeat(beat: TavernBeat): TavernBeat {
   });
 }
 
+function repairTavernSetup(setup: TavernSetup): TavernSetup {
+  return TavernSetupSchema.parse({
+    ...setup,
+    npcs: setup.npcs.slice(0, 5),
+    startingAffordances: takeUniqueStrings(setup.startingAffordances, 7),
+    visibleThreads: takeUniqueStrings(setup.visibleThreads, 7)
+  });
+}
+
 function takeUniqueStrings(values: string[], max: number): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, max);
 }
@@ -861,30 +1195,37 @@ export class PlayerAgent extends Think<Env, PlayerAgentState> {
   }
 
   async createCharacterPlan(draft: CharacterCreationDraft, stores: Record<StoreId, Store>): Promise<CharacterCreationPlan> {
-    try {
-      const prompt = [
-        "Create your own level 1 Old School Essentials character for session 0.",
-        "Return compact JSON only. No markdown. No prose.",
-        "Shape: {\"name\":string,\"className\":\"fighter|cleric|magic-user|thief|dwarf|elf|halfling\",\"abilitySwap\":{\"first\":ability,\"second\":ability},\"alignment\":\"lawful|neutral|chaotic\",\"deity\":string optional,\"reasonExceptional\":string,\"innerMonologue\":string,\"goal\":string,\"fear\":string,\"purchases\":[{\"itemId\":string,\"quantity\":number}]}",
-        "Use the rolled abilities and starting gold exactly as provided.",
-        "You may make at most one ability score swap.",
-        "Buy starting gear manually from available item ids. Food, light, containers, and tools matter.",
-        "Do not buy more than the rolled starting gold can afford.",
-        `Draft: ${JSON.stringify(draft)}`,
-        `Available items: ${compactStoreCatalog(stores)}`,
-        `Private brain summary available to you only: ${this.privateContextSummary()}`
-      ].join("\n");
-      const result = await this.env.AI.run("@cf/moonshotai/kimi-k2.6", {
-        messages: [{ role: "user", content: prompt }],
-        chat_template_kwargs: { thinking: false, enable_thinking: false },
-        reasoning_effort: null,
-        max_completion_tokens: 900
-      });
-      return toCharacterCreationPlan(draft.playerId, CharacterCreationPlanSchema.parse(parseJsonObject(extractWorkersAIText(result))));
-    } catch (error) {
-      console.warn("[PlayerAgent] character creation failed; no canned fallback", error);
-      throw new Error(`PlayerAgent character creation failed for ${draft.playerId}: ${String(error)}`);
+    let validationError = "";
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const prompt = [
+          "Create your own level 1 Old School Essentials character for session 0.",
+          "Return compact JSON only. No markdown. No prose.",
+          "Shape: {\"name\":string,\"className\":\"fighter|cleric|magic-user|thief|dwarf|elf|halfling\",\"abilitySwap\":{\"first\":ability,\"second\":ability},\"alignment\":\"lawful|neutral|chaotic\",\"deity\":string optional,\"reasonExceptional\":string,\"innerMonologue\":string,\"goal\":string,\"fear\":string,\"purchases\":[{\"itemId\":string,\"quantity\":number}]}",
+          "Use the rolled abilities and starting gold exactly as provided.",
+          "Player name and Character name are separate. Do not reuse the player name as the character name; invent a fresh character name for this setup.",
+          "You may make at most one ability score swap.",
+          "Buy starting gear manually from available item ids. Food, light, containers, and tools matter.",
+          "Do not buy more than the rolled starting gold can afford.",
+          "Every string must be short. Start with { and end with }. Do not trail off mid-string.",
+          validationError ? `Previous attempt failed: ${validationError}. Retry with valid complete JSON.` : "",
+          `Draft: ${JSON.stringify(draft)}`,
+          `Available items: ${compactStoreCatalog(stores)}`,
+          `Private brain summary available to you only: ${this.privateContextSummary()}`
+        ].filter(Boolean).join("\n");
+        const result = await this.env.AI.run("@cf/moonshotai/kimi-k2.6", {
+          messages: [{ role: "user", content: prompt }],
+          chat_template_kwargs: { thinking: false, enable_thinking: false },
+          reasoning_effort: null,
+          max_completion_tokens: 900
+        });
+        return toCharacterCreationPlan(draft.playerId, CharacterCreationPlanSchema.parse(parseJsonObject(extractWorkersAIText(result))));
+      } catch (error) {
+        validationError = String(error);
+      }
     }
+    console.warn("[PlayerAgent] character creation failed after retries; no canned fallback", validationError);
+    throw new Error(`PlayerAgent character creation failed for ${draft.playerId}: ${validationError}`);
   }
 
   async chooseAdventureHook(context: unknown): Promise<AdventureChoice> {
@@ -1145,6 +1486,15 @@ function trimPlanToBudget(plan: CharacterCreationPlan, stores: Record<StoreId, S
   return { ...plan, purchases, planSource: plan.planSource === "kimi" ? "repaired_kimi" : (plan.planSource ?? "unknown") };
 }
 
+function assertDistinctCharacterName(plan: CharacterCreationPlan, playerName: string): CharacterCreationPlan {
+  const characterName = plan.name.trim().toLowerCase();
+  const normalizedPlayer = playerName.trim().toLowerCase();
+  if (characterName === normalizedPlayer || characterName.startsWith(`${normalizedPlayer} `) || characterName.startsWith(`${normalizedPlayer}-`)) {
+    throw new Error(`Generated character name "${plan.name}" reuses player name "${playerName}"; no canned replacement names are allowed.`);
+  }
+  return plan;
+}
+
 function normalizeItemId(itemId: string): string {
   const aliases: Record<string, string> = {
     "item-flask-oil": "item-oil-flask",
@@ -1169,12 +1519,113 @@ function secureRandomInt(sides: number): number {
   return (value % sides) + 1;
 }
 
+const PROTOTYPE_SESSION_ZERO_RULE_RECEIPTS = [
+  "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s105:n0",
+  "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s174:n0",
+  "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s178",
+  "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s181",
+  "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s183"
+];
+
+function formatAbilityScores(abilities: Character["abilities"]): string {
+  if (!abilities) return "abilities unavailable";
+  return [
+    `STR ${abilities.strength}`,
+    `INT ${abilities.intelligence}`,
+    `WIS ${abilities.wisdom}`,
+    `DEX ${abilities.dexterity}`,
+    `CON ${abilities.constitution}`,
+    `CHA ${abilities.charisma}`
+  ].join(", ");
+}
+
 type RefereeState = Campaign & {
   prototypeTavernTown?: PrototypeTavernTownState;
   prototypeBrainArtifacts?: Partial<Record<AgentBrainRole, AgentBrainArtifactRecord>>;
+  prototypeTownForge?: TownForgeState;
 };
 
 const PROTOTYPE_TAVERN_GENERATION_LOCK_TIMEOUT_MS = 3 * 60 * 1000;
+
+type PrototypeSocketProcessLane = "socket" | "setup" | "player" | "referee" | "rules" | "artifacts" | "state" | "error";
+
+type PrototypeSocketProcessEvent = {
+  type: "prototype.process";
+  lane: PrototypeSocketProcessLane;
+  message: string;
+  beat?: number;
+  detail?: string;
+  status?: "running" | "done" | "error";
+  at: string;
+  campaignId: string;
+};
+
+type PrototypeSocketStateEvent = {
+  type: "prototype.state";
+  state: PrototypeTavernTownState;
+  reason?: string;
+  at: string;
+  campaignId: string;
+};
+
+type PrototypeSocketErrorEvent = {
+  type: "prototype.error";
+  message: string;
+  at: string;
+  campaignId: string;
+};
+
+type PrototypeSocketEvent = PrototypeSocketProcessEvent | PrototypeSocketStateEvent | PrototypeSocketErrorEvent | {
+  type: "prototype.connected";
+  at: string;
+  campaignId: string;
+};
+
+type PrototypeSocketCommand = {
+  type?: string;
+  source?: "manual" | "auto" | string;
+  allowContinuous?: boolean;
+};
+
+type MonitorSocketKind = "tavern-town" | "town-forge";
+
+type TownForgeProcessLane = "socket" | "skill" | "referee" | "graph" | "validation" | "artifacts" | "state" | "error";
+
+type TownForgeSocketProcessEvent = {
+  type: "town_forge.process";
+  lane: TownForgeProcessLane;
+  message: string;
+  detail?: string;
+  status?: "running" | "done" | "warning" | "error";
+  at: string;
+  campaignId: string;
+};
+
+type TownForgeSocketStateEvent = {
+  type: "town_forge.state";
+  state: TownForgeState;
+  reason?: string;
+  at: string;
+  campaignId: string;
+};
+
+type TownForgeSocketEvent = TownForgeSocketProcessEvent | TownForgeSocketStateEvent | {
+  type: "town_forge.connected";
+  at: string;
+  campaignId: string;
+} | {
+  type: "town_forge.error";
+  message: string;
+  at: string;
+  campaignId: string;
+};
+
+type PrototypeSocketConnectionState = {
+  monitorKind?: MonitorSocketKind;
+  prototypeAutoStepsUsed?: number;
+};
+
+const PROTOTYPE_SOCKET_AUTO_BEAT_LIMIT = 3;
 
 function hasFreshPrototypeGenerationLock(state: PrototypeTavernTownState): boolean {
   if (state.mode !== "generating") return false;
@@ -1182,8 +1633,495 @@ function hasFreshPrototypeGenerationLock(state: PrototypeTavernTownState): boole
   return Number.isFinite(startedAt) && Date.now() - startedAt < PROTOTYPE_TAVERN_GENERATION_LOCK_TIMEOUT_MS;
 }
 
+function prototypeMonitorState(state: PrototypeTavernTownState): PrototypeTavernTownState {
+  const safe: PrototypeTavernTownState = {
+    ...state,
+    party: state.party.map((member) => ({
+      ...member,
+      goal: "withheld until revealed in play",
+      fear: "withheld until revealed in play"
+    })),
+    log: (state.log ?? []).map((entry) => {
+      if (!entry || typeof entry !== "object") return entry;
+      const { devReasoning: _devReasoning, ...publicEntry } = entry as Record<string, unknown>;
+      void _devReasoning;
+      return publicEntry;
+    })
+  };
+  if (state.error) safe.error = publicPrototypeError(state.error);
+  return safe;
+}
+
+function monitorSocketKind(request: Request): MonitorSocketKind | null {
+  const url = new URL(request.url);
+  const monitor = url.searchParams.get("monitor");
+  if (monitor === "prototype") return "tavern-town";
+  if (monitor === "town-forge") return "town-forge";
+  return null;
+}
+
+function isPrototypeMonitorSocketRequest(request: Request): boolean {
+  return monitorSocketKind(request) !== null;
+}
+
+function isSameOriginPrototypeSocket(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === new URL(request.url).host;
+  } catch {
+    return false;
+  }
+}
+
+function publicPrototypeError(error: unknown): string {
+  const value = String(error);
+  if (/capacity|temporarily exceeded|3040|timeout|504/i.test(value)) return "Workers AI generation failed or timed out; retry the step.";
+  if (/already generating|generation lock/i.test(value)) return "The prototype is already generating a beat; wait or reset.";
+  return "Prototype generation failed. See Wrangler logs or the dev brain endpoint for details.";
+}
+
 export class Referee extends Agent<Env, RefereeState> {
   initialState: RefereeState = seedTavernCampaign("agent-dungeon-campaign");
+
+  override getConnectionTags(_connection: Connection, ctx: ConnectionContext): string[] {
+    const kind = monitorSocketKind(ctx.request);
+    if (kind === "town-forge") return ["town-forge-monitor"];
+    if (kind === "tavern-town") return ["prototype-monitor"];
+    return [];
+  }
+
+  override shouldSendProtocolMessages(_connection: Connection, ctx: ConnectionContext): boolean {
+    return !isPrototypeMonitorSocketRequest(ctx.request);
+  }
+
+  override onConnect(connection: Connection, ctx: ConnectionContext): void {
+    const kind = monitorSocketKind(ctx.request);
+    if (!kind) return;
+    if (!isSameOriginPrototypeSocket(ctx.request)) {
+      const message = "Prototype socket rejected: origin must match this Worker host.";
+      if (kind === "town-forge") this.sendTownForgeSocketEvent(connection, { type: "town_forge.error", message, at: new Date().toISOString(), campaignId: this.name });
+      else this.sendPrototypeSocketEvent(connection, { type: "prototype.error", message, at: new Date().toISOString(), campaignId: this.name });
+      connection.close(1008, "origin mismatch");
+      return;
+    }
+    connection.setState({ ...(connection.state as PrototypeSocketConnectionState | undefined), monitorKind: kind, prototypeAutoStepsUsed: 0 });
+    if (kind === "town-forge") {
+      this.sendTownForgeSocketEvent(connection, { type: "town_forge.connected", at: new Date().toISOString(), campaignId: this.name });
+      this.sendTownForgeStateTo(connection, "connected");
+      return;
+    }
+    this.sendPrototypeSocketEvent(connection, { type: "prototype.connected", at: new Date().toISOString(), campaignId: this.name });
+    this.sendPrototypeStateTo(connection, "connected");
+  }
+
+  override async onMessage(connection: Connection, message: WSMessage): Promise<void> {
+    if (this.isConnectionProtocolEnabled(connection)) return;
+    if (typeof message !== "string") return;
+    let parsed: PrototypeSocketCommand;
+    try {
+      parsed = JSON.parse(message) as PrototypeSocketCommand;
+    } catch {
+      return;
+    }
+
+    if (parsed.type === "town_forge.get_state") {
+      this.sendTownForgeStateTo(connection, "requested");
+      return;
+    }
+
+    if (parsed.type === "town_forge.reset") {
+      this.emitTownForgeProcess("state", "Resetting Town Forge state.", { status: "running" });
+      const next = await this.resetTownForge();
+      this.emitTownForgeProcess("state", "Town Forge reset.", { status: "done", detail: next.mode });
+      return;
+    }
+
+    if (parsed.type === "town_forge.start") {
+      try {
+        await this.runTownForge();
+      } catch {
+        // runTownForge already emitted the public error/state frame.
+      }
+      return;
+    }
+
+    if (parsed.type === "prototype.get_state") {
+      this.sendPrototypeStateTo(connection, "requested");
+      return;
+    }
+
+    if (parsed.type === "prototype.reset") {
+      this.emitPrototypeProcess("state", "Resetting the prototype table and clearing child-agent brains.", { status: "running" });
+      const next = await this.resetPrototypeTavernTown();
+      connection.setState({ ...(connection.state as PrototypeSocketConnectionState | undefined), prototypeAutoStepsUsed: 0 });
+      this.emitPrototypeProcess("state", "Prototype table reset.", { beat: next.beat, status: "done" });
+      return;
+    }
+
+    if (parsed.type === "prototype.step") {
+      if (parsed.source === "auto" && !parsed.allowContinuous) {
+        const connectionState = (connection.state ?? {}) as PrototypeSocketConnectionState;
+        const used = connectionState.prototypeAutoStepsUsed ?? 0;
+        if (used >= PROTOTYPE_SOCKET_AUTO_BEAT_LIMIT) {
+          this.sendPrototypeSocketEvent(connection, {
+            type: "prototype.error",
+            message: `Autoplay cap reached after ${PROTOTYPE_SOCKET_AUTO_BEAT_LIMIT} AI beats. Step manually or explicitly enable continuous autoplay.`,
+            at: new Date().toISOString(),
+            campaignId: this.name
+          });
+          this.sendPrototypeStateTo(connection, "auto-cap-reached");
+          return;
+        }
+        connection.setState({ ...connectionState, prototypeAutoStepsUsed: used + 1 });
+      }
+      try {
+        await this.stepPrototypeTavernTown();
+      } catch {
+        // stepPrototypeTavernTown already emitted the public error/state frame.
+      }
+    }
+  }
+
+  private sendPrototypeSocketEvent(connection: Connection, event: PrototypeSocketEvent): void {
+    connection.send(JSON.stringify(event));
+  }
+
+  private emitPrototypeSocketEvent(event: PrototypeSocketEvent): void {
+    const message = JSON.stringify(event);
+    for (const connection of this.getConnections("prototype-monitor")) connection.send(message);
+  }
+
+  private sendPrototypeStateTo(connection: Connection, reason: string): void {
+    this.sendPrototypeSocketEvent(connection, {
+      type: "prototype.state",
+      state: prototypeMonitorState(this.getPrototypeTavernTown()),
+      reason,
+      at: new Date().toISOString(),
+      campaignId: this.name
+    });
+  }
+
+  private emitPrototypeState(state: PrototypeTavernTownState, reason: string): void {
+    this.emitPrototypeSocketEvent({
+      type: "prototype.state",
+      state: prototypeMonitorState(state),
+      reason,
+      at: new Date().toISOString(),
+      campaignId: this.name
+    });
+  }
+
+  private emitPrototypeProcess(lane: PrototypeSocketProcessLane, message: string, options: { beat?: number; detail?: string; status?: PrototypeSocketProcessEvent["status"] } = {}): void {
+    const event: PrototypeSocketProcessEvent = {
+      type: "prototype.process",
+      lane,
+      message,
+      at: new Date().toISOString(),
+      campaignId: this.name
+    };
+    if (options.beat !== undefined) event.beat = options.beat;
+    if (options.detail !== undefined) event.detail = options.detail;
+    if (options.status !== undefined) event.status = options.status;
+    this.emitPrototypeSocketEvent(event);
+  }
+
+  private emitPrototypeError(error: unknown): void {
+    const message = publicPrototypeError(error);
+    this.emitPrototypeSocketEvent({
+      type: "prototype.error",
+      message,
+      at: new Date().toISOString(),
+      campaignId: this.name
+    });
+    this.emitPrototypeProcess("error", message, { status: "error" });
+  }
+
+  private sendTownForgeSocketEvent(connection: Connection, event: TownForgeSocketEvent): void {
+    connection.send(JSON.stringify(event));
+  }
+
+  private emitTownForgeSocketEvent(event: TownForgeSocketEvent): void {
+    const message = JSON.stringify(event);
+    for (const connection of this.getConnections("town-forge-monitor")) connection.send(message);
+  }
+
+  private sendTownForgeStateTo(connection: Connection, reason: string): void {
+    this.sendTownForgeSocketEvent(connection, {
+      type: "town_forge.state",
+      state: townForgeMonitorState(this.getTownForge()),
+      reason,
+      at: new Date().toISOString(),
+      campaignId: this.name
+    });
+  }
+
+  private emitTownForgeState(state: TownForgeState, reason: string): void {
+    this.emitTownForgeSocketEvent({
+      type: "town_forge.state",
+      state: townForgeMonitorState(state),
+      reason,
+      at: new Date().toISOString(),
+      campaignId: this.name
+    });
+  }
+
+  private emitTownForgeProcess(lane: TownForgeProcessLane, message: string, options: { detail?: string; status?: TownForgeSocketProcessEvent["status"] } = {}): void {
+    const event: TownForgeSocketProcessEvent = {
+      type: "town_forge.process",
+      lane,
+      message,
+      at: new Date().toISOString(),
+      campaignId: this.name
+    };
+    if (options.detail !== undefined) event.detail = options.detail;
+    if (options.status !== undefined) event.status = options.status;
+    this.emitTownForgeSocketEvent(event);
+  }
+
+  private emitTownForgeError(error: unknown): void {
+    const message = "Town Forge failed. See Wrangler logs for the private error.";
+    console.warn("[Referee] town forge failed", error);
+    this.emitTownForgeSocketEvent({
+      type: "town_forge.error",
+      message,
+      at: new Date().toISOString(),
+      campaignId: this.name
+    });
+    this.emitTownForgeProcess("error", message, { status: "error" });
+  }
+
+  getTownForge(): TownForgeState {
+    const state = this.requireRefereeState();
+    const parsed = state.prototypeTownForge ? TownForgeStateSchema.safeParse(state.prototypeTownForge) : null;
+    if (!parsed?.success) {
+      if (state.prototypeTownForge) console.warn("[Referee] clearing invalid legacy Town Forge state", parsed?.error);
+      const prototypeTownForge = initialTownForgeState(this.name);
+      this.setState({ ...state, prototypeTownForge });
+      return prototypeTownForge;
+    }
+    return parsed.data;
+  }
+
+  async resetTownForge(): Promise<TownForgeState> {
+    const cleanup = await Promise.allSettled([this.deleteSubAgent(RefereeAgent, "town-forge-referee")]);
+    const failedCleanup = cleanup.filter((result) => result.status === "rejected");
+    if (failedCleanup.length) {
+      console.warn("[Referee] town forge reset could not clear child referee", failedCleanup);
+      this.emitTownForgeProcess("state", "Reset continued, but the Town Forge child Referee cleanup failed; see dev logs.", { status: "warning" });
+    }
+    const prototypeTownForge = initialTownForgeState(this.name);
+    this.setState({ ...this.requireRefereeState(), prototypeTownForge });
+    this.emitTownForgeState(prototypeTownForge, "reset");
+    return prototypeTownForge;
+  }
+
+  async runTownForge(): Promise<TownForgeState> {
+    const current = this.getTownForge();
+    if (current.mode === "forging") {
+      this.emitTownForgeProcess("state", "Town Forge is already running; refusing overlapping request.", { status: "running" });
+      this.emitTownForgeState(current, "already-forging");
+      return current;
+    }
+
+    await this.deleteSubAgent(RefereeAgent, "town-forge-referee").catch((error) => {
+      console.warn("[Referee] town forge could not clear prior child Referee before run", error);
+      this.emitTownForgeProcess("state", "Continuing after child Referee cleanup warning; fresh run will fail honestly if state is dirty.", { status: "warning" });
+    });
+
+    const forging: TownForgeState = TownForgeStateSchema.parse({
+      ...current,
+      mode: "forging",
+      error: undefined,
+      updatedAt: new Date().toISOString()
+    });
+    this.setState({ ...this.requireRefereeState(), prototypeTownForge: forging });
+    this.emitTownForgeState(forging, "forge-started");
+    this.emitTownForgeProcess("state", "Town Forge started: Referee-only worldbuilding, no players, no character creation.", { status: "running" });
+
+    try {
+      this.emitTownForgeProcess("skill", "Publishing create-village-skeleton compiled card to Artifacts and R2.", { status: "running" });
+      const { skillArtifact, r2Receipt } = await this.publishTownForgeSkillCard();
+      this.emitTownForgeProcess("skill", "Runtime skill card is available in R2 for Think load_context.", { status: "done", detail: TOWN_FORGE_R2_KEY });
+
+      const referee = await this.subAgent(RefereeAgent, "town-forge-referee");
+      this.emitTownForgeProcess("skill", "RefereeAgent is loading create-village-skeleton through Think.", { status: "running" });
+      const loadResult = await referee.loadTownForgeSkill();
+      this.emitTownForgeProcess("skill", loadResult.loaded ? "Think loaded the Town Forge card." : "Think skill load did not confirm; continuing with direct generated-object validation.", {
+        status: loadResult.loaded ? "done" : "warning",
+        detail: loadResult.loadedKeys.join(" | ") || loadResult.resultStatus
+      });
+
+      const skillLoadReceipt = townForgeReceipt({
+        kind: "skill-load",
+        status: loadResult.loaded ? "ok" : "warning",
+        title: "Think load_context attempted",
+        summary: loadResult.loaded ? "RefereeAgent loaded create-village-skeleton from R2 via Think." : "RefereeAgent did not confirm loaded skill state; generation still used the compiled skill card directly. No fixture fallback is allowed.",
+        source: { label: TOWN_FORGE_SKILL_LABEL, key: TOWN_FORGE_SKILL_KEY, loadedKeys: loadResult.loadedKeys, resultStatus: loadResult.resultStatus }
+      });
+
+      this.emitTownForgeProcess("referee", "Referee is drafting the town skeleton from the compiled campaign-design rails.", { status: "running" });
+      let town: TownGraph;
+      let generationReceipt: TownForgeReceipt;
+      try {
+        town = await referee.generateTownForgeGraph({
+          campaignId: this.name,
+          route: "/prototype/town-forge",
+          sourceSkill: TOWN_FORGE_SKILL_KEY,
+          constraints: [
+            "Referee-only worldbuilding; no PlayerAgents and no character creation.",
+            "Use real town graph shape: locations, NPC records, rumors, clocks, latent encounters, public projection.",
+            "No factions first-class in this slice.",
+            "NPCs are graph records, not separate agents.",
+            "Public projection must omit hidden notes and rumor truth states.",
+            "No fixtures, canned demo data, or deterministic fake town fallback. Fail honestly if generation fails."
+          ]
+        });
+        generationReceipt = townForgeReceipt({
+          kind: "generation",
+          status: "ok",
+          title: "RefereeAgent generated TownGraph.v1",
+          summary: `${town.name}: ${town.locations.length} locations, ${town.npcs.length} NPCs, ${town.rumors.length} rumors, ${town.clocks.length} clocks, ${town.latentEncounters.length} latent encounters.`,
+          source: { loadedSkillConfirmed: loadResult.loaded, loadedKeys: loadResult.loadedKeys }
+        });
+      } catch (error) {
+        const receipts = [
+          ...(forging.receipts ?? []),
+          r2Receipt,
+          skillLoadReceipt,
+          townForgeReceipt({
+            kind: "generation",
+            status: "error",
+            title: "RefereeAgent generation failed",
+            summary: "No town was produced. Runtime prototypes must fail honestly instead of substituting fixture content.",
+            source: { error: String(error) }
+          })
+        ];
+        const failed: TownForgeState = TownForgeStateSchema.parse({
+          schema: "TownForgeState.v1",
+          mode: "failed",
+          runId: this.name,
+          receipts,
+          artifacts: { skill: skillArtifact, r2Key: TOWN_FORGE_R2_KEY },
+          error: "Town Forge generation failed; no fixture fallback is allowed.",
+          updatedAt: new Date().toISOString()
+        });
+        this.setState({ ...this.requireRefereeState(), prototypeTownForge: failed });
+        this.emitTownForgeProcess("referee", "Generation failed honestly. No town fixture was substituted.", { status: "error", detail: String(error) });
+        this.emitTownForgeState(failed, "forge-generation-failed");
+        return failed;
+      }
+
+      for (const location of town.locations) this.emitTownForgeProcess("graph", `Location: ${location.name}`, { status: "done", detail: location.publicDescription });
+      for (const npc of town.npcs) this.emitTownForgeProcess("graph", `NPC record: ${npc.name}`, { status: "done", detail: `${npc.role}; wants ${npc.want}` });
+      this.emitTownForgeProcess("graph", `Rumor web: ${town.rumors.length} rumors drafted.`, { status: "done" });
+      this.emitTownForgeProcess("graph", `Clock panel: ${town.clocks.length} pressure clocks drafted.`, { status: "done" });
+      this.emitTownForgeProcess("graph", `Latent encounter stack: ${town.latentEncounters.length} pressure nodes drafted.`, { status: "done" });
+
+      const validationReceipt = townForgeReceipt({
+        kind: "validation",
+        status: "ok",
+        title: "Town graph validated with Zod",
+        summary: "TownGraphSchema and public projection boundaries validated before writing Artifacts.",
+        source: { schema: "TownGraph.v1", validator: "zod" }
+      });
+      const receipts = [
+        ...(forging.receipts ?? []),
+        r2Receipt,
+        skillLoadReceipt,
+        generationReceipt,
+        validationReceipt
+      ];
+
+      this.emitTownForgeProcess("validation", "Rendering data-backed SVX components and graph artifacts.", { status: "running" });
+      const files = renderTownForgeArtifacts(town, receipts);
+      this.emitTownForgeProcess("artifacts", "Syncing Town Forge SVX dossier to Artifacts.", { status: "running" });
+      const townArtifact = await syncArtifactFiles({
+        artifacts: (this.env as Env & { ARTIFACTS?: Artifacts }).ARTIFACTS,
+        ...((this.env as Env & { ARTIFACTS_ACCOUNT_ID?: string }).ARTIFACTS_ACCOUNT_ID ? { accountId: (this.env as Env & { ARTIFACTS_ACCOUNT_ID?: string }).ARTIFACTS_ACCOUNT_ID } : {}),
+        repoName: TOWN_FORGE_ARTIFACT_REPO,
+        description: "Cloudflare Agent Dungeon generated town forge SVX artifacts",
+        files,
+        message: `town forge: ${town.name} (${town.id})`
+      });
+      const artifactReceipt = townForgeReceipt({
+        kind: "artifact-sync",
+        status: townArtifact.status === "synced" ? "ok" : "warning",
+        title: "Town Forge artifacts synced",
+        summary: `${Object.keys(files).length} files written for ${town.name}.`,
+        source: { repoName: townArtifact.repoName, commit: townArtifact.lastCommit, status: townArtifact.status }
+      });
+      const finalReceipts = [...receipts, artifactReceipt];
+      const ready: TownForgeState = TownForgeStateSchema.parse({
+        schema: "TownForgeState.v1",
+        mode: "ready",
+        runId: this.name,
+        town,
+        publicTown: sanitizeTownGraphForMonitor(town),
+        receipts: finalReceipts,
+        artifacts: {
+          skill: skillArtifact,
+          town: townArtifact,
+          r2Key: TOWN_FORGE_R2_KEY
+        },
+        updatedAt: new Date().toISOString()
+      });
+      this.setState({ ...this.requireRefereeState(), prototypeTownForge: ready });
+      this.emitTownForgeState(ready, "forge-complete");
+      this.emitTownForgeProcess("state", `Town Forge complete: ${town.name}.`, { status: "done", detail: `${town.locations.length} locations · ${town.npcs.length} NPC records · ${town.latentEncounters.length} latent encounters` });
+      return ready;
+    } catch (error) {
+      const failed: TownForgeState = TownForgeStateSchema.parse({
+        ...forging,
+        mode: "failed",
+        error: "Town Forge failed. See Wrangler logs for private details.",
+        updatedAt: new Date().toISOString()
+      });
+      this.setState({ ...this.requireRefereeState(), prototypeTownForge: failed });
+      this.emitTownForgeState(failed, "forge-failed");
+      this.emitTownForgeError(error);
+      throw error;
+    }
+  }
+
+  private async publishTownForgeSkillCard(): Promise<{ skillArtifact: ArtifactSyncStatus; r2Receipt: TownForgeReceipt }> {
+    const card = createVillageSkeletonSkillCard();
+    const manifest = JSON.stringify({
+      schema: "RuntimeSkillCardManifest.v1",
+      id: TOWN_FORGE_SKILL_KEY,
+      label: TOWN_FORGE_SKILL_LABEL,
+      r2Key: TOWN_FORGE_R2_KEY,
+      artifactPath: `referee/design/${TOWN_FORGE_SKILL_KEY}.md`,
+      sourceNote: ".brain/resources/agent-skill-manifest.svx",
+      updatedAt: new Date().toISOString()
+    }, null, 2);
+    const skillArtifact = await syncArtifactFiles({
+      artifacts: (this.env as Env & { ARTIFACTS?: Artifacts }).ARTIFACTS,
+      ...((this.env as Env & { ARTIFACTS_ACCOUNT_ID?: string }).ARTIFACTS_ACCOUNT_ID ? { accountId: (this.env as Env & { ARTIFACTS_ACCOUNT_ID?: string }).ARTIFACTS_ACCOUNT_ID } : {}),
+      repoName: TOWN_FORGE_SKILL_ARTIFACT_REPO,
+      description: "Cloudflare Agent Dungeon authoritative compiled runtime skill cards",
+      files: {
+        [`referee/design/${TOWN_FORGE_SKILL_KEY}.md`]: card,
+        "manifest.json": manifest
+      },
+      message: `runtime skill: ${TOWN_FORGE_SKILL_KEY}`
+    });
+    await this.env.RUNTIME_SKILLS.put(TOWN_FORGE_R2_KEY, card, {
+      customMetadata: {
+        description: "Build a bounded OSE-style village/town situation graph for the Referee without scripting outcomes."
+      }
+    });
+    return {
+      skillArtifact,
+      r2Receipt: townForgeReceipt({
+        kind: "r2-cache",
+        status: "ok",
+        title: "Runtime skill card published to R2",
+        summary: `R2 cache updated at ${TOWN_FORGE_R2_KEY}; Artifacts remains authoritative.`,
+        source: { r2Key: TOWN_FORGE_R2_KEY, artifactCommit: skillArtifact.lastCommit, artifactStatus: skillArtifact.status }
+      })
+    };
+  }
 
   async createGame(campaignId = this.name): Promise<Campaign> {
     const campaign = this.commitCampaign(seedTavernCampaign(campaignId));
@@ -1325,6 +2263,147 @@ export class Referee extends Agent<Env, RefereeState> {
     };
   }
 
+  async setupPrototypeTavernTown(): Promise<PrototypeTavernTownState> {
+    this.emitPrototypeProcess("setup", "Session 0 setup started: seeding a fresh campaign table.", { beat: 0, status: "running" });
+    let campaign = seedTavernCampaign(this.name);
+    const playerA = await this.subAgent(PlayerAgent, "player-a");
+    const playerB = await this.subAgent(PlayerAgent, "player-b");
+    const referee = await this.subAgent(RefereeAgent, "referee");
+    const playerEntries = [
+      ["player-a", playerA],
+      ["player-b", playerB]
+    ] as const;
+    const creations: Array<{ playerId: PlayerId; playerName: string; draft: CharacterCreationDraft; plan: CharacterCreationPlan; character: Character }> = [];
+
+    for (const [playerId, player] of playerEntries) {
+      this.emitPrototypeProcess("player", `${campaign.players[playerId]?.name ?? playerId} is rolling a level 1 character.`, { beat: 0, status: "running" });
+      const rolled = rollCharacterCreationDraft(campaign, playerId, secureRandomInt);
+      campaign = rolled.campaign;
+      let plan: CharacterCreationPlan;
+      try {
+        this.emitPrototypeProcess("player", `${campaign.players[playerId]?.name ?? playerId} is choosing class and gear from the rolled sheet.`, { beat: 0, detail: `Rolls: ${formatAbilityScores(rolled.draft.rawAbilities)}; starting gold ${rolled.draft.startingGoldGp} gp.`, status: "running" });
+        plan = await player.createCharacterPlan(rolled.draft, campaign.stores);
+      } catch (error) {
+        console.warn("[Referee] PlayerAgent character plan generation failed; no fixture fallback is allowed", error);
+        this.emitPrototypeProcess("player", "Character generation failed honestly; no fixture character was substituted.", { beat: 0, detail: publicPrototypeError(error), status: "error" });
+        throw error;
+      }
+      plan = assertDistinctCharacterName(plan, campaign.players[playerId]?.name ?? playerId);
+      try {
+        campaign = commitCharacterCreation(campaign, rolled.draft, plan, secureRandomInt);
+      } catch (error) {
+        console.warn("[Referee] prototype setup character plan needed purchase repair", error);
+        plan = assertDistinctCharacterName(trimPlanToBudget(plan, campaign.stores, rolled.draft.startingGoldGp), campaign.players[playerId]?.name ?? playerId);
+        campaign = commitCharacterCreation(campaign, rolled.draft, plan, secureRandomInt);
+      }
+      const character = Object.values(campaign.characters).find((candidate) => candidate.playerId === playerId);
+      if (!character) throw new Error(`No character committed for ${playerId}`);
+      creations.push({ playerId, playerName: campaign.players[playerId]?.name ?? playerId, draft: rolled.draft, plan, character });
+      this.emitPrototypeProcess("player", `${character.name} entered play as a level ${character.level ?? 1} ${character.className}.`, { beat: 0, detail: `${character.stats.hp} hp, AC ${character.stats.armorClass}, ${character.goldGp ?? 0} gp left.`, status: "done" });
+    }
+
+    const setupContext = {
+      campaignId: this.name,
+      characters: creations.map(({ playerId, playerName, draft, plan, character }) => ({
+        playerId,
+        playerName,
+        rawAbilities: draft.rawAbilities,
+        startingGoldGp: draft.startingGoldGp,
+        name: character.name,
+        className: character.className,
+        hp: character.stats.hp,
+        armorClass: character.stats.armorClass,
+        inventory: character.inventory,
+        remainingGoldGp: character.goldGp,
+        publicHook: character.reasonExceptional,
+        reasonExceptional: character.reasonExceptional
+      })),
+      diceLedger: campaign.diceLedger.map((roll) => ({ formula: roll.formula, terms: roll.terms, result: roll.result, reason: roll.reason, playerId: roll.playerId })),
+      ruleReceipts: PROTOTYPE_SESSION_ZERO_RULE_RECEIPTS,
+      constraints: [
+        "Fresh setup each reset; do not reuse the old fixed Golden Eel seed.",
+        "Show the setup as table-visible process: world first, dice/characters second, open play after.",
+        "No predetermined quest path; setup creates pressure and available actions."
+      ]
+    };
+    let setup: TavernSetup;
+    try {
+      this.emitPrototypeProcess("referee", "Referee is building the tavern/town opening from rolled table facts.", { beat: 0, status: "running" });
+      setup = await referee.generateTavernSetup(setupContext);
+      this.emitPrototypeProcess("referee", `Referee built ${setup.location}.`, { beat: 0, detail: setup.premise, status: "done" });
+    } catch (error) {
+      console.warn("[Referee] prototype setup generation failed; no fixture fallback is allowed", error);
+      this.emitPrototypeProcess("referee", "Setup generation failed honestly; no tavern fixture was substituted.", { beat: 0, detail: publicPrototypeError(error), status: "error" });
+      throw error;
+    }
+
+    const now = new Date().toISOString();
+    const prototypeTavernTown: PrototypeTavernTownState = {
+      mode: "running",
+      beat: 0,
+      location: setup.location,
+      premise: setup.premise,
+      npcs: setup.npcs,
+      party: creations.map(({ playerName, plan, character }) => ({
+        player: playerName,
+        character: `${character.name}, level ${character.level ?? 1} ${character.className ?? "adventurer"}`,
+        goal: character.reasonExceptional ?? "find a table-visible reason to take the first risk",
+        fear: "private fear withheld from the table until revealed in play",
+        inventory: character.inventory,
+        abilities: character.abilities,
+        hp: character.stats.hp,
+        armorClass: character.stats.armorClass,
+        className: character.className,
+        goldGp: character.goldGp
+      })),
+      affordances: setup.startingAffordances,
+      visibleThreads: setup.visibleThreads,
+      ruleReceipts: PROTOTYPE_SESSION_ZERO_RULE_RECEIPTS,
+      updatedAt: now,
+      log: [
+        {
+          beat: 0,
+          lane: "setup",
+          actor: "Referee",
+          title: `World setup — ${setup.location}`,
+          tableText: setup.openingScene,
+          processReasoning: setup.refereeProcess,
+          devReasoning: "Referee private setup notes withheld from the public monitor."
+        },
+        ...creations.map(({ playerName, draft, plan, character }) => ({
+          beat: 0,
+          lane: "player",
+          actor: playerName,
+          title: `${character.name} rolled into play`,
+          tableText: `${character.name} is a level ${character.level ?? 1} ${character.className ?? "adventurer"} with ${character.stats.hp} hp, AC ${character.stats.armorClass}, ${character.goldGp ?? 0} gp left, and gear: ${character.inventory.join(", ") || "none"}.`,
+          processReasoning: `Rolled ${formatAbilityScores(character.abilities)} and ${draft.startingGoldGp} gp starting money. PlayerAgent chose ${plan.className}${plan.abilitySwap ? ` with one swap (${plan.abilitySwap.first}<->${plan.abilitySwap.second})` : ""}.`,
+          devReasoning: "Player-private inner monologue, goal, and fear stayed inside that PlayerAgent's private memory."
+        })),
+        {
+          beat: 0,
+          lane: "rules",
+          actor: "OSE",
+          title: "Session 0 dice receipts",
+          tableText: `Character setup used 3d6 ability rolls, 3d6 × 10 gp starting money, class hit dice, and source-backed equipment costs. Public dice ledger has ${campaign.diceLedger.length} rolls.`,
+          processReasoning: campaign.diceLedger.map((roll) => `${roll.playerId ?? "table"}: ${roll.reason} = ${roll.terms.join("+")} (${roll.result})`).join(" | "),
+          devReasoning: "Receipts are chunk IDs only; public monitor must not quote raw rulebook text."
+        }
+      ]
+    };
+
+    this.setState({ ...this.requireRefereeState(), prototypeTavernTown });
+    this.emitPrototypeState(prototypeTavernTown, "setup-committed");
+    this.emitPrototypeProcess("artifacts", "Syncing setup brains to Artifacts markdown repos.", { beat: prototypeTavernTown.beat, status: "running" });
+    const [playerABrain, playerBBrain, refereeBrain] = await Promise.all([playerA.getBrainDebug(), playerB.getBrainDebug(), referee.getBrainDebug()]);
+    await this.syncPrototypeBrainArtifacts(prototypeTavernTown, { playerA: playerABrain.state, playerB: playerBBrain.state, referee: refereeBrain.state }).then((results) => {
+      this.emitPrototypeProcess("artifacts", "Setup brain sync finished.", { beat: prototypeTavernTown.beat, detail: results.map((result) => `${result.role}:${result.status}`).join(" | "), status: "done" });
+    }).catch((error) => {
+      console.warn("[Referee] setup artifact brain sync failed", error);
+      this.emitPrototypeProcess("artifacts", "Setup brain sync failed; table state is still committed.", { beat: prototypeTavernTown.beat, detail: "Artifact sync error withheld from public monitor; see dev logs.", status: "error" });
+    });
+    return prototypeTavernTown;
+  }
+
   getPrototypeTavernTown(): PrototypeTavernTownState {
     const state = this.requireRefereeState();
     if (!state.prototypeTavernTown) {
@@ -1335,9 +2414,20 @@ export class Referee extends Agent<Env, RefereeState> {
     return state.prototypeTavernTown;
   }
 
-  resetPrototypeTavernTown(): PrototypeTavernTownState {
+  async resetPrototypeTavernTown(): Promise<PrototypeTavernTownState> {
+    const cleanup = await Promise.allSettled([
+      this.deleteSubAgent(PlayerAgent, "player-a"),
+      this.deleteSubAgent(PlayerAgent, "player-b"),
+      this.deleteSubAgent(RefereeAgent, "referee")
+    ]);
+    const failedCleanup = cleanup.filter((result) => result.status === "rejected");
+    if (failedCleanup.length) {
+      console.warn("[Referee] prototype reset could not clear every child-agent brain", failedCleanup);
+      this.emitPrototypeProcess("state", "Reset continued, but one child-agent brain cleanup failed; see dev logs.", { status: "error" });
+    }
     const prototypeTavernTown = initialPrototypeState();
-    this.setState({ ...this.requireRefereeState(), prototypeTavernTown });
+    this.setState({ ...this.requireRefereeState(), prototypeTavernTown, prototypeBrainArtifacts: {} });
+    this.emitPrototypeState(prototypeTavernTown, "reset");
     return prototypeTavernTown;
   }
 
@@ -1394,7 +2484,11 @@ export class Referee extends Agent<Env, RefereeState> {
     const state = this.requireRefereeState();
     let current = state.prototypeTavernTown ?? initialPrototypeState();
     if (current.mode === "generating") {
-      if (hasFreshPrototypeGenerationLock(current)) return current;
+      if (hasFreshPrototypeGenerationLock(current)) {
+        this.emitPrototypeProcess("state", "Server is already generating; refusing overlapping beat request.", { beat: current.beat, status: "running" });
+        this.emitPrototypeState(current, "already-generating");
+        return current;
+      }
       current = {
         ...current,
         mode: "running",
@@ -1411,24 +2505,32 @@ export class Referee extends Agent<Env, RefereeState> {
       updatedAt: new Date().toISOString()
     };
     this.setState({ ...state, prototypeTavernTown: generating });
+    this.emitPrototypeState(generating, "generation-started");
+    this.emitPrototypeProcess("state", generating.beat === 0 && (generating.log?.length ?? 0) === 0 ? "First step: setup generation and character rolling started." : `Beat ${generating.beat + 1} generation started.`, { beat: generating.beat, status: "running" });
 
     try {
-      const next = await this.runTavernBeat(generating);
+      const needsSetup = generating.beat === 0 && (generating.log?.length ?? 0) === 0;
+      const next = needsSetup ? await this.setupPrototypeTavernTown() : await this.runTavernBeat(generating);
       this.setState({ ...this.requireRefereeState(), prototypeTavernTown: next });
+      this.emitPrototypeState(next, needsSetup ? "setup-complete" : "beat-complete");
+      this.emitPrototypeProcess("state", needsSetup ? "Setup complete. The table is ready for play." : `Beat ${next.beat} committed.`, { beat: next.beat, status: "done" });
       return next;
     } catch (error) {
       const failed: PrototypeTavernTownState = {
         ...generating,
         mode: "failed",
-        error: String(error),
+        error: publicPrototypeError(error),
         updatedAt: new Date().toISOString()
       };
       this.setState({ ...this.requireRefereeState(), prototypeTavernTown: failed });
+      this.emitPrototypeState(failed, "generation-failed");
+      this.emitPrototypeError(error);
       throw error;
     }
   }
 
   async runTavernBeat(current: PrototypeTavernTownState): Promise<PrototypeTavernTownState> {
+    this.emitPrototypeProcess("referee", `Preparing beat ${current.beat + 1}: PlayerAgents choose table-visible intents, then Referee resolves them.`, { beat: current.beat + 1, status: "running" });
     const playerA = await this.subAgent(PlayerAgent, "player-a");
     const playerB = await this.subAgent(PlayerAgent, "player-b");
     const referee = await this.subAgent(RefereeAgent, "referee");
@@ -1439,16 +2541,24 @@ export class Referee extends Agent<Env, RefereeState> {
 
     const playerIntents: TavernIntent[] = [];
     for (const [playerId, player] of playerEntries) {
-      playerIntents.push(await player.chooseTavernIntent(this.tavernIntentContext(current, playerId)));
+      const actor = current.party[playerId === "player-a" ? 0 : 1]?.character ?? playerId;
+      this.emitPrototypeProcess("player", `${actor} is choosing an intent from the visible table state.`, { beat: current.beat + 1, status: "running" });
+      const intent = await player.chooseTavernIntent(this.tavernIntentContext(current, playerId));
+      playerIntents.push(intent);
+      this.emitPrototypeProcess("player", `${intent.actor}: ${intent.title}`, { beat: current.beat + 1, detail: intent.declaredAction, status: "done" });
     }
 
+    this.emitPrototypeProcess("rules", "Looking up bounded OSE rule receipts for this beat.", { beat: current.beat + 1, status: "running" });
     const receipts = await this.consultPrototypeRules(current);
+    this.emitPrototypeProcess("rules", receipts.length ? `Found ${receipts.length} rule receipt(s).` : "No external rule receipts found; continuing with current table context.", { beat: current.beat + 1, detail: receipts.map((receipt) => receipt.id).join(" | "), status: "done" });
+    this.emitPrototypeProcess("referee", "Referee is resolving the submitted PlayerAgent intents.", { beat: current.beat + 1, status: "running" });
     const beat = await referee.generateTavernBeat({
       state: { ...current, log: current.log.slice(0, 6) },
       playerIntents,
       ruleReceipts: receipts.map((receipt) => ({ id: receipt.id, docId: receipt.docId, headingPath: receipt.headingPath, snippet: receipt.snippet?.slice(0, 220) }))
     });
 
+    this.emitPrototypeProcess("referee", `${beat.title}`, { beat: current.beat + 1, detail: beat.processReasoning, status: "done" });
     const committed = this.commitTavernBeat(current, beat, playerIntents, receipts);
     const [playerAIntent, playerBIntent] = playerIntents;
     if (!playerAIntent || !playerBIntent) throw new Error("Tavern beat did not produce both player intents");
@@ -1461,11 +2571,15 @@ export class Referee extends Agent<Env, RefereeState> {
       if (result.status === "rejected") console.warn("[Referee] tavern beat memory update failed", result.reason);
     }
 
+    this.emitPrototypeProcess("artifacts", "Updating hot brain summaries and syncing markdown artifacts.", { beat: committed.beat, status: "running" });
     const playerAState = memoryResults[0]?.status === "fulfilled" ? memoryResults[0].value : (await playerA.getBrainDebug()).state;
     const playerBState = memoryResults[1]?.status === "fulfilled" ? memoryResults[1].value : (await playerB.getBrainDebug()).state;
     const refereeState = memoryResults[2]?.status === "fulfilled" ? memoryResults[2].value : (await referee.getBrainDebug()).state;
-    await this.syncPrototypeBrainArtifacts(committed, { playerA: playerAState, playerB: playerBState, referee: refereeState }).catch((error) => {
+    await this.syncPrototypeBrainArtifacts(committed, { playerA: playerAState, playerB: playerBState, referee: refereeState }).then((results) => {
+      this.emitPrototypeProcess("artifacts", "Brain artifact sync finished.", { beat: committed.beat, detail: results.map((result) => `${result.role}:${result.status}`).join(" | "), status: "done" });
+    }).catch((error) => {
       console.warn("[Referee] artifact brain sync failed", error);
+      this.emitPrototypeProcess("artifacts", "Brain artifact sync failed; committed beat remains available.", { beat: committed.beat, detail: "Artifact sync error withheld from public monitor; see dev logs.", status: "error" });
       this.recordArtifactSyncResults([
         { role: "player-a", repoName: this.brainRepoName("player-a"), status: "error", error: String(error) },
         { role: "player-b", repoName: this.brainRepoName("player-b"), status: "error", error: String(error) },
@@ -1704,10 +2818,12 @@ export class Referee extends Agent<Env, RefereeState> {
   private commitCampaign(campaign: Campaign): Campaign {
     const prototypeTavernTown = this.state?.prototypeTavernTown;
     const prototypeBrainArtifacts = this.state?.prototypeBrainArtifacts;
+    const prototypeTownForge = this.state?.prototypeTownForge;
     this.setState({
       ...campaign,
       ...(prototypeTavernTown ? { prototypeTavernTown } : {}),
-      ...(prototypeBrainArtifacts ? { prototypeBrainArtifacts } : {})
+      ...(prototypeBrainArtifacts ? { prototypeBrainArtifacts } : {}),
+      ...(prototypeTownForge ? { prototypeTownForge } : {})
     });
     return campaign;
   }
@@ -1720,10 +2836,12 @@ export class Referee extends Agent<Env, RefereeState> {
     if (!this.state || this.state.id !== this.name) {
       const existingPrototype = this.state?.prototypeTavernTown;
       const existingArtifacts = this.state?.prototypeBrainArtifacts;
+      const existingTownForge = this.state?.prototypeTownForge;
       const next: RefereeState = {
         ...seedTavernCampaign(this.name),
         ...(existingPrototype ? { prototypeTavernTown: existingPrototype } : {}),
-        ...(existingArtifacts ? { prototypeBrainArtifacts: existingArtifacts } : {})
+        ...(existingArtifacts ? { prototypeBrainArtifacts: existingArtifacts } : {}),
+        ...(existingTownForge ? { prototypeTownForge: existingTownForge } : {})
       };
       this.setState(next);
       return next;
@@ -1775,19 +2893,34 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith("/api/")) return null;
 
+  if (url.pathname === "/api/prototype/town-forge-state") {
+    const referee = await getAgentByName(env.Referee, "town-forge-prototype");
+    return json({ state: townForgeMonitorState(await referee.getTownForge()) });
+  }
+  if (url.pathname === "/api/prototype/town-forge-start") {
+    if (request.method !== "POST") return json({ error: "POST only" }, { status: 405 });
+    const referee = await getAgentByName(env.Referee, "town-forge-prototype");
+    return json({ state: townForgeMonitorState(await referee.runTownForge()) });
+  }
+  if (url.pathname === "/api/prototype/town-forge-reset") {
+    if (request.method !== "POST") return json({ error: "POST only" }, { status: 405 });
+    const referee = await getAgentByName(env.Referee, "town-forge-prototype");
+    return json({ state: townForgeMonitorState(await referee.resetTownForge()) });
+  }
+
   if (url.pathname === "/api/prototype/tavern-town-state") {
     const referee = await getAgentByName(env.Referee, "tavern-town-prototype");
-    return json({ state: await referee.getPrototypeTavernTown() });
+    return json({ state: prototypeMonitorState(await referee.getPrototypeTavernTown()) });
   }
   if (url.pathname === "/api/prototype/tavern-town-reset") {
     if (request.method !== "POST") return json({ error: "POST only" }, { status: 405 });
     const referee = await getAgentByName(env.Referee, "tavern-town-prototype");
-    return json({ state: await referee.resetPrototypeTavernTown() });
+    return json({ state: prototypeMonitorState(await referee.resetPrototypeTavernTown()) });
   }
   if (url.pathname === "/api/prototype/tavern-town-beat") {
     if (request.method !== "POST") return json({ error: "POST only" }, { status: 405 });
     const referee = await getAgentByName(env.Referee, "tavern-town-prototype");
-    const prototypeState: PrototypeTavernTownState = await referee.stepPrototypeTavernTown();
+    const prototypeState: PrototypeTavernTownState = prototypeMonitorState(await referee.stepPrototypeTavernTown());
     return json({ state: prototypeState, beat: prototypeState.log?.[0] });
   }
   if (url.pathname === "/api/prototype/tavern-town-brains") {
@@ -1997,6 +3130,7 @@ export default {
     if (url.pathname === "/events") return campaignEvents(request, env);
     if (url.pathname === "/events-dev") return campaignEvents(request, env, true);
     if (url.pathname === "/" || url.pathname === "/monitor") return monitorPage();
+    if (url.pathname === "/prototype/town-forge") return townForgeUiPage();
     if (url.pathname === "/prototype/tavern-town") return prototypeTavernTownUiPage();
 
     try {
@@ -2004,7 +3138,7 @@ export default {
       if (api) return api;
     } catch (error) {
       if (url.pathname.startsWith("/api/")) {
-        return json({ error: String(error) }, { status: 500 });
+        return json({ error: url.pathname.startsWith("/api/prototype/") ? publicPrototypeError(error) : String(error) }, { status: 500 });
       }
       throw error;
     }

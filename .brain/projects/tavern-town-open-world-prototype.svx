@@ -51,6 +51,83 @@ The first useful autonomous slice:
 
 No fixed adventure path is required.
 
+## 2026-05-25 scope correction: Referee Situation Graph
+
+Joel rejected the rail-y "one encounter" framing. The next village slice should generate a **Referee Situation Graph**: a small living village graph plus a stack of latent encounter nodes tied to hooks, locations, NPCs, factions, clocks, rumors, and player choices.
+
+The encounter stack is **loaded gunpowder, not a cutscene**.
+
+Latent encounters are possible pressure nodes, not scheduled scenes. PlayerAgents never pick from the hidden stack directly. They choose table-visible intents from their own projections; Referee decides what graph nodes become relevant from actions, world state, time, dice, and OSE procedure.
+
+A latent encounter should carry:
+
+- id and title
+- type: social, hazard, chase, combat-risk, discovery, faction-pressure, or resource-pressure
+- linked location ids, NPC/faction ids, hook ids, and rumor ids
+- visibility: hidden, rumored, visible, triggered, or resolved
+- trigger surfaces: player actions, time/clocks, noise, travel, investigation, failed rolls, or NPC reaction
+- stakes, table-visible clues, hidden Referee notes, non-combat outs, escalation paths, aftermath mutations
+- possible OSE procedure receipts: reaction, morale, surprise, initiative, attack/damage, evasion, retainers, supplies, light, wandering encounter
+
+The Referee Brain stores the whole graph: village locations, NPC memories/secrets, faction pressures, hooks/rumors, latent encounter stack, clocks/fronts, rule receipt ids, and unresolved hidden threads.
+
+The public table projection only shows current location, visible NPCs, visible affordances, revealed rumors, public consequences, and player-safe dice/procedure receipts.
+
+Implementation direction: promote the durable graph vocabulary into `packages/domain` as real domain types, while keeping the first experimental runner/beat implementation in the prototype `Referee`. Working concepts should graduate out of throwaway UI code once they prove useful, but the exact autonomous loop should stay easy to reshape.
+
+Joel's better metaphor: the Referee generates a **skeleton** and the PlayerAgents' decisions add **flesh**. The skeleton is not a plot. It is a situation scaffold: places, tensions, rumors, NPC motives, clocks, latent encounters, and table-visible affordances. Player choices, dice, rules, and Referee adjudication decide which bones get meat.
+
+Source pointer for this philosophy: Game Angry PDF, `game-angry-pdf-47a26de25095:s208`, "Plotting a Good Foundation". The relevant source frame says the player characters are not under the Referee's control, while plot provides structure/shape. For this project, treat that as: Referee prepares structure, not authored outcomes.
+
+Factions are explicitly a future/advanced option for this slice. Do not make factions first-class in the first promoted graph kernel. Let NPCs, hooks, rumors, clocks, and latent encounters carry pressure until the prototype proves it needs faction machinery.
+
+RefereeAgent playbooks should treat Game Angry as the Referee's soul before layering on OSE procedure. See [[resources/referee-soul-game-angry]]. The first Referee skills should be about running the game: framing situations, surfacing affordances, adjudicating player actions, playing NPCs as pressure-bearing world objects, and updating the Referee Brain as the players drive the emerging narrative.
+
+Referee Brain update rule: after every meaningful beat, update compact Referee notes with graph changes, NPC memory, latent encounter visibility/pressure changes, clocks, revealed/hidden rumors, procedure receipts, and unresolved questions. Do not dump raw transcript; compress into future-useful notes.
+
+Skill/playbook design direction: author the Referee and PlayerAgent playbooks as Brain-backed manual pages first, then publish reviewed safe pages to `agentdungeon.ai` as a project manual. Runtime Artifacts brains should ingest only selected/stable cards after review. See [[resources/agent-skill-design-patterns]].
+
+Referee should get **campaign/game design** skills, but as Referee-only capabilities. These cards help build and maintain the skeleton: village graph, hooks, clocks, latent encounter stack, NPC motives, rumor web, and campaign notes. They are not player-facing and should not become a hidden railroad. Use them at setup, between beats, or explicit reflection/maintenance points; during a beat, Referee should adjudicate the current situation rather than secretly redesigning the whole campaign under the players' feet.
+
+Skills are the rails and guidewires because the adventure should have minimal deterministic story rails. The system needs explicit volatility layers: core rules/capability boundaries change almost never; deep lore and mechanics change rarely with receipts; the situation skeleton changes at setup/maintenance; beat-level adjudication changes through play; local color/improv can change freely. See [[resources/agent-skill-design-patterns]].
+
+Next prototype pressure from Joel: stop only designing the manual and soon prove runtime skill loading through Think. Cards should be on-demand, not always stuffed into baseline context. Runtime cards should use R2 + Artifacts from the start: R2 for `R2SkillProvider` loading, Artifacts for versioned compiled card repos/receipts. Also expand the party from 2 PlayerAgents to 4 so the village graph has enough social/decision pressure to feel like a table, not a buddy scene.
+
+Think primitive direction: use `soul` context blocks, private writable memory, player-safe known-world projections, and on-demand `SkillProvider` cards for the four distinct PlayerAgents. Do not invent a separate runtime skill harness unless Think's primitives fail the needs. See [[resources/idiomatic-think-prototype-shape]].
+
+Important PlayerAgent correction: do **not** let generated player personas become cringe caricatures or over-adhered gimmicks. Curate stable **player archetypes** as the PlayerAgent souls, then generate campaign-specific **characters** during setup. The PlayerAgent is the style of play at the table; the Character is the in-world PC. Keep those separate. Approved starting archetypes: Caller / Coordinator, Mapper / Cautious Scout, Face / Social Prober, and Quartermaster / Risk Accountant. See [[resources/player-agent-archetypes]].
+
+## Next prototype iteration: town creation skill stream
+
+Scope: Referee builds the initial town/village skeleton using the `create-village-skeleton` runtime card loaded through Think from R2, with Artifacts as the authoritative compiled-card repo.
+
+Experience target: on `agentdungeon.ai`, Joel can open a terminal-like monitor that streams the Referee's town-building process over the native Referee socket. Newest events appear at the top. The stream should feel like watching the Referee assemble the campaign substrate, not reading a static JSON blob.
+
+Public stream lanes should be sanitized process events, for example:
+
+- socket connected / run started
+- loading runtime card from R2 (`create-village-skeleton`)
+- applying Referee soul / campaign-design rails
+- drafting locations
+- drafting NPCs and motives
+- drafting rumors/hooks/clocks
+- drafting latent encounter stack
+- validating public projection boundaries
+- committing town graph
+- syncing Artifacts / R2 publish receipts
+
+Do not stream raw hidden notes, raw skill card text, raw source corpus, or chain-of-thought. Dev-only Referee Screen can expose deeper receipts later behind token gating.
+
+Implementation bias: build this as a **new route first**, not a replacement for the existing tavern-town setup path. Use `/prototype/town-forge` as the first slice. Keep existing tavern monitor behavior working while the new stream proves the R2/Artifacts/Think skill path. Once it works, fold the town forge into the normal setup/autonomous beat loop.
+
+Town Forge scope is **Referee-only worldbuilding**: generate the town skeleton and public projection, with no PlayerAgents and no character creation in this slice. This should prove Referee campaign-design skill loading and streamed world creation before adding player pressure.
+
+Town graph artifact direction from Joel: use Brain-style `.svx` artifacts for graph building and Artifacts output. The town dossier should be readable/reviewable as SVX, not just a JSON blob. Recommendation captured in [[resources/town-graph-svx-artifact-format]]: SVX is the working dossier; `graph.json` is the typed runtime snapshot derived from the same forge result.
+
+Correction: use real data-backed SVX components in the first Town Forge slice, not placeholder shells. Validate the town graph and receipts with schemas before writing Artifacts. Current worker already uses Zod, so Zod is the default schema tool unless a deliberate Valibot switch is chosen.
+
+Publishing direction, deferred: `agentdungeon.ai` may eventually publish the project `.brain` graph as the manual/site surface, not a separate CMS. This is not part of the next prototype slice. When resumed, it must publish a safe public projection, not raw private Brain by default. See [[decisions/agentdungeon-ai-brain-published-site]].
+
 ## Persistent town entities
 
 Referee should persist town/NPC state as first-class campaign data:
@@ -67,6 +144,8 @@ Referee should persist town/NPC state as first-class campaign data:
 - promises, debts, insults, prices, and favors
 
 NPCs are not disposable flavor. They are part of the world graph.
+
+Open design question: **NPCs as agents?** For the Town Forge slice, NPCs should stay as structured Referee-owned graph records, not separate Think agents. Do not spawn a Durable Object mind for every shopkeeper yet. Promotion path: a recurring NPC may become an `NpcAgent` later if it needs private memory, autonomous agenda pressure, conversation continuity across beats, or independent tool use. First prove the town graph and Referee skill path; then decide which NPCs deserve minds.
 
 ## UI requirement
 
@@ -91,9 +170,11 @@ The UI should make the world feel like it is thinking and unfolding, not like a 
 
 ## Non-goals for this slice
 
-Do not build full dungeon exploration, combat, loot tables, or return-to-town reward loops yet.
+Do not build full dungeon exploration, tactical combat, loot tables, or return-to-town reward loops yet.
 
-Do not script a tavern → hook → travel sequence.
+Do not script a tavern → hook → travel → encounter sequence.
+
+Do not railroad a single encounter. Generate latent pressure nodes and let player choices, clocks, dice, and OSE procedure decide what comes alive.
 
 Do not make NPCs transient prompt text only.
 

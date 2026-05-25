@@ -21,11 +21,18 @@ created: 2026-05-24
 
 - [[decisions/open-world-player-driven-adventure]]
 - [[decisions/per-agent-artifacts-brain-repos]]
+- [[decisions/runtime-skills-r2-artifacts]]
 
 ## Resources
 
 - [[resources/cloudflare-think-agentic-loop-research]]
 - [[resources/idiomatic-think-prototype-shape]]
+- [[resources/referee-soul-game-angry]]
+- [[resources/agent-skill-design-patterns]]
+- [[resources/agent-skill-manifest]]
+- [[resources/player-agent-archetypes]]
+- [[resources/town-graph-svx-artifact-format]]
+- [[resources/combat-tactics-source-layer]]
 - [[resources/run-agent-tool-plain-agent-parent]]
 - [[resources/stable-player-agent-turn-submission]]
 - [[resources/cloudflare-account-agentdungeon-zone]]

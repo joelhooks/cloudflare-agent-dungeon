@@ -1,0 +1,52 @@
+---
+title: Agent Skill Manifest
+kind: resource
+status: shaping
+created: 2026-05-25
+source: .brain/data/agent-skill-manifest.jsonl
+tags:
+  - agent-skills
+  - manual
+  - think
+  - runtime-manifest
+  - brain-components
+---
+
+# Agent Skill Manifest
+
+Curated manifest for Cloudflare Agent Dungeon manual pages and future Think runtime cards.
+
+This is the track map for our skill rails. It keeps the design readable for Joel, reviewable in Brain, and structured early enough that Think can consume the stable cards later without scraping `agentdungeon.ai`.
+
+<AgentSkillManifestProvider>
+  <AgentSkillManifestSummary />
+  <AgentSkillManifestTable />
+</AgentSkillManifestProvider>
+
+## Contract
+
+- Data source: `.brain/data/agent-skill-manifest.jsonl`
+- Schema: `AgentSkillManifestEntry.v1` JSONL, one skill/manual card candidate per line
+- Renderer components:
+  - `.brain/components/AgentSkillManifestProvider.svelte`
+  - `.brain/components/AgentSkillManifestSummary.svelte`
+  - `.brain/components/AgentSkillManifestTable.svelte`
+- Privacy: local project Brain notes; public manual exports must strip or summarize private/source-restricted material
+- Side effects: none; this surface does not compile or publish runtime cards
+- Think consumption rule: runtime agents consume reviewed compiled cards through configured Think `R2SkillProvider` context blocks, Artifacts receipts/repos, and table/player projections, not the `agentdungeon.ai` website
+- Runtime backing: Artifacts is the authoritative compiled-card repo; R2 is the Think-facing deployed runtime cache. See [[decisions/runtime-skills-r2-artifacts]].
+- Update rule: update the JSONL manifest when a card changes status, source pointer, privacy level, runtime provider target, backing store, or load mode
+
+## Think-facing fields
+
+Each record includes Think consumption hints early:
+
+- `runtime.providerLabel` — intended Session context label, e.g. `referee_skills`
+- `runtime.loadKey` — future `load_context` key
+- `runtime.targetAgents` — which runtime agent class may receive the card
+- `runtime.includeInSystemPrompt` — baseline card vs on-demand skill
+- `runtime.loadOnDemand` — whether a model should call `load_context`
+- `runtime.maxTokens` — design budget for the compiled card
+- `runtime.backing` — runtime/storage contract: R2 prefix/key and Artifacts repo/path
+
+Compilation remains manual/curated until the privacy and source boundaries are boringly obvious.

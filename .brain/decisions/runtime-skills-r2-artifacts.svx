@@ -1,0 +1,64 @@
+---
+title: Runtime Skills Use R2 and Artifacts
+kind: decision
+status: accepted
+created: 2026-05-25
+tags:
+  - think
+  - skills
+  - r2
+  - artifacts
+  - runtime
+  - fog-of-war
+---
+
+# Runtime Skills Use R2 and Artifacts
+
+## Decision
+
+Runtime skill cards should use **R2 and Artifacts**, not a worker-local static skill provider.
+
+- **Artifacts are authoritative** for compiled runtime cards: versioned repos, diffs, review history, rollback, and publish receipts.
+- **R2 is the deployed runtime cache** because Cloudflare Think already ships `R2SkillProvider` and exposes cards through `load_context` / `unload_context`.
+- `agentdungeon.ai` remains a human/build-agent manual surface, not a gameplay dependency for running agents.
+
+## Why
+
+The point of this prototype is to prove the real system shape early. A worker-local static provider would be faster, but it would dodge the storage/deploy boundary we actually care about.
+
+R2 gives the native Think path. Artifacts give reviewable history and agent-readable receipts. Editing R2 directly would create mystery-meat skills with no useful diff trail.
+
+## Consequences
+
+- Add an R2 binding for runtime skill cards.
+- Use `R2SkillProvider` in `RefereeAgent` / `PlayerAgent` sessions.
+- Organize R2 keys by role/capability, for example:
+  - `skills/referee/soul/game-angry-referee-soul.md`
+  - `skills/referee/design/create-village-skeleton.md`
+  - `skills/player/survival/player-survival-tactics.md`
+  - `skills/table/table-projection-rules.md`
+- Keep compilation manual/curated at first.
+- Record compiled card source, privacy level, and publish receipt in Brain/Artifacts.
+- Treat R2 writes as deploy/cache publishes from the authoritative Artifacts copy.
+- Do not edit runtime skill content directly in R2 except for emergency repair, and backfill Artifacts immediately if that ever happens.
+- Do not let runtime agents scrape `agentdungeon.ai`.
+
+## Rejected
+
+- **Worker-local static SkillProvider first** — simpler but avoids the actual deployment/storage shape and makes the prototype less honest.
+
+## Authority model
+
+Artifacts is the source of truth for compiled cards. R2 is the runtime cache loaded by Think.
+
+Publish flow:
+
+```txt
+Brain/manual note
+  ↓ curated compile
+Artifacts compiled-card repo
+  ↓ publish/deploy receipt
+R2 object
+  ↓ Think R2SkillProvider
+load_context / unload_context
+```

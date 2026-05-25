@@ -152,6 +152,29 @@ For `PlayerAgent`:
 
 Do not give `PlayerAgent` a searchable/global campaign context. If player needs to remember revealed facts, Referee writes those facts into that player's projection/memory, not the other way around.
 
+### 2026-05-25 runtime primitive direction
+
+Joel wants the implementation to lean into Think's native primitives rather than inventing a parallel skill/memory system.
+
+Important clarification: `soul` is a **context block pattern**, not a special class. Think/Session renders context blocks with labels like `SOUL`, `MEMORY`, and `SKILLS`; examples use `withContext("soul", { provider: { get } })` for read-only identity. That is exactly the right primitive for Referee/Player identity.
+
+Use these Think primitives directly:
+
+- `Think` child agents for minds.
+- `configureSession(session)` for per-agent context shape.
+- `withContext("soul")` for read-only identity/persona and immutable table posture.
+- writable context blocks (`AgentContextProvider` or default builder context) for private memory summaries.
+- `SkillProvider` / `R2SkillProvider` for on-demand runtime cards via `load_context` / `unload_context`; R2 is the runtime store and Artifacts keep compiled-card history/receipts.
+- `SearchProvider` / `AgentSearchProvider` only for allowed knowledge, e.g. a player searching their own memories, not hidden world state.
+- `withCachedPrompt()` plus explicit `refreshSystemPrompt()` when dynamic context must change before a server-driven turn.
+- `session.tools()` merged with game tools so `set_context`, `load_context`, `unload_context`, and `search_context` are available when providers support them.
+- `saveMessages()` for current server-driven turns; consider `submitMessages()` or Agent Tools later when retained runs/replay/cancellation become first-class.
+- `subAgent()` isolation for each RefereeAgent/PlayerAgent mind.
+
+Near-term player expansion: use stable player ids `player-a` through `player-d`, each with a distinct `soul`, private memory, player-safe known-world projection, and on-demand player skills. Keep the Durable Object identity stable so Artifacts repos and projections stay sane.
+
+Player soul rule from Joel: curate **player archetypes**; generate **characters**. Agents over-adhere to generated personality quirks and turn them into cringe costumes. A PlayerAgent soul should be a restrained style-of-play archetype, not a theatrical persona. Campaign setup can generate the in-world character name/class/goal/fear. The approved starting archetypes live in [[resources/player-agent-archetypes]].
+
 ## Referee responsibilities
 
 Referee should be a plain `Agent` unless we find a reason for it to be `Think` too.

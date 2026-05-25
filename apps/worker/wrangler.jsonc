@@ -27,6 +27,12 @@
   "ai": {
     "binding": "AI"
   },
+  "r2_buckets": [
+    {
+      "binding": "RUNTIME_SKILLS",
+      "bucket_name": "agent-dungeon-runtime-skills"
+    }
+  ],
   "vars": {
     "ARTIFACTS_ACCOUNT_ID": "baac0d692a7fb14f11b159b48b13055e"
   },

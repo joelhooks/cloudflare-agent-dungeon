@@ -20,7 +20,19 @@ const PrototypePartyMemberSchema = z.object({
   character: z.string(),
   goal: z.string(),
   fear: z.string(),
-  inventory: z.array(z.string())
+  inventory: z.array(z.string()),
+  abilities: z.object({
+    strength: z.number().int(),
+    intelligence: z.number().int(),
+    wisdom: z.number().int(),
+    dexterity: z.number().int(),
+    constitution: z.number().int(),
+    charisma: z.number().int()
+  }).optional(),
+  hp: z.number().int().optional(),
+  armorClass: z.number().int().optional(),
+  className: z.string().optional(),
+  goldGp: z.number().int().optional()
 });
 
 const PrototypeStateSchema = z.object({
@@ -192,10 +204,17 @@ export function prototypeTavernTownUiPage(): Response {
     .lane.referee { background: var(--hot); }
     .lane.player { background: var(--blue); }
     .lane.npc { background: var(--amber); }
+    .lane.setup { background: var(--violet); }
     .lane.rules { background: var(--violet); }
+    .lane.artifacts { background: var(--amber); }
+    .lane.socket, .lane.state { background: #cfe7c6; }
+    .lane.error { background: var(--red); }
     .lane.audit { background: var(--red); }
     .turn h3 { position: relative; margin: 0 0 6px; font-size: 1.06rem; color: #f6ffe9; text-transform: uppercase; letter-spacing: -.02em; }
     .turn p { position: relative; margin: 0; }
+    .turn.live { border-style: dashed; background: linear-gradient(180deg, rgba(21,28,17,.96), rgba(8,10,8,.96)); }
+    .turn.live.done { opacity: .78; }
+    .turn.live.error { border-color: var(--red); }
     .reason { position: relative; margin-top: 10px; padding: 9px 10px; border-left: 2px solid var(--hot); background: rgba(183,255,90,.05); color: #bdd3b4; }
     .dev { border-left-color: var(--red); color: #d9aaa1; }
     .stack { display: grid; gap: 14px; align-content: start; }
@@ -219,11 +238,11 @@ export function prototypeTavernTownUiPage(): Response {
 </head>
 <body>
   <main class="shell">
-    <div class="topbar"><span class="tag">Prototype / wipe me</span><span class="muted">Server-persisted single prototype game · one generated town beat per tick · newest turn first</span></div>
+    <div class="topbar"><span class="tag">Prototype / wipe me</span><span class="muted">Server-persisted single prototype game · generative setup, character rolling, then one town beat per tick · newest turn first</span></div>
     <section class="hero">
       <div class="panel">
         <h1>Tavern Town Console</h1>
-        <p class="muted">Open-world tavern prototype. One server-side game is visible to everyone. The daemon advances beats, not a plot. Players can ask, buy, hire, stall, drink, leave, or dig sideways.</p>
+        <p class="muted">Open-world tavern prototype. The Referee first builds a fresh tavern/town and the PlayerAgents roll characters, then the daemon advances beats, not a plot. Players can ask, buy, hire, stall, drink, leave, or dig sideways.</p>
       </div>
       <div class="panel">
         <h2>World daemon</h2>
@@ -235,7 +254,7 @@ export function prototypeTavernTownUiPage(): Response {
           <select id="speed"><option value="7000">slow</option><option value="4200" selected>table pace</option><option value="1800">fast skim</option></select>
         </div>
         <label class="cost-guard"><input id="allowContinuous" type="checkbox"> allow continuous $$$ autoplay</label>
-        <p class="status"><span class="mode" id="mode">idle</span><span id="statusText">Server state loading. Start World is capped at 3 AI beats unless continuous autoplay is explicitly enabled.</span></p>
+        <p class="status"><span class="mode" id="mode">idle</span><span id="statusText">Server state loading. Start World first runs setup, then is capped at 3 AI beats unless continuous autoplay is explicitly enabled.</span></p>
       </div>
     </section>
 
@@ -274,15 +293,20 @@ export function prototypeTavernTownUiPage(): Response {
   <script>
     const params = new URLSearchParams(location.search);
     const variant = params.get('variant') || 'console';
+    const devMode = params.get('dev') === '1';
     document.body.classList.add('variant-' + variant);
     document.querySelectorAll('[data-variant]').forEach(function (link) { link.classList.toggle('active', link.dataset.variant === variant); });
 
     let state = ${JSON.stringify(initialPrototypeState())};
     const DEFAULT_AUTO_BEAT_LIMIT = 3;
     let timer = null;
+    let socket = null;
+    let reconnectTimer = null;
+    let socketReady = false;
     let busy = false;
     let autoRunning = false;
     let autoBeatsRemaining = 0;
+    let liveEvents = [];
     const start = document.getElementById('start');
     const pause = document.getElementById('pause');
     const step = document.getElementById('step');
@@ -296,99 +320,147 @@ export function prototypeTavernTownUiPage(): Response {
     function renderRows(id, rows, fn) { document.getElementById(id).innerHTML = rows.map(fn).join('') || '<div class="row"><span>none</span></div>'; }
     function render() {
       mode.textContent = state.mode;
+      start.disabled = !socketReady || autoRunning;
+      pause.disabled = !autoRunning;
+      step.disabled = busy || !socketReady;
+      reset.disabled = busy || !socketReady;
       renderRows('npcs', state.npcs, function (npc) { return '<div class="row"><strong>' + escapeHtml(npc.name) + ' / ' + escapeHtml(npc.role) + '</strong><span>wants: ' + escapeHtml(npc.want) + '</span><br><span>memory: ' + escapeHtml(npc.memory) + '</span><br><span>disposition: ' + escapeHtml(npc.disposition) + '</span></div>'; });
-      renderRows('party', state.party, function (pc) { return '<div class="row"><strong>' + escapeHtml(pc.player) + ' → ' + escapeHtml(pc.character) + '</strong><span>goal: ' + escapeHtml(pc.goal) + '</span><br><span>fear: ' + escapeHtml(pc.fear) + '</span><br><span>gear: ' + escapeHtml(pc.inventory.join(', ') || 'none') + '</span></div>'; });
+      renderRows('party', state.party, function (pc) {
+        const details = [pc.hp != null ? 'hp ' + pc.hp : '', pc.armorClass != null ? 'ac ' + pc.armorClass : '', pc.goldGp != null ? pc.goldGp + ' gp' : ''].filter(Boolean).join(' · ');
+        const abilities = pc.abilities ? Object.entries(pc.abilities).map(function (entry) { return entry[0].slice(0, 3).toUpperCase() + ' ' + entry[1]; }).join(', ') : '';
+        return '<div class="row"><strong>' + escapeHtml(pc.player) + ' → ' + escapeHtml(pc.character) + '</strong><br>' + (details ? '<span>' + escapeHtml(details) + '</span><br>' : '') + (abilities ? '<span>abilities: ' + escapeHtml(abilities) + '</span><br>' : '') + '<span>goal: ' + escapeHtml(pc.goal) + '</span><br><span>fear: ' + escapeHtml(pc.fear) + '</span><br><span>gear: ' + escapeHtml(pc.inventory.join(', ') || 'none') + '</span></div>';
+      });
       renderRows('affordances', state.affordances, function (text) { return '<div class="row"><strong>' + escapeHtml(text) + '</strong><span>available, not mandatory</span></div>'; });
       renderRows('receipts', state.ruleReceipts, function (text) { return '<div class="row"><span>' + escapeHtml(text) + '</span></div>'; });
-      document.getElementById('feed').innerHTML = (state.log || []).map(function (turn) {
-        return '<article class="turn"><div class="meta"><span class="lane ' + escapeHtml(turn.lane) + '">' + escapeHtml(turn.lane) + '</span><span>beat ' + escapeHtml(turn.beat) + '</span><span>' + escapeHtml(turn.actor) + '</span></div><h3>' + escapeHtml(turn.title) + '</h3><p>' + escapeHtml(turn.tableText) + '</p><div class="reason"><strong>process:</strong> ' + escapeHtml(turn.processReasoning) + '</div><div class="reason dev"><strong>dev/private:</strong> ' + escapeHtml(turn.devReasoning) + '</div></article>';
-      }).join('') || '<article class="turn"><div class="meta"><span class="lane referee">idle</span></div><h3>Waiting for Start World</h3><p>The tavern has not begun thinking yet.</p><div class="reason"><strong>process:</strong> Click Start World. The route will call the throwaway generative endpoint one beat at a time.</div></article>';
+      const liveHtml = liveEvents.map(function (event) {
+        const statusClass = event.status ? ' ' + event.status : '';
+        return '<article class="turn live' + statusClass + '"><div class="meta"><span class="lane ' + escapeHtml(event.lane || 'socket') + '">' + escapeHtml(event.lane || 'socket') + '</span><span>' + escapeHtml(event.status || 'live') + '</span><span>' + escapeHtml(event.at ? new Date(event.at).toLocaleTimeString() : 'now') + '</span></div><h3>' + escapeHtml(event.message || event.type || 'socket event') + '</h3>' + (event.detail ? '<p>' + escapeHtml(event.detail) + '</p>' : '') + '</article>';
+      }).join('');
+      const logHtml = (state.log || []).map(function (turn) {
+        const devBlock = devMode && turn.devReasoning ? '<div class="reason dev"><strong>dev/private:</strong> ' + escapeHtml(turn.devReasoning || '') + '</div>' : '';
+        return '<article class="turn"><div class="meta"><span class="lane ' + escapeHtml(turn.lane) + '">' + escapeHtml(turn.lane) + '</span><span>beat ' + escapeHtml(turn.beat) + '</span><span>' + escapeHtml(turn.actor) + '</span></div><h3>' + escapeHtml(turn.title) + '</h3><p>' + escapeHtml(turn.tableText) + '</p><div class="reason"><strong>process:</strong> ' + escapeHtml(turn.processReasoning) + '</div>' + devBlock + '</article>';
+      }).join('');
+      document.getElementById('feed').innerHTML = liveHtml + logHtml || '<article class="turn"><div class="meta"><span class="lane socket">socket</span></div><h3>Waiting for Referee Socket</h3><p>The browser is connecting directly to the Referee Agent. First step builds the world and rolls characters; later calls advance one beat at a time.</p><div class="reason"><strong>process:</strong> No polling loop. The Referee socket pushes state and process events.</div></article>';
       document.getElementById('state').textContent = JSON.stringify({ ...state, log: undefined }, null, 2);
     }
 
-    async function fetchServerState() {
-      const response = await fetch('/api/prototype/tavern-town-state');
-      const text = await response.text();
-      if (!response.ok) throw new Error(text || response.statusText);
-      const data = JSON.parse(text);
-      state = data.state;
-      statusText.textContent = 'Loaded server game at beat ' + state.beat + '.';
-      render();
+    function socketUrl() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return protocol + '//' + location.host + '/agents/referee/tavern-town-prototype?monitor=prototype';
     }
 
-    async function nextBeat(source) {
-      if (busy) return;
-      busy = true;
-      step.disabled = true;
-      reset.disabled = true;
-      state.mode = 'generating'; render();
-      statusText.textContent = 'Asking prototype PlayerAgents, then Referee, for one locked server-side tavern beat…';
-      try {
-        const response = await fetch('/api/prototype/tavern-town-beat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: source || 'manual' }) });
-        const text = await response.text();
-        if (!response.ok) throw new Error(text || response.statusText);
-        const data = JSON.parse(text);
-        state = data.state;
-        if (state.mode === 'generating') {
-          statusText.textContent = 'Server is already generating the next beat. This can take 60–120 seconds on Workers AI.';
-          render();
-          return;
-        }
-        state.mode = autoRunning ? 'running' : 'stepping';
-        statusText.textContent = 'Generated beat ' + state.beat + '. Newest turn is at the top.';
+    function connectSocket() {
+      clearTimeout(reconnectTimer);
+      statusText.textContent = 'Connecting to native Referee socket…';
+      socket = new WebSocket(socketUrl());
+      socket.addEventListener('open', function () {
+        socketReady = true;
+        statusText.textContent = 'Referee socket connected.';
+        sendSocketCommand('prototype.get_state');
         render();
-      } finally {
+      });
+      socket.addEventListener('message', function (event) { handleSocketMessage(event.data); });
+      socket.addEventListener('close', function () {
+        socketReady = false;
         busy = false;
-        step.disabled = false;
-        reset.disabled = false;
+        if (autoRunning) pauseRun('Socket closed. Autoplay paused before spending more AI money.');
+        statusText.textContent = 'Referee socket disconnected; reconnecting…';
+        render();
+        reconnectTimer = setTimeout(connectSocket, 1400);
+      });
+      socket.addEventListener('error', function () { statusText.textContent = 'Referee socket error; waiting for reconnect…'; render(); });
+    }
+
+    function handleSocketMessage(raw) {
+      let event;
+      try { event = JSON.parse(raw); } catch { return; }
+      if (event.type === 'prototype.connected') {
+        liveEvents = [{ lane: 'socket', message: 'Connected to Referee Agent socket.', status: 'done', at: event.at }].concat(liveEvents).slice(0, 18);
+        render();
+        return;
+      }
+      if (event.type === 'prototype.process') {
+        liveEvents = [event].concat(liveEvents).slice(0, 18);
+        statusText.textContent = event.message || 'Referee process update.';
+        render();
+        return;
+      }
+      if (event.type === 'prototype.state' && event.state) {
+        receiveState(event.state, event.reason || 'socket');
+        return;
+      }
+      if (event.type === 'prototype.error') {
+        stopWithError(new Error(event.message || 'Referee socket error'));
       }
     }
 
-    async function resetServerGame() {
+    function receiveState(next, reason) {
+      const wasBusy = busy;
+      state = next;
+      if (reason === 'already-generating' || (state.mode !== 'generating' && reason !== 'setup-committed')) busy = false;
+      if (reason === 'connected' || reason === 'requested') statusText.textContent = 'Loaded server game at beat ' + state.beat + ' over Referee socket.';
+      if (reason === 'generation-started') statusText.textContent = 'Referee socket says generation started.';
+      if (reason === 'setup-committed') statusText.textContent = 'Generated setup. Syncing brain artifacts before releasing the step lock.';
+      if (reason === 'setup-complete') statusText.textContent = 'Generated setup. Characters are rolled and the world is ready.';
+      if (reason === 'beat-complete') statusText.textContent = 'Generated beat ' + state.beat + '. Newest committed turn is below the live feed.';
+      if (reason === 'already-generating') statusText.textContent = 'Server is already generating. Controls are unlocked so you can wait or reset.';
+      if (reason === 'reset') statusText.textContent = 'Server game reset.';
+      render();
+      if (autoRunning && wasBusy && state.mode !== 'generating') schedule();
+    }
+
+    function sendSocketCommand(type, source) {
+      if (!socketReady || !socket || socket.readyState !== WebSocket.OPEN) {
+        statusText.textContent = 'Referee socket is not connected yet.';
+        render();
+        return false;
+      }
+      socket.send(JSON.stringify({ type: type, source: source || 'manual', allowContinuous: allowContinuous.checked }));
+      return true;
+    }
+
+    function nextBeat(source) {
+      if (busy) return;
+      busy = true;
+      state.mode = 'generating';
+      liveEvents = [{ lane: 'socket', message: source === 'auto' ? 'Autoplay requested the next beat.' : 'Manual step requested the next beat.', status: 'running', at: new Date().toISOString() }].concat(liveEvents).slice(0, 18);
+      statusText.textContent = state.beat === 0 && (!state.log || state.log.length === 0)
+        ? 'Socket command sent: build tavern/town and roll characters…'
+        : 'Socket command sent: ask PlayerAgents, then Referee, for one beat…';
+      if (!sendSocketCommand('prototype.step', source || 'manual')) busy = false;
+      render();
+    }
+
+    function resetServerGame() {
       if (busy) return;
       busy = true;
       clearTimeout(timer);
       timer = null;
       autoRunning = false;
-      start.disabled = false;
-      pause.disabled = true;
-      step.disabled = true;
-      reset.disabled = true;
+      liveEvents = [{ lane: 'socket', message: 'Reset requested over Referee socket.', status: 'running', at: new Date().toISOString() }].concat(liveEvents).slice(0, 18);
       statusText.textContent = 'Resetting one server-side prototype game…';
-      try {
-        const response = await fetch('/api/prototype/tavern-town-reset', { method: 'POST' });
-        const text = await response.text();
-        if (!response.ok) throw new Error(text || response.statusText);
-        state = JSON.parse(text).state;
-        statusText.textContent = 'Server game reset.';
-        render();
-      } finally {
-        busy = false;
-        step.disabled = false;
-        reset.disabled = false;
-      }
+      if (!sendSocketCommand('prototype.reset')) busy = false;
+      render();
     }
 
-    function schedule() { clearTimeout(timer); timer = setTimeout(function () { runAutoLoop().catch(stopWithError); }, Number(speed.value)); }
-    async function runAutoLoop() {
+    function schedule() { clearTimeout(timer); timer = setTimeout(runAutoLoop, Number(speed.value)); }
+    function runAutoLoop() {
       if (!autoRunning) return;
       if (!allowContinuous.checked && autoBeatsRemaining <= 0) {
         pauseRun('Auto-paused after ' + DEFAULT_AUTO_BEAT_LIMIT + ' AI beats. Step manually or enable continuous $$$ autoplay.');
         return;
       }
       if (!allowContinuous.checked) autoBeatsRemaining -= 1;
-      await nextBeat('auto');
-      if (autoRunning) schedule();
+      nextBeat('auto');
     }
-    function stopWithError(error) { clearTimeout(timer); timer = null; autoRunning = false; state.mode = 'failed'; start.disabled = false; pause.disabled = true; step.disabled = false; reset.disabled = false; busy = false; statusText.textContent = 'Error: ' + (error && error.message ? error.message : String(error)); render(); }
-    function pauseRun(message) { clearTimeout(timer); timer = null; autoRunning = false; state.mode = 'paused'; start.disabled = false; pause.disabled = true; statusText.textContent = message; render(); }
+    function stopWithError(error) { clearTimeout(timer); timer = null; autoRunning = false; state.mode = 'failed'; busy = false; statusText.textContent = 'Error: ' + (error && error.message ? error.message : String(error)); render(); }
+    function pauseRun(message) { clearTimeout(timer); timer = null; autoRunning = false; state.mode = 'paused'; statusText.textContent = message; render(); }
 
-    start.addEventListener('click', function () { autoRunning = true; autoBeatsRemaining = DEFAULT_AUTO_BEAT_LIMIT; state.mode = 'running'; start.disabled = true; pause.disabled = false; statusText.textContent = allowContinuous.checked ? 'Continuous $$$ autoplay enabled. Pause when done.' : 'Autoplay will stop after ' + DEFAULT_AUTO_BEAT_LIMIT + ' AI beats.'; render(); runAutoLoop().catch(stopWithError); });
+    start.addEventListener('click', function () { autoRunning = true; autoBeatsRemaining = DEFAULT_AUTO_BEAT_LIMIT; state.mode = 'running'; statusText.textContent = allowContinuous.checked ? 'Continuous $$$ autoplay enabled. Pause when done.' : 'Autoplay will stop after ' + DEFAULT_AUTO_BEAT_LIMIT + ' AI beats.'; render(); runAutoLoop(); });
     pause.addEventListener('click', function () { pauseRun('Paused. Server state preserved.'); });
-    step.addEventListener('click', function () { nextBeat('manual').catch(stopWithError); });
-    reset.addEventListener('click', function () { resetServerGame().catch(stopWithError); });
+    step.addEventListener('click', function () { nextBeat('manual'); });
+    reset.addEventListener('click', resetServerGame);
     speed.addEventListener('change', function () { if (timer) schedule(); });
-    setInterval(function () { if (!busy && document.visibilityState === 'visible') fetchServerState().catch(function () {}); }, 3500);
     window.addEventListener('keydown', function (event) {
       if (['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName || '')) return;
       const variants = ['console','split','map'];
@@ -396,7 +468,8 @@ export function prototypeTavernTownUiPage(): Response {
       if (event.key === 'ArrowRight') location.search = '?variant=' + variants[(idx + 1) % variants.length];
       if (event.key === 'ArrowLeft') location.search = '?variant=' + variants[(idx + variants.length - 1) % variants.length];
     });
-    fetchServerState().catch(stopWithError);
+    render();
+    connectSocket();
   </script>
 </body>
 </html>`, { headers: { "content-type": "text/html;charset=utf-8" } });
@@ -406,19 +479,12 @@ export function initialPrototypeState(): PrototypeTavernTownState {
   return {
     mode: "idle",
     beat: 0,
-    location: "The Golden Eel Tavern, Willowby",
-    premise: "A bounded open-world tavern/town prototype. Players are not on rails; NPCs and supplies pressure choices.",
-    npcs: [
-      { name: "Hesta Vane", role: "innkeeper", want: "debts paid before trouble arrives", memory: "remembers who dodged last winter rent", disposition: "watchful, practical" },
-      { name: "Rook Marlen", role: "drover", want: "his brother found or avenged", memory: "knows the Blackfen Road by smell", disposition: "frightened and loud" },
-      { name: "Sister Elian", role: "shrine keeper", want: "old bell left buried", memory: "tracks who lies near holy water", disposition: "kind until pressed" }
-    ],
-    party: [
-      { player: "Mara", character: "unrolled cautious nobody", goal: "survive long enough to matter", fear: "being mocked into fatal bravery", inventory: [] },
-      { player: "Tovin", character: "unrolled glory-hungry nobody", goal: "become a name in someone else's song", fear: "ordinary death", inventory: [] }
-    ],
-    affordances: ["ask Hesta what trouble pays", "ask Rook about his brother", "talk to Sister Elian", "buy food/light/rope", "read the retainer board", "drink and listen"],
-    visibleThreads: ["blue clay on Rook's boot", "Hesta's unpaid debts", "Sister Elian's buried bell"],
+    location: "Unmade tavern table",
+    premise: "The Referee has not built this tavern/town yet. First server step creates a fresh setup and rolls characters.",
+    npcs: [],
+    party: [],
+    affordances: ["generate a fresh tavern/town setup", "roll the player characters", "start the first table scene"],
+    visibleThreads: [],
     ruleReceipts: [],
     updatedAt: new Date().toISOString(),
     log: []

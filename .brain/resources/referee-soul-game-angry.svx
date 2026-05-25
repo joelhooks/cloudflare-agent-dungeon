@@ -1,0 +1,77 @@
+---
+title: Referee Soul: Game Angry Foundation
+kind: resource
+status: shaping
+created: 2026-05-25
+tags:
+  - referee
+  - game-angry
+  - agent-skills
+  - source-pointers
+  - gameplay
+---
+
+# Referee Soul: Game Angry Foundation
+
+## Question
+
+What philosophy should shape the RefereeAgent's baseline playbooks before we add more OSE-specific procedures?
+
+## Bottom line
+
+Joel wants **Game Angry** to be the soul of the Referee.
+
+For this project, that means the Referee prepares a **skeleton**, not a script. PlayerAgent decisions, dice, OSE procedure, and Referee adjudication add the **flesh** during play.
+
+The Referee Brain should be updated as players drive the emerging narrative:
+
+- what changed in the village graph
+- what NPCs learned, wanted, feared, promised, or hid
+- which rumors became known, distorted, or obsolete
+- which latent encounter nodes became more likely, visible, triggered, or resolved
+- which clocks moved and why
+- which rule/procedure receipts were used
+- what unresolved questions the Referee should carry forward
+
+## Source pointers
+
+Do not paste raw paid/source text into public outputs. Use these JoelClaw doc/chunk IDs as private/source-grounded pointers for future research and playbook drafting:
+
+- `game-angry-pdf-47a26de25095:s208` — Game Angry PDF, "Plotting a Good Foundation". Used here for Joel's skeleton/flesh interpretation: structure gives shape, but player characters are not controlled by the Referee.
+- `game-angry-pdf-47a26de25095:s187:n0` — Game Angry PDF, "The GM’s PCs". Pointer for running NPCs while still running the game.
+- `game-angry-pdf-47a26de25095:s188` — Game Angry PDF, "Props with Personality". Pointer for NPCs as functional game objects with personality, not disposable prompt color.
+- `game-angry-pdf-47a26de25095:s192` — Game Angry PDF, section 12. Pointer for the Referee needing to adjudicate actions and remember the plot/situation.
+
+Source lookup receipt:
+
+```bash
+curl -sS "https://joelclaw.com/api/docs/search?q=Game%20Angry%20plotting%20foundation&perPage=4&semantic=false"
+curl -sS "https://joelclaw.com/api/docs/search?q=Game%20Angry%20props%20with%20personality&perPage=4&semantic=false"
+curl -sS "https://joelclaw.com/api/docs/search?q=Game%20Angry%20adjudicate%20actions&perPage=4&semantic=false"
+```
+
+## Playbook implication
+
+The first RefereeAgent skills should teach general running-the-game behavior before specialized procedures:
+
+- frame the current situation clearly
+- surface player-safe affordances without forcing a path
+- adjudicate declared actions against the situation graph and rules receipts
+- play NPCs as pressure-bearing world objects with memory
+- update the Referee Brain after each meaningful beat
+- keep secrets hidden until play reveals them
+
+Joel wants two foundation skills/playbooks baked in early:
+
+1. **Game Angry Referee Soul** — philosophical and operational grounding for running the game: skeleton first, player flesh, situation over script, NPCs as pressure-bearing game objects, adjudication and memory.
+2. **OSE Reference / Procedure** — source-grounded lookup/playbook layer for the core OSE procedures used by village play. This should carry doc/chunk IDs and expose player-safe summaries only when needed.
+
+A future tactics/combat source layer should also reference **The Monsters Know What They're Doing** for monster behavior and combat scenario thinking, and **Live to Tell the Tale** for player-facing survival/tactics. Keep these separate from OSE procedure authority. See [[resources/combat-tactics-source-layer]].
+
+The skill card design should follow the tight operational shape captured in [[resources/agent-skill-design-patterns]]: compact trigger, numbered workflow, edge notes, and output/safety policy. No giant prompt sludge.
+
+OSE procedure cards then plug into that foundation: reactions, morale, surprise, encounter distance, light, supplies, attacks, damage, retainers, and so on.
+
+## Boundary
+
+This is not a license to invent Game Angry claims from memory. Future agents should query JoelClaw and cite doc/chunk IDs before turning this philosophy into detailed public docs or concrete Referee playbooks.

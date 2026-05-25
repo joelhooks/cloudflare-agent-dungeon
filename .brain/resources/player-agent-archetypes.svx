@@ -1,0 +1,52 @@
+---
+title: PlayerAgent Archetypes
+kind: resource
+status: shaping
+created: 2026-05-25
+source: .brain/data/player-agent-archetypes.jsonl
+tags:
+  - player-agents
+  - think
+  - soul
+  - archetypes
+  - fog-of-war
+---
+
+# PlayerAgent Archetypes
+
+Curated player archetypes for the four stable PlayerAgent minds.
+
+These are **player styles**, not in-world characters. The PlayerAgent soul should be restrained table behavior. Campaign setup generates the Character: name, class, sheet, public hook, private goal/fear.
+
+This avoids the cringe failure mode where an agent over-adheres to generated personality quirks and turns a useful table role into a costume.
+
+## Approved starting set
+
+- `player-a` — **Caller / Coordinator**: keeps the party moving, summarizes visible options, asks clarifying questions, and turns scattered impulses into a table action.
+- `player-b` — **Mapper / Cautious Scout**: tracks space, exits, risks, light, supplies, and observed facts.
+- `player-c` — **Face / Social Prober**: talks to NPCs, tests rumors, notices motives, and creates non-combat openings.
+- `player-d` — **Quartermaster / Risk Accountant**: watches gear, money, retainers, food, light, retreat paths, and survivability.
+
+## Think consumption
+
+Each archetype should become a read-only `soul` context block for its stable PlayerAgent id:
+
+```ts
+session.withContext("soul", {
+  provider: { get: async () => formatPlayerSoul(playerId) }
+})
+```
+
+This is **not** a `load_context` skill card. It is baseline identity/posture. Runtime skills remain on-demand through `SkillProvider`.
+
+## Contract
+
+- Data source: `.brain/data/player-agent-archetypes.jsonl`
+- Schema: `PlayerAgentArchetype.v1` JSONL, one stable PlayerAgent archetype per line
+- Privacy: safe design note; runtime player souls must still receive only player-safe projections
+- Side effects: none
+- Update rule: update this JSONL when player count, archetype, anti-cringe guardrail, or Think consumption shape changes
+
+## Boundary
+
+Do not let archetypes dictate character class or personality. A Quartermaster can play a chaotic thief. A Face can play a dwarf. The archetype is a table function, not a character sheet.
