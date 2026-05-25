@@ -4,7 +4,6 @@ import { createWorkersAI } from "workers-ai-provider";
 import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
 import {
-  advancePrototypeTavernTownState,
   initialPrototypeState,
   prototypeTavernTownUiPage,
   type PrototypeTavernTownState
@@ -80,6 +79,66 @@ const RefereeOutcomeSchema = z.object({
   privateReasoning: z.string().min(1)
 });
 
+const TavernIntentSchema = z.object({
+  title: z.string().min(1),
+  tableSpeech: z.string().min(1).max(360),
+  declaredAction: z.string().min(1).max(280),
+  intentKind: z.enum(["talk", "ask", "buy", "hire", "observe", "reveal_backstory", "leave", "wait", "other"]),
+  target: z.string().max(120).optional(),
+  processReasoning: z.string().min(1).max(420),
+  innerMonologue: z.string().min(1).max(420),
+  privateGoal: z.string().min(1).max(220),
+  privateFear: z.string().min(1).max(220)
+});
+
+type TavernIntentOutput = z.infer<typeof TavernIntentSchema>;
+
+type TavernIntent = TavernIntentOutput & {
+  playerId: PlayerId;
+  playerName: string;
+  character: string;
+  actor: string;
+};
+
+const PrototypeNpcSchema = z.object({
+  name: z.string(),
+  role: z.string(),
+  want: z.string(),
+  memory: z.string(),
+  disposition: z.string()
+});
+
+const PrototypePartyMemberSchema = z.object({
+  player: z.string(),
+  character: z.string(),
+  goal: z.string(),
+  fear: z.string(),
+  inventory: z.array(z.string())
+});
+
+const TavernBeatSchema = z.object({
+  actor: z.string().min(1).max(120),
+  title: z.string().min(1).max(160),
+  tableText: z.string().min(1).max(1000),
+  processReasoning: z.string().min(1).max(420),
+  devReasoning: z.string().min(1).max(420),
+  nextAffordances: z.array(z.string().min(1).max(180)).min(3).max(7),
+  visibleThreads: z.array(z.string().min(1).max(180)).min(1).max(7),
+  npcUpdates: z.array(PrototypeNpcSchema).optional(),
+  partyUpdates: z.array(PrototypePartyMemberSchema).optional(),
+  rulesUsed: z.array(z.string()).optional()
+});
+
+type TavernBeat = z.infer<typeof TavernBeatSchema>;
+
+type PrototypeRuleReceipt = {
+  id: string;
+  docId: string;
+  chunkIndex?: number;
+  headingPath?: string[];
+  snippet?: string;
+};
+
 /**
  * Long-lived referee mind. It reasons over validated player choices and dice
  * receipts, then generates table-safe outcomes while keeping private reasoning
@@ -133,6 +192,36 @@ export class RefereeAgent extends Think<Env> {
     }
     throw new Error(`Referee outcome failed public-safety validation: ${validationError}`);
   }
+
+  async generateTavernBeat(context: unknown): Promise<TavernBeat> {
+    let validationError = "";
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const result = await generateObject({
+          model: this.getModel(),
+          schema: TavernBeatSchema,
+          maxOutputTokens: 1300,
+          prompt: [
+            "Generate exactly one table-facing tavern/town beat for Cloudflare Agent Dungeon.",
+            "You are the Referee mind. PlayerAgents already chose their intents. Consider those choices directly; do not replace them with your own railroad.",
+            "The town/tavern is the whole open world for now. NPCs want things, remember things, and pressure choices without forcing a quest path.",
+            "Return structured JSON only. No markdown. No URLs. No external references. No hidden-world leaks.",
+            "tableText: public scene result responding to the supplied playerIntents. Keep under 1000 characters.",
+            "processReasoning: concise public-ish process note explaining how the Referee considered the player intents. Keep under 420 characters.",
+            "devReasoning: private/dev Referee reasoning only. Keep under 420 characters.",
+            "nextAffordances: 3-7 concrete available actions after this beat. visibleThreads: 1-7 public threads.",
+            "Rules receipts are IDs only; do not quote rulebook text.",
+            validationError ? `Previous attempt rejected: ${validationError}` : "",
+            `Context: ${JSON.stringify(context)}`
+          ].filter(Boolean).join("\n")
+        });
+        return repairTavernBeat(result.object);
+      } catch (error) {
+        validationError = String(error);
+      }
+    }
+    throw new Error(`Referee tavern beat failed validation: ${validationError}`);
+  }
 }
 
 /**
@@ -148,6 +237,18 @@ function assertRefereeOutcomeSafe(outcome: RefereeOutcome): void {
   if (outcome.pressure.length > 500) throw new Error("pressure is too long");
   if (outcome.nextQuestion.length > 500) throw new Error("next question is too long");
   if (!outcome.nextQuestion.trim().endsWith("?")) throw new Error("next question must end with a question mark");
+}
+
+function repairTavernBeat(beat: TavernBeat): TavernBeat {
+  return TavernBeatSchema.parse({
+    ...beat,
+    nextAffordances: takeUniqueStrings(beat.nextAffordances, 7),
+    visibleThreads: takeUniqueStrings(beat.visibleThreads, 7)
+  });
+}
+
+function takeUniqueStrings(values: string[], max: number): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, max);
 }
 
 export class PlayerAgent extends Think<Env> {
@@ -221,6 +322,43 @@ export class PlayerAgent extends Think<Env> {
       console.warn("[PlayerAgent] adventure hook choice failed; no canned fallback", error);
       throw new Error(`PlayerAgent adventure hook choice failed for ${(context as { playerId: PlayerId }).playerId}: ${String(error)}`);
     }
+  }
+
+  async chooseTavernIntent(context: unknown): Promise<TavernIntent> {
+    const playerId = (context as { playerId: PlayerId }).playerId;
+    const member = (context as { member?: { player?: string; character?: string } }).member;
+    let validationError = "";
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const result = await generateObject({
+          model: this.getModel(),
+          schema: TavernIntentSchema,
+          maxOutputTokens: 700,
+          prompt: [
+            "Choose one tavern/town action as a player in an Old School Essentials campaign.",
+            "You are a PlayerAgent, not the Referee. You only know the supplied visible state. Do not invent hidden truths.",
+            "Narrate your own choice. tableSpeech is what the character says or visibly does at the table. declaredAction is the gameplay intent.",
+            "You may talk, ask, buy, hire, observe, reveal backstory, leave, wait, or do something else grounded in the visible affordances.",
+            "Return structured JSON only. No markdown. Keep strings short and sharp.",
+            validationError ? `Previous attempt rejected: ${validationError}` : "",
+            `Context: ${JSON.stringify(context)}`,
+            `Private personality/secrets summary available to you only: ${this.privateContextSummary()}`
+          ].filter(Boolean).join("\n")
+        });
+        return {
+          playerId,
+          playerName: member?.player ?? playerId,
+          character: member?.character ?? playerId,
+          actor: member?.player ?? playerId,
+          ...result.object
+        };
+      } catch (error) {
+        validationError = String(error);
+      }
+    }
+
+    throw new Error(`PlayerAgent tavern intent failed for ${playerId}: ${validationError}`);
   }
 
   private privateContextSummary(): string {
@@ -503,7 +641,7 @@ export class Referee extends Agent<Env, RefereeState> {
     this.setState({ ...state, prototypeTavernTown: generating });
 
     try {
-      const next = await advancePrototypeTavernTownState(this.env, generating);
+      const next = await this.runTavernBeat(generating);
       this.setState({ ...this.requireRefereeState(), prototypeTavernTown: next });
       return next;
     } catch (error) {
@@ -516,6 +654,105 @@ export class Referee extends Agent<Env, RefereeState> {
       this.setState({ ...this.requireRefereeState(), prototypeTavernTown: failed });
       throw error;
     }
+  }
+
+  async runTavernBeat(current: PrototypeTavernTownState): Promise<PrototypeTavernTownState> {
+    const playerA = await this.subAgent(PlayerAgent, "player-a");
+    const playerB = await this.subAgent(PlayerAgent, "player-b");
+    const referee = await this.subAgent(RefereeAgent, "referee");
+    const playerEntries = [
+      ["player-a", playerA],
+      ["player-b", playerB]
+    ] as const;
+
+    const playerIntents: TavernIntent[] = [];
+    for (const [playerId, player] of playerEntries) {
+      playerIntents.push(await player.chooseTavernIntent(this.tavernIntentContext(current, playerId)));
+    }
+
+    const receipts = await this.consultPrototypeRules(current);
+    const beat = await referee.generateTavernBeat({
+      state: { ...current, log: current.log.slice(0, 6) },
+      playerIntents,
+      ruleReceipts: receipts.map((receipt) => ({ id: receipt.id, docId: receipt.docId, headingPath: receipt.headingPath, snippet: receipt.snippet?.slice(0, 220) }))
+    });
+
+    return this.commitTavernBeat(current, beat, playerIntents, receipts);
+  }
+
+  private tavernIntentContext(state: PrototypeTavernTownState, playerId: PlayerId) {
+    const memberIndex = playerId === "player-a" ? 0 : 1;
+    const member = state.party[memberIndex] ?? state.party[0];
+    return {
+      playerId,
+      member,
+      location: state.location,
+      beat: state.beat,
+      premise: state.premise,
+      visibleThreads: state.visibleThreads,
+      affordances: state.affordances,
+      npcs: state.npcs.map((npc) => ({ name: npc.name, role: npc.role, disposition: npc.disposition, memory: npc.memory })),
+      recentLog: state.log.slice(0, 6)
+    };
+  }
+
+  private async consultPrototypeRules(state: PrototypeTavernTownState): Promise<PrototypeRuleReceipt[]> {
+    const query = state.beat < 2
+      ? "Old-School Essentials character creation 3d6 ability scores starting gold equipment"
+      : "Old-School Essentials equipment cost rations torches rope adventuring gear retainers reaction";
+    const response = await fetch(`https://joelclaw.com/api/docs/search?q=${encodeURIComponent(query)}&perPage=4&semantic=false`, { headers: { accept: "application/json" } });
+    if (!response.ok) return [];
+    const json = await response.json() as { result?: { hits?: Array<{ id?: string; docId?: string; chunkIndex?: number; headingPath?: string[]; snippet?: string }> } };
+    return (json.result?.hits ?? [])
+      .filter((hit): hit is Required<Pick<PrototypeRuleReceipt, "id" | "docId">> & PrototypeRuleReceipt => Boolean(hit.id && hit.docId))
+      .slice(0, 4)
+      .map((hit) => ({
+        id: hit.id,
+        docId: hit.docId,
+        ...(hit.chunkIndex === undefined ? {} : { chunkIndex: hit.chunkIndex }),
+        ...(hit.headingPath === undefined ? {} : { headingPath: hit.headingPath }),
+        snippet: stripMarks(hit.snippet ?? "")
+      }));
+  }
+
+  private commitTavernBeat(state: PrototypeTavernTownState, beat: TavernBeat, playerIntents: TavernIntent[], receipts: PrototypeRuleReceipt[]): PrototypeTavernTownState {
+    const beatNumber = state.beat + 1;
+    const receiptIds = [...new Set([...(state.ruleReceipts ?? []), ...receipts.map((receipt) => receipt.id), ...(beat.rulesUsed ?? [])])].slice(-12);
+    const { error: _error, ...stateWithoutError } = state;
+    void _error;
+    return {
+      ...stateWithoutError,
+      mode: "running",
+      beat: beatNumber,
+      npcs: beat.npcUpdates?.length ? beat.npcUpdates : state.npcs,
+      party: beat.partyUpdates?.length ? beat.partyUpdates : state.party,
+      affordances: beat.nextAffordances,
+      visibleThreads: beat.visibleThreads,
+      ruleReceipts: receiptIds,
+      updatedAt: new Date().toISOString(),
+      log: [
+        {
+          beat: beatNumber,
+          lane: "referee",
+          actor: beat.actor,
+          title: beat.title,
+          tableText: beat.tableText,
+          processReasoning: `Referee considered PlayerAgent intents: ${playerIntents.map((intent) => `${intent.actor}: ${intent.declaredAction}`).join(" | ")}. ${beat.processReasoning}`,
+          devReasoning: beat.devReasoning,
+          rulesUsed: beat.rulesUsed ?? receipts.map((receipt) => receipt.id)
+        },
+        ...playerIntents.map((intent) => ({
+          beat: beatNumber,
+          lane: "player",
+          actor: intent.actor,
+          title: intent.title,
+          tableText: intent.tableSpeech,
+          processReasoning: `${intent.declaredAction} [${intent.intentKind}]${intent.target ? ` targeting ${intent.target}` : ""}. ${intent.processReasoning}`,
+          devReasoning: `inner=${intent.innerMonologue} | goal=${intent.privateGoal} | fear=${intent.privateFear}`
+        })),
+        ...state.log
+      ].slice(0, 48)
+    };
   }
 
   private commitCampaign(campaign: Campaign): Campaign {
@@ -539,6 +776,10 @@ export class Referee extends Agent<Env, RefereeState> {
     }
     return this.state;
   }
+}
+
+function stripMarks(value: string): string {
+  return value.replace(/<\/?mark>/g, "");
 }
 
 function json(data: unknown, init?: ResponseInit): Response {
