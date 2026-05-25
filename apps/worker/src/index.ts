@@ -93,11 +93,18 @@ const TavernIntentSchema = z.object({
 
 type TavernIntentOutput = z.infer<typeof TavernIntentSchema>;
 
-type TavernIntent = TavernIntentOutput & {
+type TavernIntent = Pick<TavernIntentOutput, "title" | "tableSpeech" | "declaredAction" | "intentKind" | "target" | "processReasoning"> & {
   playerId: PlayerId;
   playerName: string;
   character: string;
   actor: string;
+};
+
+type PendingPrivateTavernIntent = Pick<TavernIntentOutput, "innerMonologue" | "privateGoal" | "privateFear"> & {
+  beat: number;
+  declaredAction: string;
+  intentKind: TavernIntentOutput["intentKind"];
+  at: string;
 };
 
 const PrototypeNpcSchema = z.object({
@@ -153,6 +160,7 @@ type PlayerAgentState = {
   privateTheories: string[];
   relationships: string[];
   recentMemories: BrainMemoryEntry[];
+  pendingTavernIntent?: PendingPrivateTavernIntent;
   updatedAt?: string;
 };
 
@@ -446,12 +454,34 @@ export class PlayerAgent extends Think<Env, PlayerAgentState> {
             `Private brain summary available to you only: ${this.privateContextSummary()}`
           ].filter(Boolean).join("\n")
         });
+        const fullIntent = result.object;
+        const previous = this.state ?? this.initialState;
+        const at = new Date().toISOString();
+        this.setState({
+          ...previous,
+          playerId,
+          pendingTavernIntent: {
+            beat: (context as { beat?: number }).beat ?? 0,
+            declaredAction: fullIntent.declaredAction,
+            intentKind: fullIntent.intentKind,
+            innerMonologue: fullIntent.innerMonologue,
+            privateGoal: fullIntent.privateGoal,
+            privateFear: fullIntent.privateFear,
+            at
+          },
+          updatedAt: at
+        });
         return {
           playerId,
           playerName: member?.player ?? playerId,
           character: member?.character ?? playerId,
           actor: member?.player ?? playerId,
-          ...result.object
+          title: fullIntent.title,
+          tableSpeech: fullIntent.tableSpeech,
+          declaredAction: fullIntent.declaredAction,
+          intentKind: fullIntent.intentKind,
+          ...(fullIntent.target ? { target: fullIntent.target } : {}),
+          processReasoning: fullIntent.processReasoning
         };
       } catch (error) {
         validationError = String(error);
@@ -467,17 +497,23 @@ export class PlayerAgent extends Think<Env, PlayerAgentState> {
 
   rememberTavernBeat(input: PlayerTavernMemoryInput): PlayerAgentState {
     const previous = this.state ?? this.initialState;
+    const pending = previous.pendingTavernIntent;
     const at = new Date().toISOString();
+    const privateGoal = pending?.privateGoal ?? previous.currentGoal ?? "unset";
+    const privateFear = pending?.privateFear ?? previous.currentFear ?? "unset";
     const memorySummary = compactText(
-      `Beat ${input.committed.beat}: I chose ${input.intent.declaredAction} (${input.intent.intentKind}). I said/did: ${input.intent.tableSpeech}. I wanted: ${input.intent.privateGoal}. I feared: ${input.intent.privateFear}. Referee outcome: ${input.beat.tableText}`,
+      `Beat ${input.committed.beat}: I chose ${input.intent.declaredAction} (${input.intent.intentKind}). I said/did: ${input.intent.tableSpeech}. I wanted: ${privateGoal}. I feared: ${privateFear}. Referee outcome: ${input.beat.tableText}`,
       800
     );
     const nextState: PlayerAgentState = {
       playerId: input.intent.playerId,
       brainSummary: compactText(memorySummary, 800),
-      currentGoal: input.intent.privateGoal,
-      currentFear: input.intent.privateFear,
-      privateTheories: takeUniqueStrings([input.intent.innerMonologue, ...previous.privateTheories], 8),
+      currentGoal: privateGoal,
+      currentFear: privateFear,
+      privateTheories: takeUniqueStrings([
+        ...(pending?.innerMonologue ? [pending.innerMonologue] : []),
+        ...previous.privateTheories
+      ], 8),
       relationships: takeUniqueStrings([
         ...(input.beat.npcUpdates ?? []).map((npc) => `${npc.name}: ${npc.disposition}`),
         ...previous.relationships
@@ -894,7 +930,7 @@ export class Referee extends Agent<Env, RefereeState> {
           title: intent.title,
           tableText: intent.tableSpeech,
           processReasoning: `${intent.declaredAction} [${intent.intentKind}]${intent.target ? ` targeting ${intent.target}` : ""}. ${intent.processReasoning}`,
-          devReasoning: `inner=${intent.innerMonologue} | goal=${intent.privateGoal} | fear=${intent.privateFear}`
+          devReasoning: "Player-private inner monologue, goal, and fear stayed inside that PlayerAgent's private memory."
         })),
         ...state.log
       ].slice(0, 48)

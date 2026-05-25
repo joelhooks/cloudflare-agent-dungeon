@@ -1043,3 +1043,66 @@ The visible turn sequence stayed coherent across beats: Mara followed Hesta to t
 - Per-agent Artifacts repos.
 - OSE playbook loading from source-pointer files.
 - Real Think `Session` context blocks / self-updating memory. Current memory is explicit Agent state summaries, which is the right first small slice.
+
+## 2026-05-24 — Split tavern private intent from Referee-visible intent
+
+### Why
+
+The first memory loop still had a bad fog-of-war smell: `PlayerAgent.chooseTavernIntent(...)` returned `innerMonologue`, `privateGoal`, and `privateFear` through the parent `Referee` path. Even if the public monitor did not show it, the Referee runtime had the player-private payload. That makes player secrecy a prompt convention, not a structural boundary.
+
+### What changed
+
+Updated `apps/worker/src/index.ts`:
+
+- `TavernIntentSchema` still lets the PlayerAgent model generate private inner monologue / goal / fear.
+- `PlayerAgent.chooseTavernIntent(...)` now stores those private fields inside that PlayerAgent's own state as `pendingTavernIntent`.
+- The method returns only a Referee-visible `TavernIntent`:
+  - player id/name/character/actor
+  - title
+  - table speech
+  - declared action
+  - intent kind / target
+  - public-ish process reasoning
+- `PlayerAgent.rememberTavernBeat(...)` reads the private pending intent from its own state after the Referee outcome, then clears it by writing the next state without `pendingTavernIntent`.
+- `RefereeAgent.generateTavernBeat(...)`, `Referee.commitTavernBeat(...)`, and the prototype state now receive only the public intent shape.
+- Player log `devReasoning` now says the private fields stayed inside PlayerAgent memory instead of printing them.
+
+### Validation
+
+Commands:
+
+```bash
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+```
+
+Results:
+
+- `tsgo` Turborepo check passed.
+- Full tests passed.
+- Wrangler dry-run passed.
+
+Local runtime receipt:
+
+```txt
+https://agent-dungeon-memory.localhost:1355/prototype/tavern-town?variant=console
+POST /api/prototype/tavern-town-reset -> beat 0 idle
+POST /api/prototype/tavern-town-beat -> beat 1 running, lanes referee/player/player
+```
+
+Leak string check against returned prototype state:
+
+```txt
+privateGoal=false
+privateFear=false
+innerMonologue=false
+inner=false
+goal=false
+fear=false
+player dev: Player-private inner monologue, goal, and fear stayed inside that PlayerAgent's private memory.
+```
+
+### Remaining caveat
+
+This split is currently implemented for tavern intents. Character creation and adventure hook choice still include private flavor fields in parent-visible values. That is less urgent for the tavern prototype, but should be cleaned up before treating the whole campaign loop as fog-of-war correct.
