@@ -170,6 +170,7 @@ export function prototypeTavernTownUiPage(): Response {
     .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, .7fr); gap: 14px; margin: 14px 0; align-items: stretch; }
     .panel { border: 1px solid var(--line); background: rgba(14,17,15,.91); padding: 14px; min-width: 0; }
     .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .cost-guard { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: var(--amber); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
     .status { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--muted); }
     .mode { color: var(--bg); background: var(--amber); padding: .12rem .45rem; font-weight: 800; }
     .app { display: grid; gap: 14px; }
@@ -233,7 +234,8 @@ export function prototypeTavernTownUiPage(): Response {
           <button id="reset">Reset Server Game</button>
           <select id="speed"><option value="7000">slow</option><option value="4200" selected>table pace</option><option value="1800">fast skim</option></select>
         </div>
-        <p class="status"><span class="mode" id="mode">idle</span><span id="statusText">Server state loading. This calls one locked throwaway prototype AI endpoint.</span></p>
+        <label class="cost-guard"><input id="allowContinuous" type="checkbox"> allow continuous $$$ autoplay</label>
+        <p class="status"><span class="mode" id="mode">idle</span><span id="statusText">Server state loading. Start World is capped at 3 AI beats unless continuous autoplay is explicitly enabled.</span></p>
       </div>
     </section>
 
@@ -276,13 +278,17 @@ export function prototypeTavernTownUiPage(): Response {
     document.querySelectorAll('[data-variant]').forEach(function (link) { link.classList.toggle('active', link.dataset.variant === variant); });
 
     let state = ${JSON.stringify(initialPrototypeState())};
+    const DEFAULT_AUTO_BEAT_LIMIT = 3;
     let timer = null;
     let busy = false;
+    let autoRunning = false;
+    let autoBeatsRemaining = 0;
     const start = document.getElementById('start');
     const pause = document.getElementById('pause');
     const step = document.getElementById('step');
     const reset = document.getElementById('reset');
     const speed = document.getElementById('speed');
+    const allowContinuous = document.getElementById('allowContinuous');
     const mode = document.getElementById('mode');
     const statusText = document.getElementById('statusText');
 
@@ -310,7 +316,7 @@ export function prototypeTavernTownUiPage(): Response {
       render();
     }
 
-    async function nextBeat() {
+    async function nextBeat(source) {
       if (busy) return;
       busy = true;
       step.disabled = true;
@@ -318,12 +324,12 @@ export function prototypeTavernTownUiPage(): Response {
       state.mode = 'generating'; render();
       statusText.textContent = 'Asking prototype PlayerAgents, then Referee, for one locked server-side tavern beat…';
       try {
-        const response = await fetch('/api/prototype/tavern-town-beat', { method: 'POST' });
+        const response = await fetch('/api/prototype/tavern-town-beat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: source || 'manual' }) });
         const text = await response.text();
         if (!response.ok) throw new Error(text || response.statusText);
         const data = JSON.parse(text);
         state = data.state;
-        state.mode = timer ? 'running' : 'stepping';
+        state.mode = autoRunning ? 'running' : 'stepping';
         statusText.textContent = 'Generated beat ' + state.beat + '. Newest turn is at the top.';
         render();
       } finally {
@@ -336,8 +342,9 @@ export function prototypeTavernTownUiPage(): Response {
     async function resetServerGame() {
       if (busy) return;
       busy = true;
-      clearInterval(timer);
+      clearTimeout(timer);
       timer = null;
+      autoRunning = false;
       start.disabled = false;
       pause.disabled = true;
       step.disabled = true;
@@ -357,16 +364,26 @@ export function prototypeTavernTownUiPage(): Response {
       }
     }
 
-    function schedule() { clearInterval(timer); timer = setInterval(function () { nextBeat().catch(stopWithError); }, Number(speed.value)); }
-    function stopWithError(error) { clearInterval(timer); timer = null; state.mode = 'failed'; start.disabled = false; pause.disabled = true; step.disabled = false; reset.disabled = false; busy = false; statusText.textContent = 'Error: ' + (error && error.message ? error.message : String(error)); render(); }
-    function pauseRun(message) { clearInterval(timer); timer = null; state.mode = 'paused'; start.disabled = false; pause.disabled = true; statusText.textContent = message; render(); }
+    function schedule() { clearTimeout(timer); timer = setTimeout(function () { runAutoLoop().catch(stopWithError); }, Number(speed.value)); }
+    async function runAutoLoop() {
+      if (!autoRunning) return;
+      if (!allowContinuous.checked && autoBeatsRemaining <= 0) {
+        pauseRun('Auto-paused after ' + DEFAULT_AUTO_BEAT_LIMIT + ' AI beats. Step manually or enable continuous $$$ autoplay.');
+        return;
+      }
+      if (!allowContinuous.checked) autoBeatsRemaining -= 1;
+      await nextBeat('auto');
+      if (autoRunning) schedule();
+    }
+    function stopWithError(error) { clearTimeout(timer); timer = null; autoRunning = false; state.mode = 'failed'; start.disabled = false; pause.disabled = true; step.disabled = false; reset.disabled = false; busy = false; statusText.textContent = 'Error: ' + (error && error.message ? error.message : String(error)); render(); }
+    function pauseRun(message) { clearTimeout(timer); timer = null; autoRunning = false; state.mode = 'paused'; start.disabled = false; pause.disabled = true; statusText.textContent = message; render(); }
 
-    start.addEventListener('click', function () { state.mode = 'running'; start.disabled = true; pause.disabled = false; render(); nextBeat().then(schedule).catch(stopWithError); });
+    start.addEventListener('click', function () { autoRunning = true; autoBeatsRemaining = DEFAULT_AUTO_BEAT_LIMIT; state.mode = 'running'; start.disabled = true; pause.disabled = false; statusText.textContent = allowContinuous.checked ? 'Continuous $$$ autoplay enabled. Pause when done.' : 'Autoplay will stop after ' + DEFAULT_AUTO_BEAT_LIMIT + ' AI beats.'; render(); runAutoLoop().catch(stopWithError); });
     pause.addEventListener('click', function () { pauseRun('Paused. Server state preserved.'); });
-    step.addEventListener('click', function () { nextBeat().catch(stopWithError); });
+    step.addEventListener('click', function () { nextBeat('manual').catch(stopWithError); });
     reset.addEventListener('click', function () { resetServerGame().catch(stopWithError); });
     speed.addEventListener('change', function () { if (timer) schedule(); });
-    setInterval(function () { if (!busy) fetchServerState().catch(function () {}); }, 3500);
+    setInterval(function () { if (!busy && document.visibilityState === 'visible') fetchServerState().catch(function () {}); }, 3500);
     window.addEventListener('keydown', function (event) {
       if (['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName || '')) return;
       const variants = ['console','split','map'];

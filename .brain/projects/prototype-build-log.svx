@@ -1106,3 +1106,46 @@ player dev: Player-private inner monologue, goal, and fear stayed inside that Pl
 ### Remaining caveat
 
 This split is currently implemented for tavern intents. Character creation and adventure hook choice still include private flavor fields in parent-visible values. That is less urgent for the tavern prototype, but should be cleaned up before treating the whole campaign loop as fog-of-war correct.
+
+## 2026-05-24 — Prototype autoplay cost guard
+
+### Why
+
+Joel correctly flagged the money leak risk: the tavern prototype's `Start World` button could keep calling the AI beat endpoint from an open browser interval until someone noticed. The server itself did not schedule autonomous beats, but the browser-side loop was still too easy to leave running.
+
+### What changed
+
+Updated `apps/worker/src/prototype-tavern-town-ui.ts`:
+
+- `Start World` now auto-pauses after 3 AI beats by default.
+- Added explicit checkbox: `allow continuous $$$ autoplay`.
+- Continuous autoplay only happens when that box is checked.
+- Replaced interval-style loop with a completion-driven timeout loop so a new beat is scheduled only after the previous beat finishes.
+- Manual `Step One Beat` still performs exactly one AI beat.
+- Polling the server state now only runs while the page is visible.
+
+### Server cycle / link
+
+Restarted the portless dev server with Tailscale sharing:
+
+```txt
+https://agent-dungeon-memory.localhost:1355
+https://dark-wizard.tail7af24.ts.net:8444/prototype/tavern-town?variant=console
+```
+
+Browser check showed the new cost guard checkbox visible and unchecked by default.
+
+Slack update was posted in the existing thread with the new tailnet link and cost guard note.
+
+### Validation
+
+Commands:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/worker check
+pnpm check
+pnpm test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts --dry-run --outdir /tmp/cloudflare-agent-dungeon-worker-dry-run
+```
+
+Results: all passed.
