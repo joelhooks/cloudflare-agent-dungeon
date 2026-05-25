@@ -15,6 +15,7 @@
     "@cloudflare/think": "^0.7.2",
     "agents": "^0.13.2",
     "ai": "^6.0.0-beta.118",
+    "isomorphic-git": "^1.38.1",
     "workers-ai-provider": "^3.1.14",
     "zod": "^4.1.13"
   },

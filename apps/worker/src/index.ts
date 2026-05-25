@@ -1,13 +1,16 @@
 import { Agent, getAgentByName, routeAgentRequest } from "agents";
-import { Think } from "@cloudflare/think";
+import { Think, type Session, type TurnConfig, type TurnContext } from "@cloudflare/think";
 import { createWorkersAI } from "workers-ai-provider";
-import { generateObject, type LanguageModel } from "ai";
+import git from "isomorphic-git";
+import http from "isomorphic-git/http/web";
+import { Output, generateObject, tool, type LanguageModel, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
 import {
   initialPrototypeState,
   prototypeTavernTownUiPage,
   type PrototypeTavernTownState
 } from "./prototype-tavern-town-ui";
+import { MemoryFS } from "./memory-fs";
 import {
   advanceCampaignTurn,
   commitAdventureChoice,
@@ -146,6 +149,63 @@ type PrototypeRuleReceipt = {
   snippet?: string;
 };
 
+type OsePlaybookAudience = "player" | "referee";
+
+type OsePlaybookPointer = {
+  label: string;
+  audience: OsePlaybookAudience;
+  summary: string;
+  chunkId: string;
+};
+
+const OSE_PLAYBOOK_POINTERS: OsePlaybookPointer[] = [
+  {
+    label: "Caller and party organization",
+    audience: "player",
+    summary: "Player-safe reminder: choose who speaks for the party when time/pressure matters; this is table procedure, not hidden rules access.",
+    chunkId: "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s191:n0"
+  },
+  {
+    label: "Thief capability pointer",
+    audience: "player",
+    summary: "Player-safe reminder: thieves have distinct risky procedures; ask the Referee for table-visible chances instead of reading the rules corpus directly.",
+    chunkId: "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s127:n0"
+  },
+  {
+    label: "Character creation class abilities",
+    audience: "player",
+    summary: "Player-safe pointer for class-shaped choices during Session 0; do not quote raw book text in public output.",
+    chunkId: "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s70:n0"
+  },
+  {
+    label: "Referee role",
+    audience: "referee",
+    summary: "Referee-only pointer for adjudication posture, impartiality, and keeping hidden information behind the Referee firewall.",
+    chunkId: "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s659:n0"
+  },
+  {
+    label: "Retainers and hiring pressure",
+    audience: "referee",
+    summary: "Referee/player-safe pointer for hireling/retainer procedures; expose bounded table artifacts instead of raw corpus text.",
+    chunkId: "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s178:n0"
+  }
+];
+
+type AgentBrainRole = "player-a" | "player-b" | "referee" | "table";
+
+type AgentBrainArtifactRecord = {
+  role: AgentBrainRole;
+  repoName: string;
+  remote?: string;
+  lastCommit?: string;
+  lastSyncedBeat?: number;
+  lastSyncedAt?: string;
+  status: "synced" | "skipped" | "error";
+  error?: string;
+};
+
+type AgentBrainSyncResult = AgentBrainArtifactRecord;
+
 type BrainMemoryEntry = {
   beat: number;
   at: string;
@@ -161,6 +221,8 @@ type PlayerAgentState = {
   relationships: string[];
   recentMemories: BrainMemoryEntry[];
   pendingTavernIntent?: PendingPrivateTavernIntent;
+  expectedTavernTool?: "submit_tavern_intent" | "tavern_intent_object";
+  lastSubmittedTavernIntent?: TavernIntentOutput & { at: string; requestBeat?: number };
   updatedAt?: string;
 };
 
@@ -171,6 +233,8 @@ type RefereeAgentState = {
   rulesNotes: string[];
   unresolvedQuestions: string[];
   recentMemories: BrainMemoryEntry[];
+  expectedTavernTool?: "submit_referee_beat" | "referee_beat_object";
+  lastSubmittedTavernBeat?: TavernBeat & { at: string; requestBeat?: number };
   updatedAt?: string;
 };
 
@@ -189,6 +253,248 @@ type RefereeTavernMemoryInput = {
   beat: TavernBeat;
   receipts: PrototypeRuleReceipt[];
 };
+
+type AgentBrainStore = {
+  syncMarkdown(input: {
+    repoName: string;
+    role: AgentBrainRole;
+    files: Record<string, string>;
+    message: string;
+    beat: number;
+  }): Promise<AgentBrainSyncResult>;
+};
+
+function playbookUrl(chunkId: string, lite = true): string {
+  return `https://joelclaw.com/api/docs/chunks/${chunkId}?lite=${lite ? "true" : "false"}&includeEmbedding=false`;
+}
+
+function formatOsePlaybookContext(audience: OsePlaybookAudience): string {
+  const pointers = OSE_PLAYBOOK_POINTERS.filter((pointer) => pointer.audience === audience || (audience === "referee" && pointer.audience === "player"));
+  return [
+    "OSE playbooks are source pointers, not raw book text. Do not quote copyrighted rules corpus into public output.",
+    audience === "player"
+      ? "PlayerAgent rule: use these as table-safe reminders only. Ask the Referee for adjudication; do not browse global rules."
+      : "RefereeAgent rule: use these pointers for adjudication checks and emit bounded player-safe artifacts with chunk IDs when needed.",
+    ...pointers.map((pointer) => [
+      `- ${pointer.label}`,
+      `  summary: ${pointer.summary}`,
+      `  chunkId: ${pointer.chunkId}`,
+      `  playerSafeUrl: ${playbookUrl(pointer.chunkId, true)}`,
+      audience === "referee" ? `  refereeLookupUrl: ${playbookUrl(pointer.chunkId, false)}` : ""
+    ].filter(Boolean).join("\n"))
+  ].join("\n");
+}
+
+function userMessage(text: string, id = crypto.randomUUID()): UIMessage {
+  return {
+    id,
+    role: "user",
+    parts: [{ type: "text", text }]
+  } satisfies UIMessage;
+}
+
+function uiMessageText(message: UIMessage | undefined): string {
+  if (!message) return "";
+  return message.parts
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function extractJsonObjectText(text: string): string | null {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) return fenced[1].trim();
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first < 0 || last <= first) return null;
+  return text.slice(first, last + 1);
+}
+
+function parseLastAssistantJson<T>(messages: UIMessage[], schema: z.ZodType<T>): { ok: true; value: T } | { ok: false; error: string } {
+  const assistant = [...messages].reverse().find((message) => message.role === "assistant");
+  const text = uiMessageText(assistant);
+  const jsonText = extractJsonObjectText(text);
+  if (!jsonText) return { ok: false, error: `No JSON object in assistant fallback response: ${text.slice(0, 240)}` };
+  try {
+    return { ok: true, value: schema.parse(JSON.parse(jsonText)) };
+  } catch (error) {
+    return { ok: false, error: `Assistant fallback JSON failed schema validation: ${String(error)}` };
+  }
+}
+
+async function ensureThinkSession(agent: Think<Env, unknown>): Promise<void> {
+  if (agent.session) return;
+  // Native Durable Object RPC can wake a child before the Agent base has hydrated
+  // its session/name. Cloudflare agents' own RPC paths use this private init hook.
+  const unsafeInit = (agent as unknown as { __unsafe_ensureInitialized?: () => Promise<void> }).__unsafe_ensureInitialized;
+  if (typeof unsafeInit !== "function") throw new Error("Think agent session unavailable and no unsafe initializer was exposed");
+  await unsafeInit.call(agent);
+}
+
+async function artifactMaybeString(value: unknown): Promise<string | undefined> {
+  try {
+    if (value === undefined || value === null) return undefined;
+    const text = String(await value);
+    return text.includes("[object JsRpcProperty]") ? undefined : text;
+  } catch {
+    return undefined;
+  }
+}
+
+function objectSnapshot(value: unknown): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(JSON.stringify(value));
+    return parsed && typeof parsed === "object" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function artifactRepoRemote(repoLike: unknown): Promise<string> {
+  const repo = repoLike as { remote?: unknown; info?: () => Promise<{ remote?: unknown }> };
+  const snap = objectSnapshot(repoLike);
+  const snapRemote = await artifactMaybeString(snap?.remote);
+  if (snapRemote) return snapRemote;
+  if (typeof repo.info === "function") {
+    try {
+      const info = await repo.info();
+      const remote = await artifactMaybeString(info?.remote);
+      if (remote) return remote;
+    } catch (error) {
+      if (!/does not implement the method "info"/i.test(String(error))) throw error;
+    }
+  }
+  const remote = await artifactMaybeString(repo.remote);
+  if (remote) return remote;
+  throw new Error("Artifacts repo remote URL was not available from binding result");
+}
+
+async function artifactCreateToken(repoLike: unknown, initialToken?: unknown): Promise<string> {
+  const initial = await artifactMaybeString(initialToken);
+  if (initial) return initial;
+  const repo = repoLike as { createToken?: (scope?: "write" | "read", ttl?: number) => Promise<{ plaintext?: unknown }> };
+  if (typeof repo.createToken === "function") {
+    const token = await repo.createToken("write", 900);
+    const plaintext = await artifactMaybeString(token.plaintext);
+    if (plaintext) return plaintext;
+  }
+  throw new Error("Artifacts write token was not available from binding result");
+}
+
+function isArtifactsErrorCode(error: unknown, code: ArtifactsErrorCode): boolean {
+  const directCode = typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined;
+  if (directCode === code) return true;
+  if (code === "ALREADY_EXISTS") return /already exists/i.test(String(error));
+  return false;
+}
+
+class ArtifactsAgentBrainStore implements AgentBrainStore {
+  constructor(
+    private readonly artifacts: Artifacts,
+    private readonly accountId?: string,
+    private readonly namespace = "default"
+  ) {}
+
+  async syncMarkdown(input: {
+    repoName: string;
+    role: AgentBrainRole;
+    files: Record<string, string>;
+    message: string;
+    beat: number;
+  }): Promise<AgentBrainSyncResult> {
+    const createdOrExisting = await this.getOrCreateRepo(input.repoName, input.role);
+    const fs = new MemoryFS();
+    const dir = "/workspace";
+    let cloned = false;
+
+    if (!createdOrExisting.created) {
+      try {
+        await git.clone({
+          fs,
+          http,
+          dir,
+          url: createdOrExisting.remote,
+          ref: "main",
+          singleBranch: true,
+          depth: 1,
+          onAuth: () => ({ username: "x", password: createdOrExisting.token })
+        });
+        cloned = true;
+      } catch (error) {
+        throw new Error(`Artifacts clone failed for existing repo ${input.repoName}; refusing to overwrite history: ${String(error)}`);
+      }
+    }
+
+    if (!cloned) await git.init({ fs, dir, defaultBranch: "main" });
+
+    for (const [filepath, content] of Object.entries(input.files)) {
+      await fs.promises.writeFile(`${dir}/${filepath}`, content);
+      await git.add({ fs, dir, filepath });
+    }
+
+    const commit = await git.commit({
+      fs,
+      dir,
+      message: input.message,
+      author: { name: "Cloudflare Agent Dungeon", email: "agent-dungeon@example.invalid" }
+    });
+    await git.writeRef({ fs, dir, ref: "refs/heads/main", value: commit, force: true });
+
+    await git.push({
+      fs,
+      http,
+      dir,
+      url: createdOrExisting.remote,
+      ref: "refs/heads/main",
+      remoteRef: "refs/heads/main",
+      force: true,
+      onAuth: () => ({ username: "x", password: createdOrExisting.token })
+    });
+
+    return {
+      role: input.role,
+      repoName: input.repoName,
+      remote: createdOrExisting.remote,
+      lastCommit: commit,
+      lastSyncedBeat: input.beat,
+      lastSyncedAt: new Date().toISOString(),
+      status: "synced"
+    };
+  }
+
+  private async getOrCreateRepo(repoName: string, role: AgentBrainRole): Promise<{ remote: string; token: string; created: boolean }> {
+    try {
+      const created = await this.artifacts.create(repoName, {
+        description: `Cloudflare Agent Dungeon ${role} brain repo`,
+        setDefaultBranch: "main"
+      });
+      const createdRepo = (created as unknown as { repo?: unknown }).repo ?? created;
+      return {
+        remote: await this.resolveRemote(repoName, createdRepo),
+        token: await artifactCreateToken(createdRepo, created.token),
+        created: true
+      };
+    } catch (error) {
+      if (!isArtifactsErrorCode(error, "ALREADY_EXISTS")) throw error;
+      const repo = await this.artifacts.get(repoName);
+      return { remote: await this.resolveRemote(repoName, repo), token: await artifactCreateToken(repo), created: false };
+    }
+  }
+
+  private async resolveRemote(repoName: string, repoLike: unknown): Promise<string> {
+    try {
+      return await artifactRepoRemote(repoLike);
+    } catch (error) {
+      if (!this.accountId) throw error;
+      return `https://${this.accountId}.artifacts.cloudflare.net/git/${this.namespace}/${repoName}.git`;
+    }
+  }
+}
+
+function getAgentBrainStore(env: Env): AgentBrainStore | null {
+  const artifacts = (env as Env & { ARTIFACTS?: Artifacts }).ARTIFACTS;
+  return artifacts ? new ArtifactsAgentBrainStore(artifacts, (env as Env & { ARTIFACTS_ACCOUNT_ID?: string }).ARTIFACTS_ACCOUNT_ID) : null;
+}
 
 /**
  * Long-lived referee mind. It reasons over validated player choices and dice
@@ -223,6 +529,64 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
     ].join(" ");
   }
 
+  override configureSession(session: Session): Session {
+    return session
+      .withContext("brain", {
+        description: "Private Referee brain summary, NPC memory, fronts, rule receipts, and unresolved questions.",
+        maxTokens: 1800,
+        provider: { get: async () => this.getBrainSummary() }
+      })
+      .withContext("ose_playbooks", {
+        description: "Source-pointer OSE playbooks for Referee adjudication. Pointers only; do not quote rules corpus into public output.",
+        maxTokens: 2200,
+        provider: { get: async () => formatOsePlaybookContext("referee") }
+      })
+      .withCachedPrompt();
+  }
+
+  override getTools(): ToolSet {
+    return {
+      submit_referee_beat: tool({
+        description: "Submit exactly one resolved tavern/town Referee beat. Required for tavern prototype turns.",
+        inputSchema: TavernBeatSchema,
+        execute: async (input) => {
+          const parsed = repairTavernBeat(input);
+          const previous = this.state ?? this.initialState;
+          const at = new Date().toISOString();
+          this.setState({
+            ...previous,
+            lastSubmittedTavernBeat: {
+              ...parsed,
+              at,
+              ...(previous.lastSubmittedTavernBeat?.requestBeat === undefined ? {} : { requestBeat: previous.lastSubmittedTavernBeat.requestBeat })
+            },
+            updatedAt: at
+          });
+          return { accepted: true, title: parsed.title };
+        }
+      })
+    };
+  }
+
+  override beforeTurn(_ctx: TurnContext): TurnConfig | void {
+    if (this.state?.expectedTavernTool === "submit_referee_beat") {
+      return {
+        activeTools: ["submit_referee_beat"],
+        toolChoice: { type: "tool", toolName: "submit_referee_beat" } as TurnConfig["toolChoice"],
+        maxSteps: 2,
+        maxOutputTokens: 1500
+      };
+    }
+    if (this.state?.expectedTavernTool === "referee_beat_object") {
+      return {
+        activeTools: [],
+        output: Output.object({ schema: TavernBeatSchema }) as TurnConfig["output"],
+        maxSteps: 1,
+        maxOutputTokens: 1500
+      };
+    }
+  }
+
   async generateOutcome(context: unknown): Promise<RefereeOutcome> {
     let validationError = "";
     for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -255,32 +619,68 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
   }
 
   async generateTavernBeat(context: unknown): Promise<TavernBeat> {
+    await ensureThinkSession(this);
+    const stable = await this.waitUntilStable({ timeout: 30_000 });
+    if (!stable) throw new Error("RefereeAgent conversation was not stable before tavern beat generation");
+    await this.session.refreshSystemPrompt();
     let validationError = "";
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        const result = await generateObject({
-          model: this.getModel(),
-          schema: TavernBeatSchema,
-          maxOutputTokens: 1300,
-          prompt: [
-            "Generate exactly one table-facing tavern/town beat for Cloudflare Agent Dungeon.",
-            "You are the Referee mind. PlayerAgents already chose their intents. Consider those choices directly; do not replace them with your own railroad.",
-            "The town/tavern is the whole open world for now. NPCs want things, remember things, and pressure choices without forcing a quest path.",
-            "Return structured JSON only. No markdown. No URLs. No external references. No hidden-world leaks.",
-            "tableText: public scene result responding to the supplied playerIntents. Keep under 1000 characters.",
-            "processReasoning: concise public-ish process note explaining how the Referee considered the player intents. Keep under 420 characters.",
-            "devReasoning: private/dev Referee reasoning only. Keep under 420 characters.",
-            "nextAffordances: 3-7 concrete available actions after this beat. visibleThreads: 1-7 public threads.",
-            "Rules receipts are IDs only; do not quote rulebook text.",
-            `Private Referee brain summary: ${this.getBrainSummary()}`,
-            validationError ? `Previous attempt rejected: ${validationError}` : "",
-            `Context: ${JSON.stringify(context)}`
-          ].filter(Boolean).join("\n")
-        });
-        return repairTavernBeat(result.object);
-      } catch (error) {
-        validationError = String(error);
+      const previous = this.state ?? this.initialState;
+      const mode: RefereeAgentState["expectedTavernTool"] = attempt === 1 ? "submit_referee_beat" : "referee_beat_object";
+      const { lastSubmittedTavernBeat: _lastSubmitted, ...withoutLastSubmitted } = previous;
+      void _lastSubmitted;
+      this.setState({
+        ...withoutLastSubmitted,
+        expectedTavernTool: mode,
+        updatedAt: new Date().toISOString()
+      });
+      const messageCountBeforeTurn = this.messages.length;
+      const promptMessage = userMessage([
+        "Generate exactly one table-facing tavern/town beat for Cloudflare Agent Dungeon.",
+        "You are the Referee mind. PlayerAgents already chose their intents. Consider those choices directly; do not replace them with your own railroad.",
+        "Use the session context blocks named brain and ose_playbooks. The playbooks are source pointers only; never quote rules corpus text.",
+        "The town/tavern is the whole open world for now. NPCs want things, remember things, and pressure choices without forcing a quest path.",
+        mode === "submit_referee_beat"
+          ? "You MUST call submit_referee_beat exactly once with the structured beat. If the runtime cannot call tools, return the exact same JSON object directly. Do not answer in prose."
+          : "Return the structured JSON object directly. Do not call tools. Do not answer in prose.",
+        "tableText: public scene result responding to the supplied playerIntents. Keep under 1000 characters.",
+        "processReasoning: concise public-ish process note explaining how the Referee considered the player intents. Keep under 420 characters.",
+        "devReasoning: private/dev Referee reasoning only. Keep under 420 characters.",
+        "nextAffordances: 3-7 concrete available actions after this beat. visibleThreads: 1-7 public threads.",
+        "Rules receipts are IDs only; do not quote rulebook text.",
+        validationError ? `Previous attempt rejected: ${validationError}` : "",
+        `Context: ${JSON.stringify(context)}`
+      ].filter(Boolean).join("\n"));
+      const result = await this.saveMessages([promptMessage]);
+
+      let submitted = this.state?.lastSubmittedTavernBeat;
+      const { expectedTavernTool: _expected, ...withoutExpected } = this.state ?? this.initialState;
+      void _expected;
+      this.setState({ ...withoutExpected, updatedAt: new Date().toISOString() });
+
+      if (result.status !== "completed") {
+        validationError = "error" in result && result.error ? String(result.error) : result.status;
+        continue;
       }
+      if (!submitted) {
+        const promptIndex = this.messages.findIndex((message) => message.id === promptMessage.id);
+        const fallbackMessages = promptIndex >= 0 ? this.messages.slice(promptIndex + 1) : this.messages.slice(messageCountBeforeTurn);
+        const fallback = parseLastAssistantJson(fallbackMessages, TavernBeatSchema);
+        if (fallback.ok) {
+          const parsed = repairTavernBeat(fallback.value);
+          const at = new Date().toISOString();
+          this.setState({
+            ...(this.state ?? this.initialState),
+            lastSubmittedTavernBeat: { ...parsed, at },
+            updatedAt: at
+          });
+          submitted = { ...parsed, at };
+        } else {
+          validationError = `Think turn completed without submit_referee_beat tool call; ${fallback.error}`;
+          continue;
+        }
+      }
+      return repairTavernBeat(submitted);
     }
     throw new Error(`Referee tavern beat failed validation: ${validationError}`);
   }
@@ -294,6 +694,19 @@ export class RefereeAgent extends Think<Env, RefereeAgentState> {
       state.rulesNotes.length ? `Rules/procedure receipts: ${state.rulesNotes.join(" | ")}` : "Rules/procedure receipts: none yet.",
       state.unresolvedQuestions.length ? `Open questions: ${state.unresolvedQuestions.join(" | ")}` : "Open questions: none yet."
     ].join("\n");
+  }
+
+  getBrainDebug() {
+    const state = this.state ?? this.initialState;
+    return {
+      kind: "referee" as const,
+      summary: this.getBrainSummary(),
+      sessionContexts: {
+        brain: this.getBrainSummary(),
+        ose_playbooks: formatOsePlaybookContext("referee")
+      },
+      state
+    };
   }
 
   rememberTavernBeat(input: RefereeTavernMemoryInput): RefereeAgentState {
@@ -380,6 +793,73 @@ export class PlayerAgent extends Think<Env, PlayerAgentState> {
     ].join(" ");
   }
 
+  override configureSession(session: Session): Session {
+    return session
+      .withContext("brain", {
+        description: "Private player brain summary: goals, fears, theories, relationships, and recent memories. Not visible to Referee unless acted on.",
+        maxTokens: 1500,
+        provider: { get: async () => this.getBrainSummary() }
+      })
+      .withContext("ose_playbooks", {
+        description: "Player-safe OSE playbook source pointers. Do not read or quote raw rules corpus; ask the Referee for adjudication.",
+        maxTokens: 1600,
+        provider: { get: async () => formatOsePlaybookContext("player") }
+      })
+      .withCachedPrompt();
+  }
+
+  override getTools(): ToolSet {
+    return {
+      submit_tavern_intent: tool({
+        description: "Submit exactly one player tavern/town intent with private goal, fear, and inner monologue. Required for tavern prototype turns.",
+        inputSchema: TavernIntentSchema,
+        execute: async (input) => {
+          const parsed = TavernIntentSchema.parse(input);
+          const previous = this.state ?? this.initialState;
+          const at = new Date().toISOString();
+          this.setState({
+            ...previous,
+            pendingTavernIntent: {
+              beat: previous.pendingTavernIntent?.beat ?? 0,
+              declaredAction: parsed.declaredAction,
+              intentKind: parsed.intentKind,
+              innerMonologue: parsed.innerMonologue,
+              privateGoal: parsed.privateGoal,
+              privateFear: parsed.privateFear,
+              at
+            },
+            lastSubmittedTavernIntent: {
+              ...parsed,
+              at,
+              ...(previous.pendingTavernIntent?.beat === undefined ? {} : { requestBeat: previous.pendingTavernIntent.beat })
+            },
+            updatedAt: at
+          });
+          return { accepted: true, title: parsed.title };
+        }
+      })
+    };
+  }
+
+  override beforeTurn(_ctx: TurnContext): TurnConfig | void {
+    if (this.state?.expectedTavernTool === "submit_tavern_intent") {
+      return {
+        activeTools: ["submit_tavern_intent"],
+        toolChoice: { type: "tool", toolName: "submit_tavern_intent" } as TurnConfig["toolChoice"],
+        maxSteps: 2,
+        maxOutputTokens: 900
+      };
+    }
+    if (this.state?.expectedTavernTool === "tavern_intent_object") {
+      return {
+        activeTools: [],
+        output: Output.object({ schema: TavernIntentSchema }) as TurnConfig["output"],
+        maxSteps: 1,
+        maxOutputTokens: 900
+      };
+    }
+  }
+
   async createCharacterPlan(draft: CharacterCreationDraft, stores: Record<StoreId, Store>): Promise<CharacterCreationPlan> {
     try {
       const prompt = [
@@ -433,59 +913,100 @@ export class PlayerAgent extends Think<Env, PlayerAgentState> {
   }
 
   async chooseTavernIntent(context: unknown): Promise<TavernIntent> {
+    await ensureThinkSession(this);
+    const stable = await this.waitUntilStable({ timeout: 30_000 });
+    if (!stable) throw new Error("PlayerAgent conversation was not stable before tavern intent generation");
+    await this.session.refreshSystemPrompt();
     const playerId = (context as { playerId: PlayerId }).playerId;
     const member = (context as { member?: { player?: string; character?: string } }).member;
     let validationError = "";
 
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        const result = await generateObject({
-          model: this.getModel(),
-          schema: TavernIntentSchema,
-          maxOutputTokens: 700,
-          prompt: [
-            "Choose one tavern/town action as a player in an Old School Essentials campaign.",
-            "You are a PlayerAgent, not the Referee. You only know the supplied visible state. Do not invent hidden truths.",
-            "Narrate your own choice. tableSpeech is what the character says or visibly does at the table. declaredAction is the gameplay intent.",
-            "You may talk, ask, buy, hire, observe, reveal backstory, leave, wait, or do something else grounded in the visible affordances.",
-            "Return structured JSON only. No markdown. Keep strings short and sharp.",
-            validationError ? `Previous attempt rejected: ${validationError}` : "",
-            `Context: ${JSON.stringify(context)}`,
-            `Private brain summary available to you only: ${this.privateContextSummary()}`
-          ].filter(Boolean).join("\n")
-        });
-        const fullIntent = result.object;
-        const previous = this.state ?? this.initialState;
-        const at = new Date().toISOString();
-        this.setState({
-          ...previous,
-          playerId,
-          pendingTavernIntent: {
-            beat: (context as { beat?: number }).beat ?? 0,
-            declaredAction: fullIntent.declaredAction,
-            intentKind: fullIntent.intentKind,
-            innerMonologue: fullIntent.innerMonologue,
-            privateGoal: fullIntent.privateGoal,
-            privateFear: fullIntent.privateFear,
-            at
-          },
-          updatedAt: at
-        });
-        return {
-          playerId,
-          playerName: member?.player ?? playerId,
-          character: member?.character ?? playerId,
-          actor: member?.player ?? playerId,
-          title: fullIntent.title,
-          tableSpeech: fullIntent.tableSpeech,
-          declaredAction: fullIntent.declaredAction,
-          intentKind: fullIntent.intentKind,
-          ...(fullIntent.target ? { target: fullIntent.target } : {}),
-          processReasoning: fullIntent.processReasoning
-        };
-      } catch (error) {
-        validationError = String(error);
+      const previous = this.state ?? this.initialState;
+      const mode: PlayerAgentState["expectedTavernTool"] = attempt === 1 ? "submit_tavern_intent" : "tavern_intent_object";
+      const { lastSubmittedTavernIntent: _lastSubmitted, ...withoutLastSubmitted } = previous;
+      void _lastSubmitted;
+      this.setState({
+        ...withoutLastSubmitted,
+        playerId,
+        expectedTavernTool: mode,
+        pendingTavernIntent: {
+          beat: (context as { beat?: number }).beat ?? 0,
+          declaredAction: "pending",
+          intentKind: "other",
+          innerMonologue: "pending",
+          privateGoal: previous.currentGoal ?? "unset",
+          privateFear: previous.currentFear ?? "unset",
+          at: new Date().toISOString()
+        },
+        updatedAt: new Date().toISOString()
+      });
+
+      const messageCountBeforeTurn = this.messages.length;
+      const promptMessage = userMessage([
+        "Choose one tavern/town action as a player in an Old School Essentials campaign.",
+        "You are a PlayerAgent, not the Referee. You only know the supplied visible state. Do not invent hidden truths.",
+        "Use the session context blocks named brain and ose_playbooks. The playbooks are player-safe source pointers only; do not quote rules text.",
+        "Narrate your own choice. tableSpeech is what the character says or visibly does at the table. declaredAction is the gameplay intent.",
+        "You may talk, ask, buy, hire, observe, reveal backstory, leave, wait, or do something else grounded in the visible affordances.",
+        mode === "submit_tavern_intent"
+          ? "You MUST call submit_tavern_intent exactly once with the structured intent. If the runtime cannot call tools, return the exact same JSON object directly. Do not answer in prose."
+          : "Return the structured JSON object directly. Do not call tools. Do not answer in prose.",
+        validationError ? `Previous attempt rejected: ${validationError}` : "",
+        `Context: ${JSON.stringify(context)}`
+      ].filter(Boolean).join("\n"));
+      const result = await this.saveMessages([promptMessage]);
+
+      let submitted = this.state?.lastSubmittedTavernIntent;
+      const { expectedTavernTool: _expected, ...withoutExpected } = this.state ?? this.initialState;
+      void _expected;
+      this.setState({ ...withoutExpected, updatedAt: new Date().toISOString() });
+
+      if (result.status !== "completed") {
+        validationError = "error" in result && result.error ? String(result.error) : result.status;
+        continue;
       }
+      if (!submitted) {
+        const promptIndex = this.messages.findIndex((message) => message.id === promptMessage.id);
+        const fallbackMessages = promptIndex >= 0 ? this.messages.slice(promptIndex + 1) : this.messages.slice(messageCountBeforeTurn);
+        const fallback = parseLastAssistantJson(fallbackMessages, TavernIntentSchema);
+        if (fallback.ok) {
+          const parsed = fallback.value;
+          const at = new Date().toISOString();
+          this.setState({
+            ...(this.state ?? this.initialState),
+            playerId,
+            pendingTavernIntent: {
+              beat: (context as { beat?: number }).beat ?? 0,
+              declaredAction: parsed.declaredAction,
+              intentKind: parsed.intentKind,
+              innerMonologue: parsed.innerMonologue,
+              privateGoal: parsed.privateGoal,
+              privateFear: parsed.privateFear,
+              at
+            },
+            lastSubmittedTavernIntent: { ...parsed, at, requestBeat: (context as { beat?: number }).beat ?? 0 },
+            updatedAt: at
+          });
+          submitted = { ...parsed, at, requestBeat: (context as { beat?: number }).beat ?? 0 };
+        } else {
+          validationError = `Think turn completed without submit_tavern_intent tool call; ${fallback.error}`;
+          continue;
+        }
+      }
+
+      return {
+        playerId,
+        playerName: member?.player ?? playerId,
+        character: member?.character ?? playerId,
+        actor: member?.player ?? playerId,
+        title: submitted.title,
+        tableSpeech: submitted.tableSpeech,
+        declaredAction: submitted.declaredAction,
+        intentKind: submitted.intentKind,
+        ...(submitted.target ? { target: submitted.target } : {}),
+        processReasoning: submitted.processReasoning
+      };
     }
 
     throw new Error(`PlayerAgent tavern intent failed for ${playerId}: ${validationError}`);
@@ -493,6 +1014,19 @@ export class PlayerAgent extends Think<Env, PlayerAgentState> {
 
   getBrainSummary(): string {
     return this.privateContextSummary();
+  }
+
+  getBrainDebug() {
+    const state = this.state ?? this.initialState;
+    return {
+      kind: "player" as const,
+      summary: this.getBrainSummary(),
+      sessionContexts: {
+        brain: this.getBrainSummary(),
+        ose_playbooks: formatOsePlaybookContext("player")
+      },
+      state
+    };
   }
 
   rememberTavernBeat(input: PlayerTavernMemoryInput): PlayerAgentState {
@@ -637,6 +1171,7 @@ function secureRandomInt(sides: number): number {
 
 type RefereeState = Campaign & {
   prototypeTavernTown?: PrototypeTavernTownState;
+  prototypeBrainArtifacts?: Partial<Record<AgentBrainRole, AgentBrainArtifactRecord>>;
 };
 
 const PROTOTYPE_TAVERN_GENERATION_LOCK_TIMEOUT_MS = 3 * 60 * 1000;
@@ -806,6 +1341,55 @@ export class Referee extends Agent<Env, RefereeState> {
     return prototypeTavernTown;
   }
 
+  async getPrototypeTavernTownBrains() {
+    const { playerABrain, playerBBrain, refereeBrain } = await this.readPrototypeBrainDebugs();
+    const state = this.requireRefereeState();
+    return {
+      devMode: true,
+      campaignId: this.name,
+      beat: this.getPrototypeTavernTown().beat,
+      agents: {
+        "player-a": playerABrain,
+        "player-b": playerBBrain,
+        referee: refereeBrain
+      },
+      artifacts: state.prototypeBrainArtifacts ?? {},
+      table: {
+        repoName: this.brainRepoName("table"),
+        summary: this.formatTableBrainMarkdown(this.getPrototypeTavernTown())
+      }
+    };
+  }
+
+  async syncPrototypeTavernTownBrains() {
+    const state = this.getPrototypeTavernTown();
+    const { playerABrain, playerBBrain, refereeBrain } = await this.readPrototypeBrainDebugs();
+    const results = await this.syncPrototypeBrainArtifacts(state, {
+      playerA: playerABrain.state,
+      playerB: playerBBrain.state,
+      referee: refereeBrain.state
+    });
+    return {
+      devMode: true,
+      campaignId: this.name,
+      beat: state.beat,
+      results,
+      artifacts: this.requireRefereeState().prototypeBrainArtifacts ?? {}
+    };
+  }
+
+  private async readPrototypeBrainDebugs() {
+    const playerA = await this.subAgent(PlayerAgent, "player-a");
+    const playerB = await this.subAgent(PlayerAgent, "player-b");
+    const referee = await this.subAgent(RefereeAgent, "referee");
+    const [playerABrain, playerBBrain, refereeBrain] = await Promise.all([
+      playerA.getBrainDebug(),
+      playerB.getBrainDebug(),
+      referee.getBrainDebug()
+    ]);
+    return { playerABrain, playerBBrain, refereeBrain };
+  }
+
   async stepPrototypeTavernTown(): Promise<PrototypeTavernTownState> {
     const state = this.requireRefereeState();
     let current = state.prototypeTavernTown ?? initialPrototypeState();
@@ -877,7 +1461,169 @@ export class Referee extends Agent<Env, RefereeState> {
       if (result.status === "rejected") console.warn("[Referee] tavern beat memory update failed", result.reason);
     }
 
+    const playerAState = memoryResults[0]?.status === "fulfilled" ? memoryResults[0].value : (await playerA.getBrainDebug()).state;
+    const playerBState = memoryResults[1]?.status === "fulfilled" ? memoryResults[1].value : (await playerB.getBrainDebug()).state;
+    const refereeState = memoryResults[2]?.status === "fulfilled" ? memoryResults[2].value : (await referee.getBrainDebug()).state;
+    await this.syncPrototypeBrainArtifacts(committed, { playerA: playerAState, playerB: playerBState, referee: refereeState }).catch((error) => {
+      console.warn("[Referee] artifact brain sync failed", error);
+      this.recordArtifactSyncResults([
+        { role: "player-a", repoName: this.brainRepoName("player-a"), status: "error", error: String(error) },
+        { role: "player-b", repoName: this.brainRepoName("player-b"), status: "error", error: String(error) },
+        { role: "referee", repoName: this.brainRepoName("referee"), status: "error", error: String(error) },
+        { role: "table", repoName: this.brainRepoName("table"), status: "error", error: String(error) }
+      ]);
+    });
+
     return committed;
+  }
+
+  private brainRepoName(role: AgentBrainRole): string {
+    return `campaign-${this.name}-${role}`;
+  }
+
+  private async syncPrototypeBrainArtifacts(
+    state: PrototypeTavernTownState,
+    brains: { playerA: PlayerAgentState; playerB: PlayerAgentState; referee: RefereeAgentState }
+  ): Promise<AgentBrainSyncResult[]> {
+    const store = getAgentBrainStore(this.env);
+    if (!store) {
+      const skipped: AgentBrainSyncResult[] = (["player-a", "player-b", "referee", "table"] as const).map((role) => ({
+        role,
+        repoName: this.brainRepoName(role),
+        lastSyncedBeat: state.beat,
+        lastSyncedAt: new Date().toISOString(),
+        status: "skipped",
+        error: "ARTIFACTS binding unavailable"
+      }));
+      this.recordArtifactSyncResults(skipped);
+      return skipped;
+    }
+
+    const inputs: Array<{ role: AgentBrainRole; files: Record<string, string> }> = [
+      { role: "player-a", files: { "README.md": this.formatPlayerBrainMarkdown("player-a", brains.playerA, state) } },
+      { role: "player-b", files: { "README.md": this.formatPlayerBrainMarkdown("player-b", brains.playerB, state) } },
+      { role: "referee", files: { "README.md": this.formatRefereeBrainMarkdown(brains.referee, state) } },
+      { role: "table", files: { "README.md": this.formatTableBrainMarkdown(state) } }
+    ];
+
+    const settled = await Promise.allSettled(inputs.map((input) => store.syncMarkdown({
+      repoName: this.brainRepoName(input.role),
+      role: input.role,
+      files: input.files,
+      message: `beat ${state.beat}: sync ${input.role} brain`,
+      beat: state.beat
+    })));
+
+    const results = settled.map((result, index): AgentBrainSyncResult => {
+      const role = inputs[index]?.role ?? "table";
+      if (result.status === "fulfilled") return result.value;
+      return {
+        role,
+        repoName: this.brainRepoName(role),
+        lastSyncedBeat: state.beat,
+        lastSyncedAt: new Date().toISOString(),
+        status: "error",
+        error: String(result.reason)
+      };
+    });
+    this.recordArtifactSyncResults(results);
+    return results;
+  }
+
+  private recordArtifactSyncResults(results: AgentBrainSyncResult[]): void {
+    const current = this.requireRefereeState();
+    const previous = current.prototypeBrainArtifacts ?? {};
+    const next = { ...previous };
+    for (const result of results) next[result.role] = result;
+    this.setState({ ...current, prototypeBrainArtifacts: next });
+  }
+
+  private formatPlayerBrainMarkdown(role: "player-a" | "player-b", state: PlayerAgentState, table: PrototypeTavernTownState): string {
+    return [
+      `# ${role} Brain`,
+      "",
+      `Campaign: ${this.name}`,
+      `Beat: ${table.beat}`,
+      `Updated: ${state.updatedAt ?? table.updatedAt}`,
+      "Privacy: private player repo. Do not expose to Referee, other players, or public monitor.",
+      "",
+      "## Summary",
+      state.brainSummary,
+      "",
+      "## Current drives",
+      `- Goal: ${state.currentGoal ?? "unset"}`,
+      `- Fear: ${state.currentFear ?? "unset"}`,
+      "",
+      "## Private theories",
+      ...(state.privateTheories.length ? state.privateTheories.map((item) => `- ${item}`) : ["- none yet"]),
+      "",
+      "## Relationships",
+      ...(state.relationships.length ? state.relationships.map((item) => `- ${item}`) : ["- none yet"]),
+      "",
+      "## Recent memories",
+      ...(state.recentMemories.length ? state.recentMemories.map((item) => `- Beat ${item.beat} (${item.at}): ${item.summary}`) : ["- none yet"])
+    ].join("\n");
+  }
+
+  private formatRefereeBrainMarkdown(state: RefereeAgentState, table: PrototypeTavernTownState): string {
+    return [
+      "# Referee Brain",
+      "",
+      `Campaign: ${this.name}`,
+      `Beat: ${table.beat}`,
+      `Updated: ${state.updatedAt ?? table.updatedAt}`,
+      "Privacy: Referee-only repo. Contains process notes and unresolved fronts; public monitor must not render raw content.",
+      "",
+      "## Summary",
+      state.brainSummary,
+      "",
+      "## NPC memory",
+      ...(state.npcMemory.length ? state.npcMemory.map((item) => `- ${item}`) : ["- none yet"]),
+      "",
+      "## Fronts / pressure",
+      ...(state.frontNotes.length ? state.frontNotes.map((item) => `- ${item}`) : ["- none yet"]),
+      "",
+      "## Rule receipts",
+      ...(state.rulesNotes.length ? state.rulesNotes.map((item) => `- ${item}`) : ["- none yet"]),
+      "",
+      "## Open questions",
+      ...(state.unresolvedQuestions.length ? state.unresolvedQuestions.map((item) => `- ${item}`) : ["- none yet"]),
+      "",
+      "## Recent memories",
+      ...(state.recentMemories.length ? state.recentMemories.map((item) => `- Beat ${item.beat} (${item.at}): ${item.summary}`) : ["- none yet"])
+    ].join("\n");
+  }
+
+  private formatTableBrainMarkdown(state: PrototypeTavernTownState): string {
+    return [
+      "# Shared Table Brain",
+      "",
+      `Campaign: ${this.name}`,
+      `Beat: ${state.beat}`,
+      `Updated: ${state.updatedAt}`,
+      "Privacy: table-visible only. Revealed NPCs, affordances, public threads, and rule receipt IDs.",
+      "",
+      "## Current location",
+      state.location,
+      "",
+      "## NPCs",
+      ...state.npcs.map((npc) => `- ${npc.name} (${npc.role}): wants ${npc.want}; memory ${npc.memory}; disposition ${npc.disposition}`),
+      "",
+      "## Affordances",
+      ...state.affordances.map((item) => `- ${item}`),
+      "",
+      "## Visible threads",
+      ...state.visibleThreads.map((item) => `- ${item}`),
+      "",
+      "## Rule receipt IDs",
+      ...(state.ruleReceipts.length ? state.ruleReceipts.map((item) => `- ${item}`) : ["- none yet"]),
+      "",
+      "## Recent public process log",
+      ...state.log.slice(0, 12).map((turn) => {
+        const entry = turn as { beat?: number; lane?: string; actor?: string; title?: string; tableText?: string };
+        return `- Beat ${entry.beat ?? "?"} ${entry.lane ?? "?"}/${entry.actor ?? "?"}: ${entry.title ?? "Untitled"} — ${entry.tableText ?? ""}`;
+      })
+    ].join("\n");
   }
 
   private tavernIntentContext(state: PrototypeTavernTownState, playerId: PlayerId) {
@@ -957,7 +1703,12 @@ export class Referee extends Agent<Env, RefereeState> {
 
   private commitCampaign(campaign: Campaign): Campaign {
     const prototypeTavernTown = this.state?.prototypeTavernTown;
-    this.setState(prototypeTavernTown ? { ...campaign, prototypeTavernTown } : campaign);
+    const prototypeBrainArtifacts = this.state?.prototypeBrainArtifacts;
+    this.setState({
+      ...campaign,
+      ...(prototypeTavernTown ? { prototypeTavernTown } : {}),
+      ...(prototypeBrainArtifacts ? { prototypeBrainArtifacts } : {})
+    });
     return campaign;
   }
 
@@ -968,9 +1719,12 @@ export class Referee extends Agent<Env, RefereeState> {
   private requireRefereeState(): RefereeState {
     if (!this.state || this.state.id !== this.name) {
       const existingPrototype = this.state?.prototypeTavernTown;
-      const next: RefereeState = existingPrototype
-        ? { ...seedTavernCampaign(this.name), prototypeTavernTown: existingPrototype }
-        : seedTavernCampaign(this.name);
+      const existingArtifacts = this.state?.prototypeBrainArtifacts;
+      const next: RefereeState = {
+        ...seedTavernCampaign(this.name),
+        ...(existingPrototype ? { prototypeTavernTown: existingPrototype } : {}),
+        ...(existingArtifacts ? { prototypeBrainArtifacts: existingArtifacts } : {})
+      };
       this.setState(next);
       return next;
     }
@@ -987,6 +1741,34 @@ function json(data: unknown, init?: ResponseInit): Response {
     headers: { "access-control-allow-origin": "*" },
     ...init
   });
+}
+
+function normalizeHostname(value: string | null | undefined): string {
+  const host = (value ?? "").split(",")[0]?.trim().toLowerCase() ?? "";
+  if (host.startsWith("[")) return host.slice(1, host.indexOf("]") > 0 ? host.indexOf("]") : undefined);
+  return host.replace(/:\d+$/, "");
+}
+
+function isLocalPrototypeHost(hostname: string | null | undefined): boolean {
+  const host = normalizeHostname(hostname);
+  return host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "::1";
+}
+
+function isPrototypeBrainDevRequest(request: Request, env: Env): boolean {
+  const url = new URL(request.url);
+  if (url.searchParams.get("dev") !== "1") return false;
+  const observedHosts = [url.hostname, request.headers.get("host"), request.headers.get("x-forwarded-host")];
+  if (observedHosts.some(isLocalPrototypeHost)) return true;
+
+  const localDevEnabled = (env as Env & { PROTOTYPE_DEV_ENDPOINTS?: string }).PROTOTYPE_DEV_ENDPOINTS === "1";
+  if (localDevEnabled) return true;
+
+  const token = (env as Env & { PROTOTYPE_DEV_TOKEN?: string }).PROTOTYPE_DEV_TOKEN?.trim();
+  if (!token) return false;
+
+  const authorization = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  const headerToken = request.headers.get("x-prototype-dev-token")?.trim();
+  return authorization === token || headerToken === token;
 }
 
 async function handleApi(request: Request, env: Env): Promise<Response | null> {
@@ -1007,6 +1789,12 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
     const referee = await getAgentByName(env.Referee, "tavern-town-prototype");
     const prototypeState: PrototypeTavernTownState = await referee.stepPrototypeTavernTown();
     return json({ state: prototypeState, beat: prototypeState.log?.[0] });
+  }
+  if (url.pathname === "/api/prototype/tavern-town-brains") {
+    if (!isPrototypeBrainDevRequest(request, env)) return json({ error: "dev endpoint requires dev=1 plus localhost or a configured dev token" }, { status: 403 });
+    const referee = await getAgentByName(env.Referee, "tavern-town-prototype");
+    if (request.method === "POST") return json(await referee.syncPrototypeTavernTownBrains());
+    return json(await referee.getPrototypeTavernTownBrains());
   }
 
   const campaignId = url.searchParams.get("campaign") ?? "agent-dungeon-campaign";

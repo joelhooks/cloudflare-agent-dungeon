@@ -1,7 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "types": ["@cloudflare/workers-types", "vitest/globals"]
+    "types": ["@cloudflare/workers-types", "vitest/globals"],
+    "paths": {
+      "@cloudflare-agent-dungeon/domain": ["../../packages/domain/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts", "worker-configuration.d.ts"]
 }
