@@ -233,9 +233,11 @@ Server persistence follow-up:
 - Added server-side single-flight locking by persisting `mode="generating"`; overlapping beat requests return the in-progress state instead of starting another AI beat.
 - Parallel receipt: two overlapping POSTs from beat 1 returned beats `2` and `1/generating`; final server state was beat `2`, not beat `3`.
 
-## Agent Brain / skills direction
+## Agent Brain / agent-skill interface direction
 
 Joel called the shape clearly: give the agents a Brain.
+
+Important terminology: **agent skills** here does not mean an RPG skill system. It means Pi-style agent skills / playbooks: source-grounded interfaces that teach an agent how to play OSE, what affordances it has, what procedure applies, and what it is allowed to know.
 
 Working metaphor: `/skill:second-brain-execution` + `/skill:para-operator`, but inside the campaign runtime.
 
@@ -252,10 +254,10 @@ Proposed memory layers:
    - RefereeAgent keeps private notes: adjudication patterns, NPC pressure, unresolved fronts, rules receipts, hidden threads
    - notes are compressed after each beat, not raw transcript dumped forever
 
-3. Skill cards:
-   - player skill cards: table habits, survival heuristics, asking good questions, mapping/supplies/caller-style responsibilities
-   - class skill cards: OSE class abilities and constraints, researched from JoelClaw OSE docs and exposed as player-safe summaries
-   - referee skill cards: private procedure/adjudication cards, rules lookup recipes, faction/NPC pressure handling, public-safety reminders
+3. Agent skill / playbook cards:
+   - player playbooks: how to play at the table, survival heuristics, asking good questions, mapping/supplies/caller-style responsibilities
+   - class playbooks: OSE class abilities and constraints, researched from JoelClaw OSE docs and exposed as player-safe summaries
+   - referee playbooks: private procedure/adjudication cards, rules lookup recipes, faction/NPC pressure handling, public-safety reminders
 
 Source receipts already found for shaping:
 
@@ -267,7 +269,7 @@ Source receipts already found for shaping:
 Important boundary:
 
 - PlayerAgents should never query the full OSE corpus directly.
-- Referee/RefereeAgent researches OSE and emits bounded, player-safe skill cards with doc/chunk receipts.
+- Referee/RefereeAgent researches OSE and emits bounded, player-safe agent skill/playbook cards with doc/chunk receipts.
 - Public monitor can show skill card names and safe summaries, not raw book chunks.
 
 Cloudflare Artifacts looks like the right durable long-term Brain store once the hot loop works:

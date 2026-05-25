@@ -65,6 +65,8 @@ Hydrate/search it before writing or reviewing Effect code.
 
 Old School Essentials and other RPG books are currently accessed through JoelClaw docs/PDF Brain.
 
+Agent skills/playbooks are the runtime interface to the rules. They are not an RPG skill system. They are Pi-style instructions that teach a PlayerAgent or RefereeAgent how to play OSE: what procedure applies, what options are legal, what to ask, what to track, and what is private vs table-visible.
+
 Start with:
 
 ```bash
