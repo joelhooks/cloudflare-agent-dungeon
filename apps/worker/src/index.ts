@@ -2150,6 +2150,22 @@ const TownModuleTableStateSchema = z.object({
 
 type TownModuleTableState = z.infer<typeof TownModuleTableStateSchema>;
 
+function publicTownModuleTableState(state: TownModuleTableState): TownModuleTableState {
+  return TownModuleTableStateSchema.parse({
+    ...state,
+    playerArtifacts: {},
+    partyMemory: {},
+    refereeMemory: {
+      revealedFacts: state.refereeMemory.revealedFacts,
+      unresolvedThreads: state.refereeMemory.unresolvedThreads,
+      npcState: state.refereeMemory.npcState,
+      clocksExplained: state.refereeMemory.clocksExplained,
+      hiddenStillPrivate: []
+    },
+    events: state.events.filter((event) => event.visibility === "public").map(({ devText: _devText, ...event }) => event)
+  });
+}
+
 type RefereeState = Campaign & {
   prototypeTavernTown?: PrototypeTavernTownState;
   prototypeBrainArtifacts?: Partial<Record<AgentBrainRole, AgentBrainArtifactRecord>>;
@@ -2494,7 +2510,7 @@ export class Referee extends Agent<Env, RefereeState> {
       return;
     }
     const townForgeRaw = kind === "town-forge" ? isTownForgeRawSocketRequest(ctx.request, this.env) : false;
-    const prototypeDev = kind === "tavern-town" ? isPrototypeBrainDevRequest(ctx.request, this.env) : false;
+    const prototypeDev = kind === "tavern-town" || kind === "town-table" ? isPrototypeBrainDevRequest(ctx.request, this.env) : false;
     if (townForgeRaw) this.rawTownForgeConnectionIds.add(connection.id);
     connection.setState({
       ...(connection.state as PrototypeSocketConnectionState | undefined),
@@ -2615,14 +2631,19 @@ export class Referee extends Agent<Env, RefereeState> {
   }
 
   private emitTownTableSocketEvent(event: TownModuleTableSocketEvent): void {
-    const message = JSON.stringify(event);
-    for (const connection of this.getConnections("town-table-monitor")) connection.send(message);
+    for (const connection of this.getConnections("town-table-monitor")) {
+      const isDev = (connection.state as PrototypeSocketConnectionState | undefined)?.prototypeDev === true;
+      if (event.type === "town_table.event" && !isDev && event.event.visibility !== "public") continue;
+      const safeEvent = event.type === "town_table.event" && !isDev ? { ...event, event: (({ devText: _devText, ...publicEvent }) => publicEvent)(event.event) } : event;
+      connection.send(JSON.stringify(safeEvent));
+    }
   }
 
   private sendTownTableStateTo(connection: Connection, reason: string): void {
+    const state = this.getTownModuleTableState();
     this.sendTownTableSocketEvent(connection, {
       type: "town_table.state",
-      state: this.getTownModuleTableState(),
+      state: (connection.state as PrototypeSocketConnectionState | undefined)?.prototypeDev ? state : publicTownModuleTableState(state),
       reason,
       at: new Date().toISOString(),
       campaignId: this.name
@@ -2632,7 +2653,7 @@ export class Referee extends Agent<Env, RefereeState> {
   private emitTownTableState(reason: string): void {
     this.emitTownTableSocketEvent({
       type: "town_table.state",
-      state: this.getTownModuleTableState(),
+      state: publicTownModuleTableState(this.getTownModuleTableState()),
       reason,
       at: new Date().toISOString(),
       campaignId: this.name
@@ -6333,7 +6354,8 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
 
   if (url.pathname === "/api/prototype/town-module-table-state") {
     const referee = await getAgentByName(env.Referee, "town-module-table");
-    return json({ state: await referee.getTownModuleTableStateRpc() });
+    const state = await referee.getTownModuleTableStateRpc();
+    return json({ state: isPrototypeBrainDevRequest(request, env) ? state : publicTownModuleTableState(state) });
   }
   if (url.pathname === "/api/prototype/town-module-table-summary") {
     const referee = await getAgentByName(env.Referee, "town-module-table");
