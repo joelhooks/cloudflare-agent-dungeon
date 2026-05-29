@@ -1,0 +1,301 @@
+---
+title: Town Module Table Stream Handoff
+type: project
+status: active
+created_at: 2026-05-28
+tags:
+  - handoff
+  - prototype
+  - town-module
+  - live-table
+---
+
+# Town Module Table Stream Handoff
+
+## Current objective
+
+Implement a new Cloudflare Agent Dungeon prototype that feels like a real, fast-moving OSE table playing through the frozen **Fenwater Drainage** town module.
+
+The old `/prototype/town-module` monitor taught the right lessons but feels like server machinery. The next slice should be a new always-running table stream, not more patches on the old tavern-town monitor.
+
+Primary design note: [[projects/town-module-table-stream]].
+
+## Current repo state
+
+Receipt pass:
+
+```txt
+pwd: /Users/joel/Code/joelhooks/cloudflare-agent-dungeon
+branch: feat/realtime-agent-dungeon-campaign
+```
+
+Uncommitted / untracked files at handoff:
+
+```txt
+ M .brain/data/prototype-build-log.jsonl
+ M apps/worker/src/index.ts
+ M apps/worker/src/prototype-tavern-town-ui.ts
+ M apps/worker/wrangler.jsonc
+?? .brain/projects/town-module-table-stream.svx
+?? .brain/projects/town-module-table-stream-handoff.svx
+?? .brain/resources/think-live-monitor-best-practices.svx
+```
+
+Do not assume these are clean or committed. Preserve Joel's work.
+
+## Durable artifacts updated
+
+- `.brain/projects/town-module-table-stream.svx`
+  - aligned design doc for the new prototype.
+- `.brain/projects/town-module-table-stream-handoff.svx`
+  - this handoff.
+- `.brain/resources/think-live-monitor-best-practices.svx`
+  - source-backed Think notes and compatibility warning.
+- `.brain/data/prototype-build-log.jsonl`
+  - previous build receipts from old prototype work.
+
+Brain check was run after meaningful Brain edits and passed.
+
+## Decisions and invariants to preserve
+
+### Build a new prototype, not another old-monitor patch
+
+Working route:
+
+```txt
+/prototype/town-module-table
+```
+
+Do not keep polishing `/prototype/tavern-town` / `/prototype/town-module` as the primary path. It is useful as receipt/proving ground, but the next slice is new.
+
+### Always-running first slice with server hard-stop
+
+Joel does **not** want Run/Pause/Reset UI machinery dominating this prototype.
+
+Shape:
+
+- opening the route attaches to the current stream;
+- server-owned fiber starts or resumes the table stream;
+- server hard-stops after a bounded cap: moments, wall-clock, model calls, or failure;
+- operator can restart Wrangler / clear state / use dev endpoint if needed;
+- UI focuses on table events, not controls.
+
+Joel is willing to eat the local/Cloudflare AI cost risk for this first slice. The safety belongs server-side, not as front-end button sludge.
+
+### Real Cloudflare primitives under Wrangler local dev
+
+No fake runtime path.
+
+Use:
+
+- Durable Object / Agent state for active table state and stream;
+- Think PlayerAgents / RefereeAgent for minds;
+- Artifacts as frozen town module source;
+- R2 as runtime-addressable cache/storage when needed;
+- native Agent sockets / WebSocket stream for monitor;
+- `startFiber()` for lifecycle.
+
+Fail honestly if Artifacts/R2/model access breaks. No runtime fixture town fallback.
+
+### Fenwater Drainage comes from Artifacts
+
+Bring forward Fenwater, but do **not** regenerate it each run.
+
+Source of truth:
+
+```txt
+Artifact repo: agent-dungeon-town-forges
+Artifact commit: 59ec68209d85ebd7ab6c7fc2441587d672454de6
+paths:
+  towns/fenwater-drainage/index.svx
+  towns/fenwater-drainage/referee.svx
+  towns/fenwater-drainage/public-projection.svx
+  towns/fenwater-drainage/graph.json
+  towns/fenwater-drainage/receipts.jsonl
+```
+
+Existing R2 runtime keys may be used as cache:
+
+```txt
+towns/fenwater-drainage/v1/graph.json
+towns/fenwater-drainage/v1/public-projection.json
+towns/fenwater-drainage/v1/referee-private.json
+towns/fenwater-drainage/v1/receipts.jsonl
+```
+
+But the new prototype should prove reading/importing from Artifacts before play starts.
+
+### It is one real flowing table
+
+Not montage. Not chapter summaries. Not fake progress rows.
+
+The table stream is a continuous causal transcript of one table playing the town module. Speed comes from short explicit events and a Referee readiness classifier, not from skipping play.
+
+### Accumulation loop
+
+Non-combat/social/exploration play is not strict initiative. It accumulates short table events until the Referee decides the moment is ready to resolve.
+
+```txt
+Table moment opens
+  Referee frames current situation and active question
+  Players emit short table talk / thoughts / questions / tentative actions
+  Players refine or coordinate
+  Referee prompts / clarifies / asks for commitment
+  Players lock action / say my turn is over
+  Referee judges readiness
+  Referee narrates compact resolution and commits state delta
+  Next table moment opens
+```
+
+### Thoughts and feelings are audience-visible
+
+Important correction from Joel: thought bubbles are not dev-only. They are the point.
+
+Use explicit app-level outputs:
+
+- `thought_bubble` for PlayerAgent worries, feelings, reads, tactical considerations;
+- `referee_thought` for Referee weighing, pressure, pacing, adjudication posture.
+
+These are not hidden chain-of-thought scraping. They are requested structured outputs. Fog-of-war still applies: player thoughts cannot reveal hidden facts they do not know; public Referee thoughts must not reveal hidden module secrets unless intentionally revealed through play.
+
+### Referee readiness classifier
+
+Do not use only dumb fixed event counts.
+
+Use deterministic guards plus a small model/classifier call:
+
+```ts
+type TableMomentReadiness =
+  | { status: "keep_accumulating"; reason: string; prompt?: string }
+  | { status: "needs_commitment"; reason: string; prompt: string; targetAgentId?: string }
+  | { status: "ready_to_resolve"; reason: string; lockedActions: string[]; procedure?: string };
+```
+
+Source anchors already captured in the project doc:
+
+- Game Angry `game-angry-pdf-47a26de25095:s76:n0` — invite player action with a clear question like “what do you do?”
+- Game Angry `game-angry-pdf-47a26de25095:s208:n0` — Referee controls structure, not player characters.
+- OSE Basic `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s259:n0` — encounter sequence / procedure.
+- OSE Basic `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s255:n0` — searching can trigger a turn and hidden Referee roll.
+
+### Role/task-based model routing
+
+Config-swappable models, not one global model:
+
+```txt
+PLAYER_MODEL
+REFEREE_CLASSIFIER_MODEL
+REFEREE_RULING_MODEL
+REFEREE_MAINTENANCE_MODEL
+AI_GATEWAY_ID
+```
+
+Default direction:
+
+- Player micro-events: fast/cheap/lively model.
+- Readiness classifier: fastest reliable structured model.
+- Referee rulings/consequence narration: beefier model when judgment matters.
+- Maintenance/compression: cheaper structured model unless complex synthesis is needed.
+
+### Stream + compact state
+
+Use both:
+
+```txt
+TownModuleTableEvent[] = canonical table transcript / audit / product surface
+TownModuleTableState = compact current state / fast runtime read model
+```
+
+Commit events bridge them with `statePatch`.
+
+## Relevant source-backed Think notes
+
+See [[resources/think-live-monitor-best-practices]]. Key implementation bias:
+
+- use `startFiber()` for app-owned runner;
+- use `subAgent(...).chat(callback)` for live child-agent streaming;
+- use `onEvent(json)` to forward chunks/events and persist compact table events;
+- use custom tools for intentional table events;
+- do not rely on accidental model chunk soup.
+
+Compatibility warning:
+
+- `@cloudflare/think@0.7.3` currently breaks with installed `agents@0.13.2` because Think imports newer `agents/chat` exports that are unavailable.
+- Keep Think at `0.7.2` unless upgrading `agents` too.
+
+## Current old-prototype changes already made
+
+These are not the final prototype, but they are in the working tree:
+
+- `apps/worker/src/index.ts`
+  - timeout changed from 120s to 300s;
+  - `/prototype/town-module` alias added;
+  - first step now uses frozen town setup in places;
+  - default Fenwater R2 module ref fallback added;
+  - setup gear repair added for frozen town character creation;
+  - some strings shifted from tavern/town to town-module language.
+- `apps/worker/src/prototype-tavern-town-ui.ts`
+  - browser fake heartbeat removed earlier;
+  - UI copy shifted toward Town Module;
+  - process stream sorting by time added.
+- `apps/worker/wrangler.jsonc`
+  - prototype model config exists from prior work: `PROTOTYPE_MODEL`, `AI_GATEWAY_ID`.
+
+These old-prototype edits are useful receipts, but the new route should avoid inheriting the control-heavy shape.
+
+## Commands / verification already run
+
+Known checks run during this session/slice:
+
+```txt
+pnpm --filter @cloudflare-agent-dungeon/worker check
+# passed repeatedly after code edits
+
+pi_notes_brain_check
+# passed after Brain edits
+```
+
+Wrangler local server was restarted at least once after reverting Think; direct check returned the town module page quickly:
+
+```txt
+GET http://127.0.0.1:8792/prototype/town-module?variant=log&dev=1
+http=200 bytes=30112 time=0.005126
+```
+
+Old prototype first-step frozen setup was verified after fixes:
+
+```txt
+POST http://127.0.0.1:8792/api/prototype/tavern-town-beat
+http=200 time=28.37s
+state: mode=running beat=0 location=Fenwater Drainage log=4
+```
+
+Do not treat this as final validation of the new table stream. It only proves Fenwater setup can work in the old path.
+
+## Current blockers / risks
+
+- Need to inspect the actual Artifacts read API available from Workers local dev. Do not assume the write API shape is enough.
+- Need to keep package compatibility sane: Think 0.7.3 broke without a matching `agents` upgrade.
+- Existing old prototype has cross-Durable-Object persistence warnings when child contexts try to persist parent state. The new design should keep event persistence owned by the Referee parent where possible.
+- Need to avoid reintroducing Run/Pause/Reset UI theater.
+- Need to keep public output safe: no hidden town graph leaks, no raw OSE/source text.
+
+## Next concrete actions
+
+1. Inspect existing Artifacts usage in `apps/worker/src/index.ts` and `apps/worker/src/town-forge.ts`; find/read Cloudflare Artifacts API docs/source if needed.
+2. Implement `loadFenwaterTownModuleFromArtifacts()` using repo `agent-dungeon-town-forges`, commit `59ec68209d85ebd7ab6c7fc2441587d672454de6`, and the five artifact paths above.
+3. Add `TownModuleTableEventSchema`, `TownModuleTableStateSchema`, and fields in `RefereeState` for the new table stream/state.
+4. Add `/prototype/town-module-table` UI route that auto-attaches to the Referee Agent socket and renders newest-first table events only.
+5. Add server-owned table stream fiber with hard cap. It should start/resume automatically on route/socket attach or explicit internal method, not depend on visible Run/Pause buttons.
+6. Add explicit PlayerAgent/RefereeAgent table-event tools: `table_talk`, `thought_bubble`, `float_action`, `lock_action`, `referee_thought`, `ruling`, `commit`.
+7. Implement the accumulation loop with readiness classifier and role/task model routing config.
+8. Validate with Wrangler local + agent-browser: page leaves loading state, events stream, no fake fixture town, Fenwater loaded from Artifacts, hard-stop works.
+9. Append build receipt to `.brain/data/prototype-build-log.jsonl` and rerun `pi_notes_brain_check`.
+
+## Relevant skills to use next
+
+- `source-mirror` — before claiming Cloudflare API behavior.
+- `ose-rules-access` — for any OSE procedure/referee rules lookup.
+- `brain-maintenance` — for durable project graph updates.
+- `agent-browser` — to verify the monitor visually, not just curl.
+- `diagnose` — if the stream stalls, times out, or fails model/tool calls.

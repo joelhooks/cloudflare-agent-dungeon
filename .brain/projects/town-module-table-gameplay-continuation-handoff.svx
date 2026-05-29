@@ -1,0 +1,478 @@
+---
+title: Town Module Table Gameplay Continuation Handoff
+type: project
+status: active
+created_at: 2026-05-28
+updated_at: 2026-05-28
+tags:
+  - handoff
+  - prototype
+  - gameplay
+  - town-module
+  - combat
+  - memory
+---
+
+# Town Module Table Gameplay Continuation Handoff
+
+## Current objective
+
+Continue improving `/prototype/town-module-table` from “interesting live transcript” into a sharper **actual game loop**.
+
+Joel asked how to improve gameplay after the latest stall-breaker/combat run. The next slice should focus on gameplay structure, not more atmosphere.
+
+Desired next improvements:
+
+1. Clear `intent -> ruling -> new state` loop.
+2. Concrete clock moves instead of generic pressure.
+3. Position as real currency.
+4. Party tactic summary before danger.
+5. Visible failure costs.
+6. Fewer, harder choices.
+7. Combat goals beyond killing.
+8. Role-specific useful moves.
+9. Referee named moves instead of abstract “world moves.”
+10. Public inventory/resources that actually matter.
+
+Primary prior docs:
+
+- [[projects/town-module-table-stream]]
+- [[projects/town-module-table-stream-handoff]]
+- [[projects/town-module-table-game-feel-handoff]]
+
+## Receipt pass
+
+Current repo state when this handoff was written:
+
+```txt
+pwd: /Users/joel/Code/joelhooks/cloudflare-agent-dungeon
+branch: feat/realtime-agent-dungeon-campaign
+```
+
+Working tree:
+
+```txt
+ M .brain/data/prototype-build-log.jsonl
+ M apps/worker/src/index.ts
+ M apps/worker/src/prototype-tavern-town-ui.ts
+ M apps/worker/wrangler.jsonc
+?? .brain/projects/town-module-table-game-feel-handoff.svx
+?? .brain/projects/town-module-table-gameplay-continuation-handoff.svx
+?? .brain/projects/town-module-table-stream-handoff.svx
+?? .brain/projects/town-module-table-stream.svx
+?? .brain/resources/think-live-monitor-best-practices.svx
+```
+
+Verification just before writing:
+
+```txt
+pnpm --filter @cloudflare-agent-dungeon/worker check
+# passed
+```
+
+Run/browser receipts from the latest useful run:
+
+```txt
+/prototype/town-module-table?dev=1&stallbreaker=1
+```
+
+The run reached:
+
+- beat 24
+- phase `aftermath`
+- all three clocks maxed
+- combat triggered at beat 17
+- cutter dropped in combat round 1
+- 2 aftermath beats ran
+- hard stop fired after `22 moments + combat + 2 aftermath beats`
+
+## Current implementation state
+
+Main file:
+
+- `apps/worker/src/index.ts`
+
+Important current pieces:
+
+- `TownModuleTableStateSchema`
+  - `tablePhase`
+  - `combat`
+  - `playerArtifacts`
+  - `partyMemory`
+  - `refereeMemory`
+  - `stall`
+- `TownModuleTableEventSchema`
+  - includes `encounter_start`, `combat_round`, procedure/dice/clock lanes
+- `generatedTownTablePlayerArtifact(...)`
+  - creates SOUL/IDENTITY markdown-ish artifacts per player
+- `PlayerAgent.syncTownTablePersona(...)`
+- `PlayerAgent.syncTownTableMemory(...)`
+- `RefereeAgent.syncTownTableMemory(...)`
+- `reduceTownTableMemory(...)`
+- `syncTownTableMemoryToAgents(...)`
+- `parseLabeledTownText(...)`
+- `runPrototypeModelText(...)`
+  - now has 3 retry attempts with short backoff
+- per-player model failures emit honest fallback events instead of killing run
+- Referee ruling failure emits honest fallback event instead of killing run
+- `maybeStartTownTableEncounter(...)`
+- `runTownModuleTableCombatRound(...)`
+- `repeatedTownTableStall(...)`
+- `emitTownTableStallConsequence(...)`
+
+Current constants:
+
+```ts
+TOWN_MODULE_TABLE_PLAYER_IDS = ["player-a", "player-b", "player-c", "player-d"]
+TOWN_MODULE_TABLE_MAX_MOMENTS = 22
+TOWN_MODULE_TABLE_MAX_COMBAT_ROUNDS = 3
+TOWN_MODULE_TABLE_MAX_AFTER_COMBAT_MOMENTS = 2
+```
+
+## Key current behavior
+
+### What works now
+
+- Page loads and starts automatically.
+- Fenwater loads from Artifacts, not fixtures.
+- Four generated players enter with SOUL/IDENTITY artifacts.
+- Players coordinate more than before.
+- Compact memory is in table state and syncs asynchronously to Think agents.
+- Live generation uses faster model calls with SOUL/IDENTITY + memory in prompt.
+- Persistent Think agents receive memory/persona in background.
+- Network/model failures are retried; individual failures no longer kill the run.
+- Repeated dithering triggers stall consequences.
+- Combat can trigger and resolve.
+- Combat asks tactics before dice.
+- After combat, two aftermath beats run.
+
+### Latest good gameplay evidence
+
+From the stallbreaker run:
+
+- Referee punished dithering early:
+
+```txt
+The table stalls ... the Referee treats holding position as the committed action and the room moves first.
+```
+
+- Mort moved first when players hesitated.
+- Water erased options.
+- Encounter triggered from clock pressure:
+
+```txt
+Encounter escalation check: 2 on d6.
+Oh shit: cornered Fenwater cutter forces the table into encounter procedure.
+```
+
+- Combat round tactics appeared before dice:
+
+```txt
+Gorunn: cast / Turn Undead-ish tactic
+Nessa: grab ledger
+Dorn: aid / pin retreat
+Bran: withdraw / hold door
+```
+
+- Combat did real rolls:
+
+```txt
+Combat round 1 initiative: party 4, cornered Fenwater cutter 3.
+Gorunn hit for 6.
+Nessa nat 20 hit for 4.
+cornered Fenwater cutter drops.
+```
+
+- Aftermath continued:
+
+```txt
+Bind/search/flee/recover/chase style prompts.
+```
+
+### Current flaws spotted
+
+1. **Defeated combat state is stale**
+
+Latest strip showed:
+
+```txt
+Phase: aftermath · cornered Fenwater cutter HP 8/8 AC 12
+```
+
+But the cutter was dropped. `combat` object was not cleared or marked defeated in aftermath state. Fix this early.
+
+Suggested shape:
+
+```ts
+combat?: { ... status: "active" | "defeated" | "escaped" }
+lastEncounter?: { foe, outcome, beat }
+```
+
+Or simplest:
+
+- clear `combat` when `ended === true`
+- add `lastEncounter` read model for strip/history
+
+2. **Stall breaker fires too early / too broadly**
+
+It usefully breaks loops, but it fired at beat 1/2 from generic opening prompts.
+
+Better guard:
+
+- only hard-break if `beat >= 3`, or
+- any clock is at `>= 3`, or
+- same target/question repeats twice after a concrete lock.
+
+3. **World move text is still abstract**
+
+Current:
+
+```txt
+Mort/Water/word chooses the next pressure.
+```
+
+Better:
+
+```txt
+Mort bolts through the south-cut door.
+Water takes the ledger page.
+A grain-buyer runner slips out the north door.
+The cutter reaches the sluice crank.
+```
+
+4. **Choices are still sometimes soft / repeated**
+
+Current prompts can become:
+
+```txt
+chase messenger, secure Mort, or cut losses
+```
+
+Good, but sometimes repeated too often. Better choices should be mutually exclusive and concrete:
+
+```txt
+Save ledger OR stop Mort.
+Hold door OR help Nessa.
+Chase cutter OR keep exit open.
+```
+
+5. **Position is not hard enough**
+
+Players can still imply actions from positions that should be impossible. Referee should sometimes rule:
+
+```txt
+You cannot grab the ledger from the sluice mouth this beat.
+You can shout, move, or abandon the door.
+```
+
+6. **Resources are visible but not meaningful enough**
+
+HP matters in combat, but light/rope/tools/inventory are not yet visible/used in the main strip.
+
+## Recommended next implementation slice
+
+Do these in order. This is the sharpest path, not a platform project.
+
+### 1. Fix defeated foe state / phase strip
+
+Acceptance:
+
+- If foe drops, strip shows:
+
+```txt
+Phase: aftermath
+Last encounter: cornered Fenwater cutter defeated at beat 19
+```
+
+- It does **not** show active foe HP after the foe is down.
+
+Implementation options:
+
+```ts
+lastEncounter: z.object({ foe: z.string(), outcome: z.enum(["defeated", "escaped", "avoided"]), beat: z.number() }).optional()
+```
+
+When combat ends:
+
+```ts
+statePatch: {
+  tablePhase: "aftermath",
+  combat: undefined, // careful: object spread with undefined may not clear under current schema/patch parse
+  lastEncounter: { foe, outcome: "defeated", beat }
+}
+```
+
+Because optional fields can be annoying with object spread, verify the patch actually clears or use `TownModuleTableStateSchema.parse` on an explicit object with `combat` omitted.
+
+### 2. Add party tactic summary event
+
+After player micro-events and before Referee ruling, emit a compact party plan row:
+
+```txt
+referee · party_tactic / referee_thought:
+Party tactic: Gorunn holds north door; Nessa grabs ledger; Dorn watches shadows; Bran reads beam. Risk: water takes the south route.
+```
+
+Implementation:
+
+- derive from latest `lock_action` / `table_talk` events;
+- no extra model call at first;
+- deterministic string is fine.
+
+Acceptance:
+
+- Every resolved moment with at least two player actions gets one visible party-tactic summary.
+- This summary should feed `refereeMemory` / `partyMemory` tactics.
+
+### 3. Concrete clock moves
+
+Replace generic max-clock pressure with named moves.
+
+Current clocks:
+
+- `Mort panic`
+- `North Ditch water`
+- `Grain-buyer warned`
+
+Suggested threshold moves:
+
+```ts
+Mort panic 3/6: Mort stammers, eyes nearest exit.
+Mort panic 6/6: Mort bolts, faints, calls help, or blurts dangerous truth.
+
+North Ditch water 3/6: Water reaches prints; next delay erases trail.
+North Ditch water 6/6: Water seals/claims route, clue, or character position.
+
+Grain-buyer warned 3/6: Witness slips / runner starts moving.
+Grain-buyer warned 6/6: Cutter/messenger acts, trap gets set, price changes, lead relocates.
+```
+
+The key: at 6/6, even if encounter roll misses, a named move still happens.
+
+Acceptance:
+
+- No more “Mort/Water/word chooses pressure.”
+- Every maxed clock consequence names the actor/object/route affected.
+
+### 4. Position-as-currency guard
+
+Before ruling, infer if a declared action is impossible from position.
+
+First simple version:
+
+- if text says `grab ledger` but member not at `Mort's bar`, Referee should convert to move-toward, not grab.
+- if text says `block North Ditch door` but not at/near door, it costs the beat to move there.
+- if text says `help Nessa` but Nessa is in different location, requires moving/abandoning current post.
+
+Acceptance:
+
+- Referee rulings include at least one line like:
+
+```txt
+From the sluice mouth, Nessa can reach the door or shout to the bar, not grab the ledger this beat.
+```
+
+Do not overbuild a map. Just protect the obvious locality.
+
+### 5. Public resource strip
+
+Add compact resources to the sticky strip or party line:
+
+```txt
+Gorunn 3hp AC10 mace/holy symbol · Nessa 3hp AC10 knife/rope · ...
+```
+
+Use existing `party.inventory`.
+
+Acceptance:
+
+- HP appears in party line.
+- Lost/dropped items from memory or events show when present.
+- Combat/flood can reference those resources.
+
+## Important constraints
+
+- Do not build a VTT.
+- Do not add a giant mechanics dashboard.
+- Keep newest-first feed and flow/pace.
+- Use visible compact rows, not walls of mechanics.
+- Preserve SOUL/IDENTITY artifacts and compact memory.
+- Preserve honest failure states; no fake runtime fallback content.
+- Fenwater must come from Artifacts source of truth.
+- Referee remains canonical truth owner.
+- PlayerAgents must not receive hidden Referee graph facts.
+- Public stream can show thought bubbles because they are explicit app outputs, not hidden chain-of-thought.
+
+## Relevant source/skills next
+
+Use these if touching their areas:
+
+- `ose-rules-access` for deeper OSE combat, surprise, morale, traps, searching, turns, trap detection.
+- `diagnose` if the stream freezes/fails again.
+- `brain-maintenance` when updating Brain/build log.
+- `source-mirror` before new Cloudflare/Think API claims.
+
+## First gameplay patch applied — 2026-05-29
+
+Implemented the first pass from this checklist:
+
+1. Fixed stale aftermath foe strip by adding `lastEncounter` and clearing `combat` after defeat.
+2. Added deterministic party tactic summary rows before Referee rulings.
+3. Made `emitTownTableStallConsequence(...)` choose named Mort / water / grain-buyer moves instead of abstract `Mort/Water/word` pressure.
+4. Relaxed stall breaker so it does not hard-trigger before danger is online (`beat >= 3`, a clock at `>= 3`, or non-exploration phase).
+5. Added HP/AC/gear to the party strip.
+6. Bumped `TOWN_MODULE_TABLE_MAX_MOMENTS` from 22 to 100 for longer runs.
+7. Tuned player/referee prompts toward hard OSE-ish choices:
+   - clear intent / risk / changed state;
+   - named actor/object/route moves;
+   - position matters;
+   - hard choices like save ledger OR stop Mort.
+
+Verification:
+
+```txt
+pnpm --filter @cloudflare-agent-dungeon/worker check
+# passed
+
+pi_notes_brain_check
+# passed
+```
+
+Browser/API smoke:
+
+```txt
+/prototype/town-module-table?dev=1&gameplay=2
+```
+
+Observed:
+
+- party strip shows HP/AC/gear;
+- `Party tactic: ...` rows appear;
+- named stall move appears: `Mort acts first...`;
+- combat reached aftermath;
+- API showed `combat: null` and `lastEncounter: { foe: "cornered Fenwater cutter", outcome: "defeated", beat: 9 }`.
+
+## Remaining continuation checklist
+
+1. Run the longer 100-moment prototype repeatedly and capture 8 run receipts.
+2. Increase difficulty between runs instead of only relying on stochastic clocks.
+3. Add explicit difficulty knobs to state/config, for example:
+   - clock tick rate / starting pressure;
+   - encounter threshold (`1-2`, then `1-3`, etc.);
+   - foe HP/AC/damage;
+   - fewer free hesitation beats;
+   - scarcer safe exits / light / gear.
+4. Add Referee improv abilities as explicit, bounded named moves, not hidden fudge:
+   - reveal cost;
+   - split party;
+   - clock jump;
+   - NPC interrupts;
+   - clue degrades;
+   - soft move -> hard move on repeat.
+5. Compare outputs against gameplay goals:
+   - real choices, not vibes;
+   - danger changes state;
+   - OSE-ish procedure receipts;
+   - player roles matter;
+   - aftermath creates next leads.
+6. Publish a summary of improvements to Wzrrd after enough runs. Clarify exact Wzrrd target if needed.

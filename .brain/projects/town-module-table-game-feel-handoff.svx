@@ -1,0 +1,544 @@
+---
+title: Town Module Table Game Feel Handoff
+type: project
+status: active
+created_at: 2026-05-28
+updated_at: 2026-05-28
+tags:
+  - handoff
+  - prototype
+  - game-feel
+  - town-module
+  - combat
+  - memory
+---
+
+# Town Module Table Game Feel Handoff
+
+## Current objective
+
+Continue improving `/prototype/town-module-table` so it feels like **real agents playing a dangerous OSE-ish town module**, not merely an atmospheric transcript.
+
+Joel likes the current flow/pace and the investigation loop. The next slice should preserve that while making:
+
+- players coordinate tactics before / during danger;
+- encounters actually challenge the party;
+- combat visually obvious and mechanically dangerous;
+- memory robust enough that these are **real agents**, not stateless prose calls.
+
+Primary design doc: [[projects/town-module-table-stream]].
+Previous handoff: [[projects/town-module-table-stream-handoff]].
+
+## Receipt pass
+
+Current repo state at handoff:
+
+```txt
+pwd: /Users/joel/Code/joelhooks/cloudflare-agent-dungeon
+branch: feat/realtime-agent-dungeon-campaign
+```
+
+Working tree:
+
+```txt
+ M .brain/data/prototype-build-log.jsonl
+ M apps/worker/src/index.ts
+ M apps/worker/src/prototype-tavern-town-ui.ts
+ M apps/worker/wrangler.jsonc
+?? .brain/projects/town-module-table-game-feel-handoff.svx
+?? .brain/projects/town-module-table-stream-handoff.svx
+?? .brain/projects/town-module-table-stream.svx
+?? .brain/resources/think-live-monitor-best-practices.svx
+```
+
+Do not assume this is committed. Preserve Joel's work.
+
+Verification at this handoff:
+
+```txt
+pnpm --filter @cloudflare-agent-dungeon/worker check
+# passed
+```
+
+## Current prototype URL
+
+```txt
+https://agent-dungeon-memory.localhost/prototype/town-module-table?dev=1&moments=22
+```
+
+Dev reset endpoint:
+
+```txt
+POST http://127.0.0.1:8792/api/prototype/town-module-table-reset
+```
+
+State endpoint:
+
+```txt
+GET http://127.0.0.1:8792/api/prototype/town-module-table-state
+```
+
+## Current implementation shape
+
+Main file:
+
+- `apps/worker/src/index.ts`
+
+Important current functions/types:
+
+- `TownModuleTableEventSchema`
+- `TownModuleTableStateSchema`
+- `/prototype/town-module-table` route
+- `townModuleTableUiPage()`
+- `loadFenwaterTownModuleFromArtifacts()`
+- `initializeTownModuleTableFromArtifacts()`
+- `startTownModuleTableRun()`
+- `executeTownModuleTableRun()`
+- `runTownModuleTableMoment()`
+- `emitTownTableProcedureEvents()`
+- `maybeStartTownTableEncounter()`
+- `runTownModuleTableCombatRound()`
+- `runPrototypeModelText()`
+- hardened `runPrototypeModelJson()` with repair retry and balanced-object extraction
+- `sanitizeTownTablePublicText()`
+- `generatedTownTableCharacterName()`
+
+Current constants:
+
+```ts
+TOWN_MODULE_TABLE_PLAYER_IDS = ["player-a", "player-b", "player-c", "player-d"]
+TOWN_MODULE_TABLE_MAX_MOMENTS = 22
+TOWN_MODULE_TABLE_MAX_COMBAT_ROUNDS = 3
+```
+
+Current event lanes include:
+
+- `player`
+- `referee`
+- `world`
+- `rules`
+- `dice`
+- `clock`
+- `commit`
+- `error`
+- `artifacts`
+
+Current event kinds include:
+
+- `frame_moment`
+- `table_talk`
+- `thought_bubble`
+- `ask_referee`
+- `float_action`
+- `lock_action`
+- `referee_thought`
+- `ruling`
+- `world_update`
+- `procedure_check`
+- `dice_roll`
+- `clock_tick`
+- `encounter_start`
+- `combat_round`
+- `commit`
+- `error`
+
+Current compact state includes:
+
+- `tablePhase`: `exploration | encounter | combat | aftermath`
+- optional `combat`: foe, foe HP, foe AC, round, trigger
+- `activeLeads`
+- `clocks`
+- party `position`
+- party `intent`
+
+## Current game-feel rating
+
+Latest rough rating: **8.2 / 10**.
+
+It now feels like real play more often than not.
+
+Strong signs:
+
+- Players make concrete choices.
+- Referee reacts to committed actions.
+- Party positions matter.
+- Clocks create pressure.
+- Objects recur with continuity: key, shell token, deed, shield, door, sluice, ledger.
+- Consequences land: lost gear, flooded routes, NPC panic, trail degradation.
+- Combat can trigger organically from clock thresholds.
+- Combat produced encounter start, initiative, attack rolls, damage, foe HP, and aftermath.
+
+Latest user correction:
+
+> i like this, but i'd like to see the players coordinate on tactics, and the encounter actually challenge them and be dangerous
+
+Joel also specifically wants these upgrades:
+
+- Add phase/foe to the sticky strip.
+- Give combat/encounter rows bigger styling.
+- Add `MAX_AFTER_COMBAT_MOMENTS = 2`.
+- Make combat round prompt ask for tactical choices instead of auto-attacking only.
+- Upgrade memory so the system is robust; these ARE real agents.
+
+## What has changed recently
+
+### Flow / table stream
+
+- New route `/prototype/town-module-table` runs automatically from server fiber.
+- Fenwater Drainage loads from Artifacts repo `agent-dungeon-town-forges` commit `59ec68209d85ebd7ab6c7fc2441587d672454de6`.
+- UI newest-first feed shows table events.
+- Sticky orientation strip currently shows:
+  - Location
+  - Clocks
+  - Leads
+  - Party positions
+- Need to add phase/foe there next.
+
+### Resilience
+
+- Rich prose no longer uses big JSON blobs.
+- Player events use labeled text: `THOUGHT`, `TALK`, `FLOAT`, `ASK`, `LOCK`.
+- Referee rulings use labeled text: `THOUGHT`, `RULING`, `NEXT`.
+- JSON calls have one repair retry and balanced-object parsing.
+- Overlong player text is compacted, not rejected.
+
+### Game teeth
+
+- 4 players.
+- 22 exploration moments.
+- Up to 3 combat overtime rounds if combat starts late.
+- Party positions/intents update from player events.
+- Procedure rows are more specific:
+  - following trail
+  - forcing/blocking exit
+  - questioning local
+  - examining/searching object
+- Clocks prefer relevant pressure and ignore maxed clocks.
+- Threshold consequences fire only when crossing 3/6 or 6/6, not every beat after max.
+- Encounter escalation check rolls d6 on max clock crossings; on 1-2, table enters encounter/combat procedure.
+- Combat currently auto-resolves a small fight using initiative, attacks, damage, HP, aftermath.
+
+### OSE source receipt
+
+JoelClaw search found OSE encounter sequence source:
+
+```txt
+old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s1298:n0
+```
+
+Snippet/heading indicates encounter sequence includes surprise, distance, initiative, actions. Public stream should use safe summaries only, not raw book text.
+
+Existing project doc also cites:
+
+```txt
+old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s259:n0
+old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s255:n0
+```
+
+Use `ose-rules-access` before implementing deeper OSE procedures, traps, searching, surprise, morale, or combat claims.
+
+## Key decisions/invariants to preserve
+
+### Keep flow/pace
+
+Joel likes the flow/pace. Do not bury the stream under a big dashboard, excessive controls, or slow full-combat machinery.
+
+### More game, not less table
+
+Add game teeth as small visible rows/events. Keep table talk primary.
+
+Good:
+
+```txt
+rules · procedure_check: Searching the beam takes a turn.
+dice · dice_roll: Secret search/detail check rolled; visible result follows.
+clock · clock_tick: North Ditch water 3/6.
+world · ruling: You confirm three newer nicks share the same hand.
+combat · round: Vex attacks, hit for 2; cutter wounds Vex for 2.
+```
+
+Bad:
+
+```txt
+Large mechanical stat dump replacing the table stream.
+```
+
+### Thoughts are audience-visible
+
+`thought_bubble` and `referee_thought` are app-level explicit outputs, not hidden chain-of-thought scraping. Keep them public-safe and concise.
+
+### Fenwater source
+
+Fenwater Drainage comes from Artifacts, not regeneration or runtime fixtures.
+
+```txt
+repo: agent-dungeon-town-forges
+commit: 59ec68209d85ebd7ab6c7fc2441587d672454de6
+```
+
+### Avoid JSON for prose
+
+Do not revert rich prose outputs to large JSON strings. Use labeled text for prose-heavy events and JSON only for compact classifier/state outputs.
+
+### Referee invention discipline
+
+The current Referee prompt was updated to avoid symbolic escalation unless justified by:
+
+- clock threshold;
+- room/location entry;
+- trap;
+- encounter check.
+
+Preserve this. The desired town flow is:
+
+```txt
+NPC -> object -> location -> procedure -> consequence
+```
+
+not:
+
+```txt
+cool symbol -> omen -> cosmic entity -> runaway prose
+```
+
+## Important current limitation: memory
+
+Architecture has real Think agents:
+
+- `RefereeAgent extends Think`
+- `PlayerAgent extends Think`
+
+Existing private state types include:
+
+`PlayerAgentState`:
+
+- `brainSummary`
+- `currentGoal`
+- `currentFear`
+- `privateTheories`
+- `relationships`
+- `recentMemories`
+
+`RefereeAgentState`:
+
+- `brainSummary`
+- `npcMemory`
+- `frontNotes`
+- `rulesNotes`
+- `unresolvedQuestions`
+- `recentMemories`
+
+Existing memory methods:
+
+- `PlayerAgent.rememberTavernBeat(...)`
+- `RefereeAgent.rememberTavernBeat(...)`
+
+But `/prototype/town-module-table` currently mostly uses:
+
+- `runPrototypeModelText(...)`
+- `TownModuleTableState`
+- `TownModuleTableEvent[]`
+
+So it remembers **what happened in the transcript/compact state**, but not yet strong per-agent memory. Joel corrected the framing: these ARE real agents. The next slice should make table-memory robust without throwing away the working flow.
+
+Desired next memory shape:
+
+```ts
+partyMemory: Record<PlayerId, {
+  knows: string[];
+  suspects: string[];
+  goals: string[];
+  losses: string[];
+  tactics: string[];
+  relationships: string[];
+}>;
+refereeMemory: {
+  revealedFacts: string[];
+  unresolvedThreads: string[];
+  npcState: string[];
+  clocksExplained: string[];
+  hiddenStillPrivate: string[];
+}
+```
+
+Keep it compact and state-backed first. Then optionally feed it into actual `PlayerAgent`/`RefereeAgent` Think state once stable.
+
+## Implemented continuation slice — 2026-05-28
+
+Completed the first tactics/memory continuation:
+
+- Sticky strip now includes `Phase` and shows combat foe HP/AC when present.
+- `encounter_start` and `combat_round` rows now get bigger visual styling.
+- Added `TOWN_MODULE_TABLE_MAX_AFTER_COMBAT_MOMENTS = 2`.
+- Combat rounds now ask each player for a tactical action before dice are rolled.
+- Combat target selection pays attention to tactics: attackers are inferred from player tactics; defended/withdrawing characters are less exposed.
+- Maxed clocks can act during combat and cost exposed characters HP/position.
+- Added compact state-backed `partyMemory` and `refereeMemory` reducers after commit events.
+- Verified with `pnpm --filter @cloudflare-agent-dungeon/worker check` and `pi_notes_brain_check`.
+- Browser/API receipts: `/prototype/town-module-table?dev=1&tactics=1` showed the Phase strip; state API after first commit showed `partyMemory` keys for all four players and `refereeMemory.revealedFacts` populated.
+
+Remaining tactical/memory work:
+
+- Combat tactics are still model-generated micro-actions, not true Think `PlayerAgent` turns.
+- Tactical labels can still be embedded inside thought text instead of parsed as primary labels; parser should detect inner `LOCK:` / combat labels better.
+- Compact memory is in table state; next robust slice should feed it into actual `PlayerAgent` / `RefereeAgent` Think state or route table generation through those agents.
+
+## Best next concrete actions
+
+### 1. Add phase/foe to the sticky strip
+
+Current strip shows Location / Clocks / Leads / Party. Add:
+
+```txt
+Phase: exploration | combat | aftermath
+Foe: cornered Fenwater cutter HP 4/6 AC 12
+```
+
+If no combat, show `Phase: exploration`.
+
+### 2. Give combat/encounter rows bigger styling
+
+In `townModuleTableUiPage()`:
+
+- style `.event.encounter_start`
+- style `.event.combat_round`
+- maybe add thicker borders, red/orange background, larger text.
+
+Goal: newest-first feed should make `OH SHIT COMBAT STARTED` visually obvious.
+
+### 3. Add `MAX_AFTER_COMBAT_MOMENTS = 2`
+
+Current runner supports:
+
+```txt
+22 exploration moments
++ up to 3 combat overtime rounds if tablePhase remains combat
+```
+
+But if combat ends in aftermath, it can stop immediately. Add 2 aftermath beats after combat ends so players can bind/search/loot/flee/secure objects.
+
+Shape:
+
+```ts
+const TOWN_MODULE_TABLE_MAX_AFTER_COMBAT_MOMENTS = 2;
+```
+
+After combat overtime loop, if `tablePhase === "aftermath"`, run up to 2 more `runTownModuleTableMoment()` calls before hard-stop.
+
+### 4. Make combat ask for tactics instead of auto-attacking only
+
+Current `runTownModuleTableCombatRound()` auto-attacks with first two alive party members. This proved the procedure, but it is not tactical enough.
+
+Next slice should emit a combat prompt first:
+
+```txt
+combat_round / ask_referee:
+Round 1 tactics: who holds the door, who attacks, who protects the caster, who grabs the ledger/key/token, who withdraws?
+```
+
+Then players should produce labeled combat actions, e.g.
+
+```txt
+ATTACK: stab the cutter
+DEFEND: shield Siv while she binds wounds
+GRAB: snatch the ledger before water takes it
+CAST: use light/sleep/etc if available
+WITHDRAW: fall back through bar
+```
+
+Keep it simple. Do not build full VTT combat.
+
+### 5. Make combat dangerous
+
+Danger knobs:
+
+- foe attacks more than one character if party ignores position;
+- attacks can damage HP and drop low-HP PCs;
+- if combat round starts with a maxed clock, the environment acts too:
+  - flood pushes someone;
+  - door slams;
+  - carried object washes away;
+  - witness flees;
+- missed tactical coordination should cost position/gear/time.
+
+Show danger in stream:
+
+```txt
+world · ruling: Vex is down to 1 hp. The cutter still has the door.
+clock · clock_tick: North Ditch water remains maxed; flood acts every round.
+```
+
+### 6. Add tactical coordination memory
+
+After each combat/encounter beat, update compact memory:
+
+- who protected whom;
+- who got hurt;
+- who lost gear;
+- who prefers risky moves;
+- unresolved tactical problem.
+
+Feed this into subsequent player prompts so agents coordinate instead of four solo declarations.
+
+### 7. Memory reducer for real agents
+
+Implement a lightweight table-memory reducer after commit events:
+
+```txt
+commit event -> update partyMemory + refereeMemory -> include memory in player/referee prompts
+```
+
+Start state-backed; later mirror into Think agents.
+
+Prompt additions:
+
+Player prompt should receive:
+
+- own memory card;
+- party tactical summary;
+- known losses / wounds;
+- current unresolved objective.
+
+Referee prompt should receive:
+
+- revealed facts;
+- unresolved threads;
+- NPC states;
+- hidden still private reminder.
+
+## Possible traps / future iteration
+
+Joel asked about small traps and detection. That is likely next iteration, not this exact handoff unless quick.
+
+Potential town-native traps:
+
+- weak floor by sluice;
+- rigged tally string bell;
+- rotten ladder rung;
+- door latch that floods a channel;
+- shell-token trip line;
+- false ledger page with wax/ash clue.
+
+Before implementing actual OSE trap/search mechanics, use `ose-rules-access` and keep public stream to safe summaries.
+
+## Current live takeaways
+
+Latest run with 22 moments did trigger combat and aftermath:
+
+- Encounter start at beat 17 from Grain-buyer warned clock max.
+- Combat rounds at beats 18 and 19.
+- `cornered Fenwater cutter` attacked Vex and did 2 damage.
+- Hrum hit with a natural 20 and dropped the cutter.
+- Aftermath continued through beat 22.
+
+This is the best evidence so far that the prototype can feel like a game.
+
+Missing: players did not tactically coordinate during combat; combat was procedural and visually easy to miss.
+
+## Relevant skills next
+
+- `ose-rules-access` before deeper OSE combat/trap/search procedure.
+- `diagnose` if the stream wedges or errors.
+- `source-mirror` before new Cloudflare/Think API claims.
+- `brain-maintenance` for durable Brain updates.
+- `handoff` if compacting again.

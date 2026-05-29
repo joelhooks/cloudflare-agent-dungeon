@@ -1,0 +1,113 @@
+---
+title: Town Module Table Gameplay Run Summary
+type: project
+status: active
+created_at: 2026-05-29
+updated_at: 2026-05-29
+tags:
+  - prototype
+  - gameplay
+  - run-summary
+  - town-module
+  - wzrrd
+---
+
+# Town Module Table Gameplay Run Summary
+
+## Summary
+
+The Town Module Table moved from atmospheric transcript toward an actual dangerous table loop.
+
+Implemented improvements:
+
+- 100-moment exploration cap.
+- Difficulty ramp from 1/8 to 8/8.
+- Party tactic summaries before rulings.
+- Named Referee moves instead of abstract pressure.
+- Explicit Referee improv move list in prompts.
+- Defeated foe state fixed with `lastEncounter`.
+- Combat clears into aftermath instead of showing stale foe HP.
+- Combat cap now forces an aftermath/escape outcome instead of grinding forever.
+- HP/AC/gear visible in the sticky party strip.
+- Player prompts bias toward role moves over analysis.
+- Referee prompt asks for intent, risk, changed state, and hard mutually exclusive choices.
+- Text model calls now have timeout protection.
+- Run reset is safer via run-id guard.
+
+## Run receipts
+
+Sampled eight difficulty runs with `/tmp/run-town-table-samples.mjs`.
+
+### Difficulty 1
+
+Reached beat 7 exploration in sampled window. Party tactic rows appeared. Encounter checks fired but missed.
+
+### Difficulty 2
+
+Reached beat 5 exploration. Pressure produced concrete water/door/collar stakes instead of pure talk.
+
+### Difficulty 3
+
+Reached beat 11 exploration. Mort panic and North Ditch water both hit max; named pressure and party tactic rows stayed visible.
+
+### Difficulty 4
+
+Reached aftermath. `waterlogged debt-thing` was defeated and `lastEncounter` tracked outcome.
+
+### Difficulty 5
+
+Reached aftermath. `cornered Fenwater cutter` defeated. Later aftermath asked whether to chase runner, secure Mort/ledger, or cut losses.
+
+### Difficulty 6
+
+Reached beat 6 exploration in sampled window. Stronger pressure appeared quickly: Mort drowning, hatch bolt scraping, water at 5/6.
+
+### Difficulty 7
+
+Reached aftermath. `waterlogged debt-thing` defeated after visible combat damage and tactics.
+
+### Difficulty 8
+
+First sampled run exposed a bug: combat could grind through ~100 rounds because the exploration loop did not break on `tablePhase === "combat"`. Fixed by breaking exploration loop when phase changes and forcing an aftermath/escape outcome after max combat rounds.
+
+Second difficulty-8 smoke reached beat 7 exploration without crashing after the fix.
+
+## Gameplay diagnosis
+
+What improved:
+
+- The table now creates real costs: lost first moves, water taking evidence, Mort acting first, runners moving, combat damage.
+- Party tactic rows help the transcript read like coordinated play.
+- Difficulty ramp makes later runs bite sooner.
+- Combat no longer leaves stale defeated foe HP in the strip.
+- Referee has explicit bounded improv moves, which is the right kind of spice: visible moves, not hidden fudge.
+
+Still weak:
+
+- Long 100-moment runs are expensive and slow; sampled runs are useful, but a full unattended 8-run suite needs a cheaper model or a max-duration harness.
+- Some model-generated rulings still invent too much cinematic detail; keep steering toward concrete position/clue/clock effects.
+- Position matters more, but there is still no hard locality validator.
+- Gear strip shows resources, but most gear is empty or generic.
+- Combat can still become a slog at high HP unless objectives resolve it before HP attrition.
+
+## Next gameplay patch
+
+1. Add a deterministic locality validator:
+   - ledger requires `Mort's bar`;
+   - North Ditch door requires `North Ditch door`;
+   - sluice work requires `sluice mouth`;
+   - otherwise action becomes movement/setup, not instant effect.
+2. Add explicit combat objectives:
+   - hold door 2 rounds;
+   - grab object before water tick;
+   - prevent messenger escape;
+   - extract wounded ally.
+3. Add starter gear by class so resources matter:
+   - fighter: shield/weapon;
+   - thief: rope/knife/tools;
+   - cleric: holy symbol/mace;
+   - magic-user: one fragile scroll/chalk/oil.
+4. Add run harness controls:
+   - `sampleSeconds` / `maxBeats` for test runs;
+   - summary endpoint for run receipts.
+5. Keep difficulty ramp, but tune high difficulty with objectives rather than raw HP.

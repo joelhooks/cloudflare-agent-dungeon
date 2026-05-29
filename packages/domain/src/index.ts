@@ -1,3 +1,6 @@
+export * from "./adventure-module";
+export * from "./table-run";
+
 export type PlayerId = `player-${string}`;
 export type CharacterId = `character-${string}`;
 export type LocationId = `location-${string}`;
