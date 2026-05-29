@@ -1,0 +1,93 @@
+---
+title: Think, Durable Objects, and the Real Shape of AI Applications
+kind: resource
+status: captured
+created: 2026-05-27
+tags:
+  - cloudflare
+  - think
+  - durable-objects
+  - ai-runtime
+  - source-research
+  - agent-dungeon
+source_url: https://gist.github.com/threepointone/eace8c09462aca85f3dedd7b2f451eaf
+source_author: threepointone
+---
+
+# Think, Durable Objects, and the Real Shape of AI Applications
+
+## Source
+
+- URL: https://gist.github.com/threepointone/eace8c09462aca85f3dedd7b2f451eaf
+- Title: “Think, Durable Objects, and the Real Shape of AI Applications”
+- Author: `threepointone`
+- Captured: 2026-05-27
+
+## Question answered
+
+Why is Cloudflare Think more than a simple `streamText` chat wrapper, and what does that imply for Cloudflare Agent Dungeon?
+
+## Bottom line
+
+The gist frames Think as a durable runtime for AI work, not a chat UI helper. Its core argument matches our prototype direction: real AI apps are stateful distributed systems with reconnects, tool calls across network boundaries, cancellations, overlapping requests, stream recovery, durable submissions, and background work. Durable Objects are a good fit because each reasoning session can behave like a durable actor with local SQLite state, serialized execution, WebSocket ownership, timers, and recovery hooks.
+
+For Agent Dungeon: this strengthens the current design bet.
+
+> Think runs the minds. Durable Object actors hold the durable reasoning lifecycle. The Referee/body owns truth and capability boundaries.
+
+## Key claims to preserve
+
+- Chat is the **control plane**, not necessarily the product UI. A chat turn can be started by a browser, schedule, webhook, parent agent, or programmatic submission.
+- A production AI interaction is a small distributed system: clients disconnect, multiple tabs race, tools may execute on either side of the network, streams fail mid-turn, and assistant messages mutate after tool results.
+- Think treats each turn as a durable reasoning process with memory, tools, streams, recovery, and attached clients.
+- AI interactions want to be actors: private state, serialized execution, local message/stream/tool/recovery state, WebSockets, timers, and background work.
+- Durable Objects collapse a pile of infrastructure concerns that otherwise require some mix of Postgres, Redis locks, queues, pub/sub, WebSocket gateways, workers, and object storage.
+- Streaming is a state machine. Robust runtime behavior needs to know what was sent, persisted, replayable, orphaned, finalizable, regenerated, or continued.
+- Client tools are distributed tool calls: JSON Schema definitions from the browser, server-side model tool calls, client execution, result return over protocol, persisted state updates, broadcasts, and optional continuation.
+- The server owns conversation truth. Client message arrays are reconciled against durable server state to avoid duplicated assistants, stale tool state, and orphaned tool calls.
+- Recovery is a lifecycle, not a retry button. The right recovery depends on whether interruption happened before output, after partial output, during a durable submission, or after the conversation changed.
+- The AI SDK remains the model layer. Think uses it as a primitive inside a larger durable runtime.
+- A runtime-agnostic Think core is plausible, but the full experience depends on strong runtime guarantees: one durable actor per reasoning process, local transactional storage, serialized execution, WebSocket ownership, alarms/schedules, and recovery hooks.
+
+## Agent Dungeon implications
+
+### 1. Keep Referee as the truth boundary
+
+The gist’s “server owns the conversation” maps directly to “Referee owns the campaign.” Player agents should never own truth or mutate canonical state directly. Their outputs remain typed proposals.
+
+### 2. Treat gameplay streaming as state, not vibes
+
+The public monitor should render event projections and stream state with explicit lifecycle modes. Do not treat token streaming as merely “append chunks to UI.” We need receipts for:
+
+- active turn
+- persisted chunks/events
+- completed turn
+- orphaned or recovered turn
+- cancelled turn
+- failed turn with reason
+
+### 3. Client tools are powerful but dangerous under fog-of-war
+
+Think’s client-tool shape is useful for UI interaction, but every client-side capability must be scoped by projection. A player-safe browser tool must not become a hidden-state read path.
+
+### 4. Durable submissions fit autonomous beats
+
+For scheduled/ongoing gameplay, durable programmatic submissions are a better default than synchronous request/response. They make inspection, cancellation, duplicate protection, and recovery part of the model.
+
+### 5. State machines stay the right mental model
+
+The gist explicitly describes streaming and recovery as lifecycle/state-machine problems. That supports using explicit XState v5/statechart sketches for Referee turn modes, child-agent turn status, monitor stream state, and stale-lock recovery.
+
+## Design pressure / tradeoffs
+
+- Think should own AI turn lifecycle where possible. Hand-rolling the whole agent loop would be suspicious unless a concrete Think gap forces it.
+- Referee/body code still needs deterministic domain boundaries: visibility projection, dice ledger, event commit, proposal validation, and public sanitization.
+- Recovery can preserve progress, but cannot magically resume a lost LLM reader. The game loop must be able to commit honest partial/failure events.
+- Runtime-agnostic abstractions sound tidy, but may erase the useful Durable Object guarantees that make this prototype compelling.
+
+## Related Brain notes
+
+- `.brain/resources/cloudflare-think-agentic-loop-research.svx`
+- `.brain/resources/idiomatic-think-prototype-shape.svx`
+- `.brain/resources/run-agent-tool-plain-agent-parent.svx`
+- `.brain/projects/think-dnd-prototype.svx`

@@ -26,6 +26,7 @@ created: 2026-05-24
 ## Resources
 
 - [[resources/cloudflare-think-agentic-loop-research]]
+- [[resources/think-durable-objects-real-ai-applications]]
 - [[resources/idiomatic-think-prototype-shape]]
 - [[resources/referee-soul-game-angry]]
 - [[resources/agent-skill-design-patterns]]

@@ -94,9 +94,9 @@ export const TownGraphSchema = z.object({
   locations: z.array(TownLocationSchema).min(5).max(7),
   npcs: z.array(TownNpcSchema).min(6).max(10),
   rumors: z.array(TownRumorSchema).min(6).max(6),
-  clocks: z.array(TownClockSchema).min(2).max(3),
   latentEncounters: z.array(LatentEncounterSchema).min(4).max(6),
   publicProjection: TownPublicProjectionSchema,
+  clocks: z.array(TownClockSchema).min(2).max(3),
   refereeOpenQuestions: z.array(shortText).min(2).max(8),
   validationNotes: z.array(shortText).min(1).max(8)
 });
@@ -126,6 +126,7 @@ export const TownForgeStoredProcessEventSchema = z.object({
   assetKind: z.enum(["location", "npc", "rumor", "clock", "encounter"]).optional(),
   asset: z.unknown().optional(),
   status: z.enum(["running", "done", "warning", "error"]).optional(),
+  runId: z.string().optional(),
   at: z.string().datetime(),
   campaignId: z.string().min(1)
 });
@@ -155,7 +156,10 @@ export const TownForgeStateSchema = z.object({
     town: ArtifactSyncStatusSchema.optional(),
     r2Key: z.string().optional()
   }).optional(),
+  stage: z.string().optional(),
+  draft: z.unknown().optional(),
   events: z.array(TownForgeStoredProcessEventSchema).default([]),
+  startedAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime(),
   error: z.string().optional()
 });
@@ -222,6 +226,7 @@ export function townForgeMonitorState(state: TownForgeState): TownForgeState {
     ...state,
     publicTown: sanitizeTownGraphForMonitor(state.town),
     town: undefined,
+    draft: undefined,
     error: state.error ? "Town Forge failed. See Wrangler logs or dev receipts." : undefined
   });
 }
@@ -260,7 +265,8 @@ export function createVillageSkeletonSkillCard(): string {
     "- 5-7 locations: tavern, market/service, authority, shrine/healer, edge/danger site, plus optional worksite/residence.",
     "- 6-10 NPC records: each has publicTell, want, publicDisposition, hiddenNotes, and memorySeed.",
     "- exactly 6 rumors: each has public text and hidden truth state.",
-    "- 2-3 clocks: each has visible signs and hidden notes.",
+    "- Generate in order: locations first, then NPCs, then rumors, then latent encounters, then projection, then clocks.",
+    "- 2-3 clocks: concise pressure trackers only. Clocks come after the town surface exists; places, people, rumors, and encounter affordances carry the play surface.",
     "- 4-6 latent encounters: social, hazard, chase, combat-risk, discovery, or resource-pressure.",
     "",
     "## Safety",
@@ -651,7 +657,7 @@ export function townForgeUiPage(): Response {
     let events = [];
     let reasoningItems = [];
     let assets = { locations: [], npcs: [], rumors: [], clocks: [], encounters: [] };
-    let autoRecover = localStorage.getItem('townForgeAutoRecover') !== 'off';
+    let autoRecover = false;
     let lastAutoRecoverAt = 0;
     const params = new URLSearchParams(location.search);
     const rawEnabled = params.get('raw') === '1' && params.get('dev') === '1';
@@ -712,6 +718,52 @@ export function townForgeUiPage(): Response {
       const t = newestEventTime();
       return t ? Math.max(0, Math.round((Date.now() - t) / 1000)) : null;
     }
+    function runStartedTime() {
+      const explicit = state && state.startedAt ? Date.parse(state.startedAt) : 0;
+      if (Number.isFinite(explicit) && explicit > 0) return explicit;
+      const startEvent = events.slice().reverse().find(function (event) { return event.lane === 'state' && /started|resum/i.test(event.message || ''); });
+      const fallback = startEvent && startEvent.at ? Date.parse(startEvent.at) : 0;
+      return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+    }
+    function formatDuration(totalSeconds) {
+      if (totalSeconds === null || totalSeconds === undefined) return 'none yet';
+      const seconds = Math.max(0, Math.floor(totalSeconds));
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return h + 'h ' + String(m).padStart(2, '0') + 'm ' + String(s).padStart(2, '0') + 's';
+      return m + 'm ' + String(s).padStart(2, '0') + 's';
+    }
+    function runDurationSeconds() {
+      const started = runStartedTime();
+      return started ? Math.max(0, Math.round((Date.now() - started) / 1000)) : null;
+    }
+    function latestEventMatching(predicate) {
+      return events.find(function (event) { return predicate(event); }) || null;
+    }
+    function activeAttemptStartedTime() {
+      const event = latestEventMatching(function (event) { return /Town Forge step started|Workers AI structured stream request submitted/.test(event.message || ''); });
+      const parsed = event && event.at ? Date.parse(event.at) : 0;
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    }
+    function activeAttemptDurationSeconds() {
+      const started = activeAttemptStartedTime();
+      return started ? Math.max(0, Math.round((Date.now() - started) / 1000)) : null;
+    }
+    function latestProviderEvent() {
+      return latestEventMatching(function (event) {
+        return event.lane === 'referee' && /First Workers AI JSON chunk received|Workers AI is streaming TownGraph JSON|AI SDK parsed a partial TownGraph snapshot|Workers AI stream returned an error part|Workers AI structured stream emitted an error event/.test(event.message || '');
+      });
+    }
+    function providerObservationAgeSeconds() {
+      const event = latestProviderEvent();
+      const parsed = event && event.at ? Date.parse(event.at) : 0;
+      return Number.isFinite(parsed) && parsed > 0 ? Math.max(0, Math.round((Date.now() - parsed) / 1000)) : null;
+    }
+    function latestProviderDetail() {
+      const event = latestProviderEvent();
+      return event ? (event.detail || event.message || '') : '';
+    }
     function eventKey(event) { return [event.type || 'process', event.lane || '', event.message || '', event.at || ''].join('|'); }
     function rebuildDerivedStateFromEvents() {
       const replay = events.slice().reverse();
@@ -762,6 +814,10 @@ export function townForgeUiPage(): Response {
       const failed = state && state.mode === 'failed';
       const ready = state && state.mode === 'ready';
       const age = lastUpdateAgeSeconds();
+      const runtime = runDurationSeconds();
+      const attemptRuntime = activeAttemptDurationSeconds();
+      const providerAge = providerObservationAgeSeconds();
+      const providerDetail = latestProviderDetail();
       const stale = forging && age !== null && age > 30;
       forgeButton.textContent = forging ? 'Forging…' : failed ? 'Resume Forge' : ready ? 'Town Ready' : 'Forge Town';
       forgeButton.disabled = !socketReady || forging || ready;
@@ -770,8 +826,13 @@ export function townForgeUiPage(): Response {
       health.innerHTML = [
         ['Socket', socketReady ? 'live' : 'disconnected', socketReady ? 'health-good' : 'health-bad'],
         ['Forge', stale ? 'quiet / checking recovery' : (state ? state.mode : 'connecting'), stale ? 'health-warn' : failed ? 'health-bad' : forging ? 'health-good' : ''],
-        ['Last update', age === null ? 'none yet' : age + 's ago', stale ? 'health-warn' : ''],
-        ['Auto recovery', autoRecover ? 'on until reset' : 'off after reset', autoRecover ? 'health-good' : 'health-warn']
+        ['Run age (wall)', formatDuration(runtime), forging && runtime !== null && runtime > 60 ? 'health-warn' : forging ? 'health-good' : ''],
+        ['Active attempt age', formatDuration(attemptRuntime), forging && attemptRuntime !== null && attemptRuntime > 60 ? 'health-warn' : forging ? 'health-good' : ''],
+        ['Started', runStartedTime() ? new Date(runStartedTime()).toLocaleTimeString() : 'none yet', ''],
+        ['Last state event', age === null ? 'none yet' : age + 's ago', stale ? 'health-warn' : ''],
+        ['Last provider event', providerAge === null ? 'none yet' : providerAge + 's ago', providerAge !== null && providerAge > 20 ? 'health-warn' : forging ? 'health-good' : ''],
+        ['Observed stream', providerDetail || 'none yet', ''],
+        ['Auto resume', autoRecover ? 'on' : 'off', autoRecover ? 'health-warn' : 'health-good']
       ].map(function (row) { return '<div class="row ' + row[2] + '"><strong>' + escapeHtml(row[0]) + '</strong><span>' + escapeHtml(row[1]) + '</span></div>'; }).join('');
       feed.innerHTML = events.map(function (event) {
         const lane = event.lane || 'socket';
@@ -794,6 +855,8 @@ export function townForgeUiPage(): Response {
       const publicTown = state && state.publicTown;
       summary.innerHTML = publicTown ? [
         ['Mode', state.mode],
+        ['Run age (wall)', formatDuration(runtime)],
+        ['Active attempt age', formatDuration(attemptRuntime)],
         ['Town', publicTown.name],
         ['Premise', publicTown.premise],
         ['Locations', (publicTown.locations || []).length],
@@ -801,14 +864,14 @@ export function townForgeUiPage(): Response {
         ['Rumors', (publicTown.rumors || []).length],
         ['Clocks', (publicTown.clocks || []).length],
         ['Latent encounters', (publicTown.latentEncounters || []).length]
-      ].map(function (row) { return '<div class="row"><strong>' + escapeHtml(row[0]) + '</strong><span>' + escapeHtml(row[1]) + '</span></div>'; }).join('') : '<div class="row"><strong>Mode</strong><span>' + escapeHtml(state ? state.mode : 'connecting') + '</span></div>';
+      ].map(function (row) { return '<div class="row"><strong>' + escapeHtml(row[0]) + '</strong><span>' + escapeHtml(row[1]) + '</span></div>'; }).join('') : '<div class="row"><strong>Mode</strong><span>' + escapeHtml(state ? state.mode : 'connecting') + '</span></div><div class="row"><strong>Run age (wall)</strong><span>' + escapeHtml(formatDuration(runtime)) + '</span></div><div class="row"><strong>Active attempt age</strong><span>' + escapeHtml(formatDuration(attemptRuntime)) + '</span></div>';
       projection.textContent = publicTown ? JSON.stringify(publicTown.publicProjection, null, 2) : 'Waiting.';
       artifacts.textContent = state ? JSON.stringify({ artifacts: state.artifacts || null, receipts: (state.receipts || []).map(function (receipt) { return { kind: receipt.kind, status: receipt.status, title: receipt.title, summary: receipt.summary }; }) }, null, 2) : 'Waiting.';
     }
 
-    function send(type) {
+    function send(type, extra) {
       if (!socketReady || !socket || socket.readyState !== WebSocket.OPEN) return false;
-      socket.send(JSON.stringify({ type }));
+      socket.send(JSON.stringify(Object.assign({ type }, extra || {})));
       return true;
     }
     function maybeAutoRecover() {
@@ -818,11 +881,8 @@ export function townForgeUiPage(): Response {
         send('town_forge.get_state');
       }
       if (state.mode !== 'failed') return;
-      if (Date.now() - lastAutoRecoverAt < 8000) return;
-      lastAutoRecoverAt = Date.now();
-      busy = true;
-      pushEvent({ lane: 'socket', status: 'running', message: 'Auto resume requested after failed/stalled forge.', detail: 'Auto recovery is enabled. Reset is the explicit cancel/clear action.', reasoning: 'The monitor detected a recoverable failed Town Forge and requested another server-side resume without clearing persisted draft graph history.', at: new Date().toISOString() });
-      send('town_forge.start');
+      // No browser auto-resume. Failed runs wait for an explicit operator click or API call.
+      return;
     }
 
     function connect() {
@@ -862,16 +922,14 @@ export function townForgeUiPage(): Response {
     }
 
     forgeButton.addEventListener('click', function () {
-      autoRecover = true;
-      localStorage.setItem('townForgeAutoRecover', 'on');
       const resume = state && state.mode === 'failed';
       if (!resume) { events = []; reasoningItems = []; assets = emptyAssets(); rawChunks = []; rawLog.textContent = rawEnabled ? 'Waiting for raw chunks…' : ''; }
       busy = true;
-      pushEvent({ lane: 'socket', status: 'running', message: resume ? 'Resume Forge requested.' : 'Forge Town requested.', reasoning: resume ? 'Operator requested a recover/resume run. Persisted stream history and public-safe draft graph assets stay visible; only explicit reset clears them.' : 'Manual operator requested one Forge run. The page will build graph panels from live typed asset events as they arrive.', at: new Date().toISOString() });
-      send('town_forge.start');
+      pushEvent({ lane: 'socket', status: 'running', message: resume ? 'Resume Forge requested.' : 'Forge Town requested.', reasoning: resume ? 'Operator requested a recover/resume run. Prior draft graph assets are display receipts only; the next generation does not use them as source material.' : 'Manual operator requested one Forge run. The page will build graph panels from live typed asset events as they arrive.', at: new Date().toISOString() });
+      send('town_forge.start', { source: 'manual' });
       render();
     });
-    resetButton.addEventListener('click', function () { autoRecover = false; localStorage.setItem('townForgeAutoRecover', 'off'); events = []; reasoningItems = []; assets = emptyAssets(); rawChunks = []; rawLog.textContent = rawEnabled ? 'Waiting for raw chunks…' : ''; busy = true; pushEvent({ lane: 'socket', status: 'running', message: 'Town Forge reset requested.', reasoning: 'Reset explicitly cancels any active run, disables auto recovery, clears the monitor graph, and asks the Referee body to clear Town Forge state.', at: new Date().toISOString() }); send('town_forge.reset'); render(); });
+    resetButton.addEventListener('click', function () { autoRecover = false; localStorage.setItem('townForgeAutoRecover', 'off'); events = []; reasoningItems = []; assets = emptyAssets(); rawChunks = []; rawLog.textContent = rawEnabled ? 'Waiting for raw chunks…' : ''; busy = true; pushEvent({ lane: 'socket', status: 'running', message: 'Town Forge reset requested.', reasoning: 'Reset explicitly cancels any active run, keeps auto-resume disabled, clears the monitor graph, and asks the Referee body to clear Town Forge state.', at: new Date().toISOString() }); send('town_forge.reset'); render(); });
     setInterval(function () { maybeAutoRecover(); render(); }, 3000);
     connect();
     render();
