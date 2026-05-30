@@ -2731,10 +2731,17 @@ export class Referee extends Agent<Env, RefereeState> {
     if (event.kind === "commit" && typeof rawPatch.beat === "number" && rawPatch.beat <= current.beat) return event;
     const normalizedPatch = normalizeTableRunPatch(rawPatch as { clocks?: TownModuleTableState["clocks"]; party?: TownModuleTableState["party"] });
     const activeFrontIds = takeUniqueStrings([...inferFenwaterFrontIds(event.text), ...current.activeFrontIds], 24);
+    const inferredLocationId = inferFenwaterLocationId(event.text);
+    const inferredLocation = fenwaterLocationTitle(inferredLocationId);
+    const isRefereeTransition = (event.kind === "ruling" || event.kind === "world_update" || event.kind === "commit") && /\b(go|head|move|travel|follow|chase|enter|leave|exit|withdraw|sprint|run|cross|descend|climb|crawl|arrive|reach|surface|push on|press on)\b/i.test(event.text);
+    const mentionedLocationIds = inferredLocationId ? takeUniqueStrings([inferredLocationId, ...current.mentionedLocationIds], 48) : current.mentionedLocationIds;
+    const visitedLocationIds = inferredLocationId && isRefereeTransition ? takeUniqueStrings([inferredLocationId, ...current.visitedLocationIds], 32) : current.visitedLocationIds;
     const patched = TownModuleTableStateSchema.parse({
       ...current,
       events: [event, ...current.events].slice(0, 500),
       activeFrontIds,
+      mentionedLocationIds,
+      ...(inferredLocationId && isRefereeTransition && inferredLocation ? { locationId: inferredLocationId, location: inferredLocation, visitedLocationIds, transitionIntentLocationId: inferredLocationId } : { visitedLocationIds }),
       updatedAt: at,
       ...normalizedPatch
     });
