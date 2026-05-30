@@ -113,6 +113,9 @@ export const TableClockSchema = z.object({
 });
 export type TableClock = z.infer<typeof TableClockSchema>;
 
+export const TablePartyMemberStatusSchema = z.enum(["active", "incapacitated", "dead", "missing"]);
+export type TablePartyMemberStatus = z.infer<typeof TablePartyMemberStatusSchema>;
+
 export const TablePartyMemberSchema = z.object({
   playerId: z.string().min(1),
   player: z.string().min(1),
@@ -122,9 +125,29 @@ export const TablePartyMemberSchema = z.object({
   armorClass: z.number().int().optional(),
   inventory: z.array(z.string()).optional(),
   position: z.string().optional(),
-  intent: z.string().optional()
+  intent: z.string().optional(),
+  status: TablePartyMemberStatusSchema.default("active")
 });
 export type TablePartyMember = z.infer<typeof TablePartyMemberSchema>;
+
+export function clampTableClock(clock: TableClock): TableClock {
+  const parsed = TableClockSchema.parse(clock);
+  return { ...parsed, value: Math.min(parsed.max, Math.max(0, parsed.value)) };
+}
+
+export function normalizeTablePartyMember(member: z.input<typeof TablePartyMemberSchema>): TablePartyMember {
+  const parsed = TablePartyMemberSchema.parse(member);
+  if ((parsed.status === "active" || !parsed.status) && typeof parsed.hp === "number" && parsed.hp <= 0) return { ...parsed, hp: 0, status: "incapacitated" };
+  return parsed;
+}
+
+export function normalizeTableRunPatch<T extends { clocks?: z.input<typeof TableClockSchema>[]; party?: z.input<typeof TablePartyMemberSchema>[] }>(patch: T): T & { clocks?: TableClock[]; party?: TablePartyMember[] } {
+  return {
+    ...patch,
+    ...(Array.isArray(patch.clocks) ? { clocks: patch.clocks.map((clock) => clampTableClock(TableClockSchema.parse(clock))) } : {}),
+    ...(Array.isArray(patch.party) ? { party: patch.party.map(normalizeTablePartyMember) } : {})
+  };
+}
 
 export const TableRunLimitsSchema = z.object({
   maxBeats: z.number().int().positive().optional(),
@@ -270,7 +293,10 @@ export const TableRunSummarySchema = z.object({
     modelCalls: z.number().int().nonnegative(),
     localityCorrections: z.number().int().nonnegative(),
     objectiveProgress: z.number().int().nonnegative(),
-    combatRows: z.number().int().nonnegative()
+    combatRows: z.number().int().nonnegative(),
+    inactivePartyMembers: z.number().int().nonnegative().default(0),
+    clockOverflows: z.number().int().nonnegative().default(0),
+    duplicateCommitBeats: z.number().int().nonnegative().default(0)
   }),
   interesting: z.array(TableEventSchema.pick({ beat: true, lane: true, kind: true, speaker: true, text: true }))
 });
@@ -292,6 +318,11 @@ export function tableRunHardStopReason(input: { phase: TableRunPhase; maxMoments
 
 export function summarizeTableRun(state: TableRunCoreState): TableRunSummary {
   const interesting = state.events.filter((event) => /Party tactic|Objective|Encounter|drops|Aftermath|Position matters|acts first|runner|water takes|damage|attacks|sample|maxBeats|sampleSeconds/i.test(event.text)).slice(0, 30).map((event) => ({ beat: event.beat, lane: event.lane, kind: event.kind, speaker: event.speaker, text: event.text }));
+  const commitBeats = new Map<number, number>();
+  for (const event of state.events) {
+    if (event.kind !== "commit") continue;
+    commitBeats.set(event.beat, (commitBeats.get(event.beat) ?? 0) + 1);
+  }
 
   return TableRunSummarySchema.parse({
     mode: state.mode,
@@ -309,7 +340,10 @@ export function summarizeTableRun(state: TableRunCoreState): TableRunSummary {
       modelCalls: state.modelCallsUsed,
       localityCorrections: state.events.filter((event) => /Position matters/i.test(event.text)).length,
       objectiveProgress: state.events.filter((event) => /Objective progress/i.test(event.text)).length,
-      combatRows: state.events.filter((event) => event.kind === "combat_round").length
+      combatRows: state.events.filter((event) => event.kind === "combat_round").length,
+      inactivePartyMembers: state.party.filter((member) => (member.status ?? "active") !== "active" || (member.hp ?? 1) <= 0).length,
+      clockOverflows: state.clocks.filter((clock) => clock.value > clock.max).length,
+      duplicateCommitBeats: [...commitBeats.values()].filter((count) => count > 1).length
     },
     interesting
   });

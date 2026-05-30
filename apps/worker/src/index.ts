@@ -41,6 +41,7 @@ import {
 
 import { MemoryFS } from "./memory-fs";
 import { FENWATER_DRAINAGE_ARTIFACT_COMMIT, FENWATER_DRAINAGE_ARTIFACT_PATHS, adventureModuleFromFenwaterTownGraph } from "./adventure-module/fenwater";
+import { fenwaterInitialClocks, fenwaterInitialLeads, fenwaterOpeningAffordances } from "./adventure-module/fenwater-content";
 import {
   advanceCampaignTurn,
   commitAdventureChoice,
@@ -59,6 +60,7 @@ import {
   TableRunCoreStateSchema as DomainTableRunCoreStateSchema,
   TableRunLimitsSchema as DomainTableRunLimitsSchema,
   advanceCombatObjective as advanceDomainCombatObjective,
+  normalizeTableRunPatch,
   normalizeTableRunStartOptions,
   parseLabeledActionProposal,
   parseRefereeRulingText,
@@ -2718,11 +2720,13 @@ export class Referee extends Agent<Env, RefereeState> {
     });
     const state = this.requireRefereeState();
     const current = state.prototypeTownModuleTable ?? this.emptyTownModuleTableState();
+    const rawPatch = event.kind === "commit" && event.statePatch && typeof event.statePatch === "object" ? event.statePatch as Record<string, unknown> : {};
+    const normalizedPatch = normalizeTableRunPatch(rawPatch as { clocks?: TownModuleTableState["clocks"]; party?: TownModuleTableState["party"] });
     const patched = TownModuleTableStateSchema.parse({
       ...current,
       events: [event, ...current.events].slice(0, 500),
       updatedAt: at,
-      ...(event.kind === "commit" && event.statePatch && typeof event.statePatch === "object" ? event.statePatch as Record<string, unknown> : {})
+      ...normalizedPatch
     });
     const next = event.kind === "commit" ? this.reduceTownTableMemory(patched, event) : patched;
     this.setState({ ...state, prototypeTownModuleTable: next });
@@ -4953,15 +4957,11 @@ export class Referee extends Agent<Env, RefereeState> {
       location: startingLocation.name,
       tablePhase: "exploration",
       activeQuestion: `You are at ${startingLocation.name}. Start exhausting this town: pick a concrete lead, person, object, or exit to press first.`,
-      affordances: [...startingLocation.visibleAffordances, ...town.locations.filter((location) => projection.visibleLocationIds.includes(location.id)).flatMap((location) => location.visibleAffordances.map((affordance) => `${location.name}: ${affordance}`))].slice(0, 12),
+      affordances: [...fenwaterOpeningAffordances(), ...startingLocation.visibleAffordances, ...town.locations.filter((location) => projection.visibleLocationIds.includes(location.id)).flatMap((location) => location.visibleAffordances.map((affordance) => `${location.name}: ${affordance}`))].slice(0, 18),
       visibleThreads: town.rumors.filter((rumor) => visibleRumorIds.has(rumor.id)).map((rumor) => rumor.text).slice(0, 8),
-      activeLeads: ["Mort Peatwright", "knife-nicked beam", "shell-token tally", "North Ditch door", "south-cut drainage rumors"],
-      clocks: [
-        { name: "Mort panic", value: Math.max(0, current.difficulty - 3), max: 6, note: "rises when the party corners him or flashes proof" },
-        { name: "North Ditch water", value: Math.max(0, current.difficulty - 4), max: 6, note: "rises when time passes or the sluice is disturbed" },
-        { name: "Grain-buyer warned", value: Math.max(0, current.difficulty - 5), max: 6, note: "rises when the party makes noise or splits attention" }
-      ],
-      party: players.map(({ playerId, player, character }) => ({ playerId, player, character: character.name, className: character.className, hp: character.stats.hp, armorClass: character.stats.armorClass, inventory: character.inventory.length ? character.inventory : domainStarterGearForClass(character.className), position: startingLocation.name, intent: "arriving" })),
+      activeLeads: fenwaterInitialLeads(),
+      clocks: fenwaterInitialClocks(current.difficulty),
+      party: players.map(({ playerId, player, character }) => ({ playerId, player, character: character.name, className: character.className, hp: character.stats.hp, armorClass: character.stats.armorClass, inventory: character.inventory.length ? character.inventory : domainStarterGearForClass(character.className), position: startingLocation.name, intent: "arriving", status: "active" as const })),
       playerArtifacts: Object.fromEntries(players.map(({ playerId, soulMd, identityMd }) => [playerId, { soulMd, identityMd }])),
       partyMemory: Object.fromEntries(players.map(({ playerId, soulMd, identityMd }) => [playerId, { knows: [identityMd.split("\n").slice(2, 6).join("; ")], suspects: [], goals: [soulMd.split("Private drive: ")[1]?.split("\n")[0] ?? "find leverage before accepting danger"], losses: [], tactics: ["Coordinate before danger resolves."], relationships: [] }])), 
       events: current.events,
@@ -5119,7 +5119,7 @@ export class Referee extends Agent<Env, RefereeState> {
     if (!combat) return;
     const round = combat.round + 1;
     this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "referee", speaker: "Referee", kind: "ask_referee", text: `Combat round ${round}: ${combat.objective ? `objective: ${combat.objective.text} ` : ""}Who attacks ${combat.foe}, who blocks escape or flood, who protects wounded allies, and who grabs the crucial object?` });
-    const tacticResults = await Promise.all(state.party.filter((candidate) => (candidate.hp ?? 1) > 0).map(async (member) => {
+    const tacticResults = await Promise.all(state.party.filter((candidate) => (candidate.status ?? "active") === "active" && (candidate.hp ?? 1) > 0).map(async (member) => {
       const memory = state.partyMemory[member.playerId];
       let text: string;
       try {
@@ -5157,8 +5157,8 @@ export class Referee extends Agent<Env, RefereeState> {
     let foeHp = combat.foeHp;
     const party = tacticalState.party.map((member) => ({ ...member }));
     const recentTactics = tacticalState.events.slice(0, Math.max(8, party.length + 4));
-    const attackers = party.filter((member) => (member.hp ?? 1) > 0 && recentTactics.some((event) => event.speaker === member.character && /attack|stab|strike|shoot|hit|rush|cut|knife|club|sling/i.test(event.text))).slice(0, 3);
-    const activeAttackers = attackers.length ? attackers : party.filter((member) => (member.hp ?? 1) > 0).slice(0, 2);
+    const attackers = party.filter((member) => (member.status ?? "active") === "active" && (member.hp ?? 1) > 0 && recentTactics.some((event) => event.speaker === member.character && /attack|stab|strike|shoot|hit|rush|cut|knife|club|sling/i.test(event.text))).slice(0, 3);
+    const activeAttackers = attackers.length ? attackers : party.filter((member) => (member.status ?? "active") === "active" && (member.hp ?? 1) > 0).slice(0, 2);
     for (const member of activeAttackers) {
       const attack = secureRandomInt(20);
       const hit = attack >= combat.foeArmorClass;
@@ -5168,8 +5168,8 @@ export class Referee extends Agent<Env, RefereeState> {
       if (foeHp <= 0) break;
     }
     if (foeHp > 0) {
-      const vulnerable = party.filter((member) => (member.hp ?? 1) > 0 && !recentTactics.some((event) => event.speaker === member.character && /defend|shield|hold|guard|protect|block|withdraw/i.test(event.text)));
-      const targetPool = vulnerable.length ? vulnerable : party.filter((member) => (member.hp ?? 1) > 0);
+      const vulnerable = party.filter((member) => (member.status ?? "active") === "active" && (member.hp ?? 1) > 0 && !recentTactics.some((event) => event.speaker === member.character && /defend|shield|hold|guard|protect|block|withdraw/i.test(event.text)));
+      const targetPool = vulnerable.length ? vulnerable : party.filter((member) => (member.status ?? "active") === "active" && (member.hp ?? 1) > 0);
       const targetMember = targetPool[secureRandomInt(Math.max(targetPool.length, 1)) - 1];
       const targetIndex = party.findIndex((member) => member.playerId === targetMember?.playerId);
       const target = party[targetIndex];
@@ -5184,7 +5184,7 @@ export class Referee extends Agent<Env, RefereeState> {
     }
     const maxedClock = tacticalState.clocks.find((clock) => clock.value >= clock.max);
     if (foeHp > 0 && maxedClock) {
-      const exposed = party.find((member) => (member.hp ?? 1) > 0 && !recentTactics.some((event) => event.speaker === member.character && /hold|brace|door|water|flood|withdraw/i.test(event.text)));
+      const exposed = party.find((member) => (member.status ?? "active") === "active" && (member.hp ?? 1) > 0 && !recentTactics.some((event) => event.speaker === member.character && /hold|brace|door|water|flood|withdraw/i.test(event.text)));
       if (exposed) {
         const idx = party.findIndex((member) => member.playerId === exposed.playerId);
         party[idx] = { ...exposed, hp: Math.max(0, (exposed.hp ?? 1) - 1) };
@@ -5308,9 +5308,14 @@ export class Referee extends Agent<Env, RefereeState> {
       await this.runTownModuleTableCombatRound();
       return;
     }
-    const positions = before.party.map((member) => `${member.character}: ${member.position ?? before.location}${member.intent ? ` (${member.intent})` : ""}`).join(" | ");
+    const positions = before.party.map((member) => `${member.character}: ${member.position ?? before.location}${member.intent ? ` (${member.intent})` : ""}${member.status && member.status !== "active" ? ` [${member.status}]` : ""}`).join(" | ");
     this.appendTownTableEvent({ beat: before.beat, visibility: "public", lane: "referee", speaker: "Referee", kind: "referee_thought", text: `Watching: ${before.activeQuestion} Positions: ${positions}` });
-    const microResults = await Promise.all(before.party.map(async (member) => {
+    const activeParty = before.party.filter((member) => (member.status ?? "active") === "active" && (member.hp ?? 1) > 0);
+    if (activeParty.length === 0) {
+      this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: "No active party members can act. The Referee shifts to capture, rescue, retreat, or TPK aftermath instead of asking downed characters for normal actions.", statePatch: { beat: before.beat + 1, moment: before.moment + 1, mode: "stopped", tablePhase: "aftermath", stoppedReason: "no active party members remain" } });
+      return;
+    }
+    const microResults = await Promise.all(activeParty.map(async (member) => {
       const playerId = TOWN_MODULE_TABLE_PLAYER_IDS.find((id) => id === member.playerId) ?? "player-a";
       let text: string;
       try {

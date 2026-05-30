@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TableRunCoreStateSchema, advanceCombatObjective, normalizeTableRunStartOptions, parseLabeledActionProposal, parseRefereeRulingText, requiredLocalityForAction, starterGearForClass, summarizeTableRun, tableRunHardStopReason, tableRunSampleStopReason } from "./table-run";
+import { TableRunCoreStateSchema, advanceCombatObjective, clampTableClock, normalizeTablePartyMember, normalizeTableRunPatch, normalizeTableRunStartOptions, parseLabeledActionProposal, parseRefereeRulingText, requiredLocalityForAction, starterGearForClass, summarizeTableRun, tableRunHardStopReason, tableRunSampleStopReason } from "./table-run";
 
 describe("table run mechanics", () => {
   it("computes run stop reasons", () => {
@@ -11,6 +11,12 @@ describe("table run mechanics", () => {
   it("normalizes run harness options", () => {
     expect(normalizeTableRunStartOptions({ difficulty: 99, maxBeats: 0.2, sampleSeconds: 12.6 })).toEqual({ difficulty: 8, maxBeats: 1, sampleSeconds: 13 });
     expect(normalizeTableRunStartOptions({ difficulty: -2 })).toEqual({ difficulty: 1 });
+  });
+
+  it("normalizes clock overflow and incapacitated party members", () => {
+    expect(clampTableClock({ name: "Water", value: 8, max: 6 })).toEqual({ name: "Water", value: 6, max: 6 });
+    expect(normalizeTablePartyMember({ playerId: "player-a", player: "Mara", character: "Hrum", hp: 0 }).status).toBe("incapacitated");
+    expect(normalizeTableRunPatch({ clocks: [{ name: "Water", value: 9, max: 6 }], party: [{ playerId: "player-a", player: "Mara", character: "Hrum", hp: -2 }] })).toMatchObject({ clocks: [{ value: 6 }], party: [{ hp: 0, status: "incapacitated" }] });
   });
 
   it("parses labeled player action proposals", () => {
@@ -84,6 +90,9 @@ describe("table run mechanics", () => {
     expect(summary.counts.localityCorrections).toBe(1);
     expect(summary.counts.objectiveProgress).toBe(1);
     expect(summary.counts.combatRows).toBe(1);
+    expect(summary.counts.inactivePartyMembers).toBe(0);
+    expect(summary.counts.clockOverflows).toBe(0);
+    expect(summary.counts.duplicateCommitBeats).toBe(0);
     expect(summary.stoppedReason).toBe("sampleSeconds 60s reached");
   });
 });

@@ -5,6 +5,7 @@ import {
   type AdventureModuleComponentRef
 } from "@cloudflare-agent-dungeon/domain";
 import type { TownGraph } from "../town-forge";
+import { FENWATER_EXPANDED_COMPONENTS } from "./fenwater-content";
 
 const FENWATER_ARTIFACT_PATHS = [
   "towns/fenwater-drainage/graph.json",
@@ -34,7 +35,7 @@ export function adventureModuleFromFenwaterTownGraph(input: {
   const visibleNpcIds = new Set(projection.visibleNpcIds);
   const visibleRumorIds = new Set(projection.visibleRumorIds);
 
-  const components: AdventureModuleComponent[] = [
+  const generatedComponents: AdventureModuleComponent[] = [
     {
       id: town.id,
       kind: "settlement",
@@ -84,6 +85,12 @@ export function adventureModuleFromFenwaterTownGraph(input: {
     { id: "fenwater-north-ditch-door", kind: "localityAnchor", title: "North Ditch door", visibility: "public", payload: { requires: ["north ditch", "ditch door", "shell-token"] } },
     { id: "fenwater-sluice-mouth", kind: "localityAnchor", title: "sluice mouth", visibility: "public", payload: { requires: ["sluice", "black water", "drain"] } }
   ];
+  const components = [...generatedComponents, ...FENWATER_EXPANDED_COMPONENTS];
+  const ids = new Set<string>();
+  for (const component of components) {
+    if (ids.has(component.id)) throw new Error(`Duplicate Fenwater AdventureModule component id: ${component.id}`);
+    ids.add(component.id);
+  }
 
   return AdventureModuleSchema.parse({
     schema: "AdventureModule.v1",

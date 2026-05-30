@@ -1,0 +1,400 @@
+---
+title: "Fenwater Long-Run AdventureModule PRD"
+type: "project"
+status: "active"
+created_at: "2026-05-30"
+tags:
+  - prd
+  - agent-dungeon
+  - adventure-module
+  - town-module-table
+  - fenwater
+---
+
+# Fenwater Long-Run AdventureModule PRD
+
+## Problem statement
+
+The production 100-beat Town Module Table run proved the system can run long, but it did **not** prove the campaign can sustain long play.
+
+The run stayed fixated on the opening tavern/flood scene around Mort's bar, North Ditch door, sluice mouth, ledger, knife-nicked beam, and drowning pressure. By beat 100, three characters were at `0hp`, all three visible clocks were maxed, and the Referee was still escalating the same scene instead of moving play into the wider Fenwater Drainage module.
+
+Joel's correction: the system must improve the **module content** and the runtime. Fenwater should support 100–1000 beats of exploration, fronts, recovery, travel, factions, and consequences. It should not stretch one opening scene into infinite pressure prose.
+
+## Desired outcome
+
+A 100-beat production or local validation run should look like a campaign moving through Fenwater, not one stuck location.
+
+Success means:
+
+- the opening bar is finite and useful, not endless;
+- player choices unlock and move through multiple module locations;
+- Referee pressure comes from authored module fronts, routes, clocks, and factions;
+- agents keep agency: the system should make the world respond and offer meaningful exits, not forcibly teleport or railroad them out of the bar;
+- incapacitated characters stop acting;
+- clocks never overflow their max values;
+- duplicate beat commits are prevented;
+- aftermath resolves into transition, recovery, pursuit, capture, or stop;
+- public monitor remains safe and readable;
+- the module has enough authored content to plausibly support 100–1000 beats over many sessions.
+
+## Non-goals
+
+- Do not build a generic VTT.
+- Do not hand-roll a full new agent harness.
+- Do not make the run longer by letting the Referee loop on one scene.
+- Do not expose Referee-only module payloads, private player artifacts, hidden graph state, or raw rules corpus text publicly.
+- Do not quote OSE rules text in public events; use source-safe procedure summaries.
+- Do not expand content as fake runtime fallback data. Expansion should be explicit module content or test-only fixtures.
+
+## Source receipts
+
+- `AGENTS.md`
+  - real software, Cloudflare-first runtime, Think-first prototype, Referee owns truth, no generic VTT first.
+- `BRAIN.md`
+  - `.brain/projects/` is canonical for active planning documents.
+- `.brain/projects/town-table-interface-extraction.svx`
+  - `AdventureModule` is the durable project/code noun.
+  - `AdventureScenario` is the OSE/source alias.
+  - Fenwater is one concrete implementation, not the abstraction.
+  - Referee owns hidden state; player outputs are proposals.
+- `.brain/projects/town-module-table-100-beat-improvement-plan.svx`
+  - 100-beat run receipt and workflow synthesis.
+  - Root cause: no strong scene progression.
+  - Required fix: runtime safety + expanded AdventureModule frontiers + scene/location transitions.
+- Production run URL observed by Joel:
+  - `https://agentdungeon.ai/prototype/town-module-table?prod=100-fixed`
+- Code seams from workflow review:
+  - `apps/worker/src/index.ts`
+  - `apps/worker/src/adventure-module/fenwater.ts`
+  - `packages/domain/src/adventure-module.ts`
+  - `packages/domain/src/table-run.ts`
+
+## Operator workflows
+
+### Watch a long table run
+
+As Joel, I can start a bounded 100-beat run and see the party move through Fenwater locations instead of spending every beat in the tavern.
+
+Acceptance:
+
+- run reaches configured cap or honest stop state;
+- summary reports multiple visited locations;
+- active questions refer to current location/fronts;
+- no `0hp` character produces normal action rows.
+
+### Expand Fenwater as module content
+
+As an implementer, I can add new Fenwater locations, routes, clocks, factions, encounter fronts, rest spots, and leverage as validated `AdventureModule` components without hardcoding every phrase in the Worker.
+
+Acceptance:
+
+- module content parses;
+- component IDs are unique;
+- visibility boundaries are tested;
+- public projection excludes referee-only payloads.
+
+### Referee moves scenes forward
+
+As the Referee runtime, I can turn maxed clocks, repeated tavern probing, and resolved encounters into scene transitions.
+
+Acceptance:
+
+- Mort's bar surfaces outside routes and changing opportunity costs by early beat/clock triggers without forcing a move;
+- maxed clocks close/reveal routes, move NPC fronts, or alter risk while preserving player agency;
+- aftermath transitions into travel, recovery, pursuit, capture, continued in-place action with cost, or stop.
+
+### Validate long-run quality
+
+As an operator, I can run a sample and read a summary that highlights whether the run actually explored the module.
+
+Acceptance:
+
+- summary includes visited locations, active fronts, max clocks, incapacitations, stops, and duplicate-commit count;
+- validation fails if a 30+ beat run never leaves the opening scene unless it stopped honestly for TPK/capture.
+
+## Implementation shape
+
+### 1. Runtime safety foundation
+
+Affected modules:
+
+- `packages/domain/src/table-run.ts`
+- `apps/worker/src/index.ts`
+- `packages/domain/src/table-run.test.ts`
+- worker tests as needed
+
+Changes:
+
+- Add `status` to `TablePartyMember`:
+  - `active`
+  - `incapacitated`
+  - `dead`
+  - `missing`
+- Add normalization helpers:
+  - `clampTableClock()`
+  - `normalizeTablePartyMember()`
+  - `normalizeTableRunPatch()`
+- Apply normalization in `appendTownTableEvent()` before state patches are committed.
+- Skip inactive/incapacitated PCs during normal micro-event generation.
+- Emit public incapacitation events when status changes.
+- Stop or transition to capture/rescue when no active PCs remain.
+- Add run/beat guards for commit patches.
+
+### 2. Agency-preserving opening pressure
+
+Affected modules:
+
+- `apps/worker/src/index.ts`
+- `apps/worker/src/adventure-module/fenwater-content.ts`
+
+The bar must not be an infinite content sink, but the fix is **not** to force the party out. The fix is to make the world move while preserving player agency.
+
+Replace “force play out of Mort's bar” with:
+
+- reveal actionable exits and external fronts;
+- change NPC availability and risk when the party keeps pressing the same lead;
+- let players stay, barricade, parley, search, rest, or fight if they choose;
+- make staying a real choice with opportunity cost, not an invalid state;
+- avoid repeating the same Mort/ledger/door clue once it has paid out.
+
+Agency-preserving triggers:
+
+- beat 3 still in Mort's bar → outside bell/ditch event reveals a route choice, but staying remains legal.
+- Mort panic 3/6 → Mort offers one outside lead or changes leverage instead of giving infinite answers.
+- Mort panic 6/6 → Mort bolts, barricades, faints, bargains, calls help, or reveals a dangerous truth based on current fiction.
+- North Ditch water 3/6 → water visibly reaches the door and changes available actions.
+- North Ditch water 6/6 → the bar becomes hazardous; staying is possible but costs position/resources and may close outside opportunities.
+- repeated `press Mort` after first truth → no new bar clue; the Referee presents what changes elsewhere while they spend time.
+
+### 3. Fenwater expanded content pack
+
+Affected modules:
+
+- new: `apps/worker/src/adventure-module/fenwater-content.ts`
+- `apps/worker/src/adventure-module/fenwater.ts`
+- `apps/worker/src/adventure-module/fenwater.test.ts`
+
+Content categories:
+
+- Locations / nodes:
+  - Mort's bar
+  - Hearth beam
+  - North Ditch door
+  - Sluice mouth
+  - South-cut trail
+  - Reed maze
+  - Eel-net worksite
+  - Old pump house
+  - Tithe mill yard
+  - Charter house
+  - Causeway shrine
+  - Reedwright camp
+  - Alder knoll dry rest site
+  - Sunken chapel
+  - Midden weir
+  - Lockkeeper's cistern
+  - Glasswort sink
+  - Backwater ferry
+- Routes:
+  - bar → North Ditch door
+  - North Ditch door → sluice mouth
+  - sluice mouth → south-cut trail
+  - south-cut trail → reed maze
+  - reed maze → pump house / eel nets / ferry / shrine
+- Factions:
+  - Mort's debt web
+  - shell-token / grain-buyer syndicate
+  - Fen cutters
+  - Reedwright families
+  - Charter/bailiff office
+  - chapel bell keepers
+  - rival reclaimers
+- Encounter fronts:
+  - Mort bolts
+  - cutter intercepts
+  - flooded door
+  - grain-buyer runner escapes
+  - reed maze lost party
+  - pump house failure
+  - bailiff confiscates evidence
+  - waterlogged debt thing
+  - rival reclaimers arrive
+  - fever/exposure after black water
+- World clocks:
+  - Evidence spoils
+  - Ditch gang musters
+  - Safe rest compromised
+  - Pump pressure
+  - Bailiff claims jurisdiction
+  - Fever after exposure
+  - Bell under water
+  - Ferry leaves early
+- Rest/recovery spots:
+  - Alder Knoll dry camp
+  - Reedwright stove boat
+  - Pump House mezzanine
+  - Causeway Shrine loft
+  - secured Mort cellar
+  - Charter House back office
+  - Sunken Chapel bell loft
+
+Each route/front/rest payload should include enough deterministic metadata for the Referee runtime:
+
+- visible label
+- visibility
+- trigger tags
+- linked clocks
+- public-safe reveal text
+- route exits
+- costs / risks
+- aftermath mutation
+
+### 4. Scene/location state
+
+Affected modules:
+
+- `packages/domain/src/table-run.ts`
+- `apps/worker/src/index.ts`
+- `apps/worker/src/adventure-module/fenwater-content.ts`
+
+Add to table state, likely first as optional fields:
+
+- `locationId`
+- `sceneId`
+- `visitedLocationIds`
+- `revealedComponentIds`
+- `closedLeadIds`
+- `activeFrontIds`
+
+Runtime behavior:
+
+- Initialization starts at Mort's bar but seeds outside route affordances.
+- Commit patches can transition `locationId` / `sceneId`.
+- `affordances` and `activeLeads` are recomputed from module content after transitions.
+- Locality validation uses module anchors/routes before fallback regex.
+
+### 5. Opening scene agency triggers
+
+Affected modules:
+
+- `apps/worker/src/index.ts`
+- `apps/worker/src/adventure-module/fenwater-content.ts`
+
+Do not hard-force exits. Use stateful opportunity cost.
+
+Triggers:
+
+- reveal outside activity when enough time passes;
+- shift NPC posture when repeatedly pressured;
+- tick external fronts while the party stays;
+- close or degrade clues when ignored;
+- open alternate in-bar actions such as barricade, negotiate, search, rest briefly, hide evidence, or set an ambush;
+- make leaving attractive and legible without making staying impossible.
+
+### 6. Long-run summary and validation
+
+Affected modules:
+
+- `packages/domain/src/table-run.ts`
+- `apps/worker/src/index.ts`
+- tests
+
+Add summary fields:
+
+- visited location count/list
+- active front IDs
+- incapacitated/dead/missing counts
+- duplicate commit count
+- clock overflow count
+- opening-scene beat count
+- public/private leak sentinel counts where available
+
+## Decisions already made
+
+- Use **Referee**, not DM/GM, in durable code/docs.
+- Use `AdventureModule` as the durable project/code noun.
+- Treat Fenwater as one concrete `AdventureModule`, not the abstraction.
+- Artifacts remain canonical source; R2 is runtime cache/storage.
+- Public monitor is a sanitized table transcript.
+- Player outputs are proposals, not direct mutations.
+- Runtime failures should be honest and visible.
+- Brain is canonical for this PRD; tracker issues should mirror it later.
+
+## Open questions
+
+### Should expanded Fenwater content be generated, curated, or hybrid?
+
+Recommendation: curated first, then later generate through Town Forge once the runtime can consume broader module components safely.
+
+Reason: the failure is not lack of prose volume; it is lack of deterministic content frontiers and transitions.
+
+### Should scene transition be domain-first or Worker-local first?
+
+Recommendation: add optional domain fields and Worker-local Fenwater helpers first.
+
+Reason: avoid overdesigning a universal adventure graph before one concrete long-run module works.
+
+### What happens when all PCs hit 0hp?
+
+Recommendation: stop normal play immediately and transition to one explicit state:
+
+- capture
+- retreat/rescue by surviving retainers/NPCs
+- TPK/dead stop
+- referee epilogue
+
+Do not keep asking downed PCs for normal tactical actions.
+
+### How exact should OSE procedures be in this slice?
+
+Recommendation: source-safe summaries only unless we explicitly research exact OSE procedure with JoelClaw receipts.
+
+## Validation plan
+
+Before claiming success:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/domain check
+pnpm --filter @cloudflare-agent-dungeon/domain test
+pnpm --filter @cloudflare-agent-dungeon/worker test
+pnpm --filter @cloudflare-agent-dungeon/worker check
+pi_notes_brain_check
+```
+
+Then run a bounded table validation:
+
+- local or production route: `/prototype/town-module-table`
+- difficulty: 5
+- maxBeats: 30 first, then 100
+- sampleSeconds: capped
+
+Minimum passing criteria for a 30+ beat sample:
+
+- no clocks above max;
+- no normal player actions from incapacitated PCs;
+- no duplicate commit patches for the same beat/run;
+- at least 3 distinct locations visited, or an honest early stop/capture/TPK;
+- public route shows no dev/private artifacts;
+- summary endpoint reports the above clearly.
+
+## Tracker mirror plan
+
+Brain remains canonical. If this is mirrored to Linear/GitHub later, create small vertical issues linked back to this PRD:
+
+1. Add domain normalization/status safety.
+2. Add agency-preserving opening pressure and repeated-lead handling.
+3. Add Fenwater expanded content pack and adapter tests.
+4. Add scene/location IDs and transition helpers.
+5. Add long-run summary validation and 30/100-beat sample receipts.
+
+## Recommended first implementation slice
+
+Start with the smallest useful slice:
+
+1. Add `status` and clock normalization.
+2. Add `fenwater-content.ts` with enough content for three new locations and two agency-preserving outside fronts.
+3. Wire active leads/affordances from content.
+4. Run a 30-beat sample and verify either multiple locations are visited or the party knowingly stays in the bar while outside fronts advance and consequences change.
+
+Do not wait to design all 1000 beats before proving the first transition out of the opening room.

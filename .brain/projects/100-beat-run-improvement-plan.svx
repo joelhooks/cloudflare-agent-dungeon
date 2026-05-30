@@ -1,0 +1,447 @@
+---
+title: 100-Beat Run Improvement Plan
+kind: project
+status: active
+created_at: 2026-05-29
+updated_at: 2026-05-29
+tags:
+  - prototype
+  - gameplay
+  - implementation-plan
+  - town-module
+  - table-run
+---
+
+# 100-Beat Run Improvement Plan
+
+## Source receipt
+
+Input run: production 100-beat table run stopped at beat 100 in aftermath.
+
+Observed failures:
+
+- Party ended badly hurt: Gorunn 0hp, Corra 3hp, Lysa 0hp, Wren 0hp.
+- All opening clocks maxed: Mort panic 6/6, North Ditch water 6/6, Grain-buyer warned 6/6.
+- Last encounter was `cornered Fenwater cutter`, avoided at beat 19.
+- Transcript kept circling Mort's bar, North Ditch door, sluice mouth, ledger, knife-nicked beam, collar-rings, ghost-hum, drowning pressure.
+- Many repeated position corrections and hard choices around the same water/door/ledger scene.
+- Beat numbers duplicated around 80-100.
+- Clocks sometimes exceeded max, e.g. 8/6.
+- Referee escalated the opening tavern/flood scene instead of cutting to new areas, aftermath, recovery, town exploration, or broader module play.
+- User wants expanded module content: more encounters and more places/people/opportunities that can sustain 100-1000 beats without hyper-fixating on the opening scene.
+
+Code surfaces inspected:
+
+- `packages/domain/src/adventure-module.ts` — current AdventureModule component manifest/projection only has generic refs and payloads.
+- `packages/domain/src/table-run.ts` — current TableRun has phase, clocks, party, combat, locality requirements, sample stop, summary.
+- `apps/worker/src/index.ts` — current town table runtime seeds fixed opening leads/clocks, advances one preferred clock, starts encounters only when a clock crosses max, and prompts Referee with current affordances/leads but no scene rotation budget.
+- `.brain/projects/town-module-table-gameplay-run-summary.svx` — prior patch already added locality, combat objectives, starter gear, sample caps, and summaries.
+
+## Diagnosis
+
+The prototype now has pressure, but not enough **campaign circulation**.
+
+The bug is not only prompt style. The runtime has no hard concept of:
+
+- scene/area budget;
+- resolved/depleted leads;
+- encounter cooldown/diversity;
+- clock clamping/invariants;
+- recovery/aftermath procedure;
+- a town-scale frontier of available locations and hooks;
+- progress metrics that say “we are stuck in one room, cut away now.”
+
+So the model does what models do: it recombines the hottest recent nouns forever. Nasty little recursion trap 🐀.
+
+## Principle
+
+Do not solve this by making the prompt longer.
+
+Add tiny deterministic rails that force the table to move:
+
+1. clamp state invariants;
+2. mark scene pressure as spent;
+3. rotate to a new module node when a scene is saturated;
+4. give aftermath/recovery a real procedure;
+5. expand the module graph with enough location/encounter affordances for longer play;
+6. validate with production-like 100-beat and cheaper capped smoke runs.
+
+## Vertical slice 1 — Run-state invariants and beat monotonicity
+
+Goal: stop corrupt transcript/state before changing gameplay.
+
+### Domain schema changes
+
+In `packages/domain/src/table-run.ts`:
+
+- Add `TableRunInvariantReportSchema`:
+  - `duplicateBeats: number[]`
+  - `clockOverflow: Array<{ name; value; max }>`
+  - `nonMonotonicCommits: Array<{ previous; next }>`
+  - `repeatedQuestionCount: number`
+- Add pure helpers:
+  - `clampTableClock(clock): TableClock`
+  - `clampTableClocks(clocks): TableClock[]`
+  - `nextBeatFromEvents(events, fallbackBeat): number`
+  - `analyzeTableRunInvariants(state): TableRunInvariantReport`
+
+### Worker runtime changes
+
+In `apps/worker/src/index.ts`:
+
+- Make `appendTownTableEvent` the single beat gate:
+  - commit/state patch beat must be `max(current.beat + 1, nextBeatFromEvents(...))` for commits;
+  - non-commit events can share the current beat;
+  - no commit may move backwards or duplicate a prior commit beat.
+- Clamp every clock write with `Math.min(value, max)`.
+- Add a dev-only invariant event when repair happens: public-safe summary, detailed `devText`.
+
+### Prompt changes
+
+None yet. Fix the floor first.
+
+### Tests
+
+- Unit: clock `8/6` becomes `6/6` and emits/records overflow in invariant report.
+- Unit: duplicate commit beats are detected.
+- Worker/domain integration: a fake `statePatch` with stale `beat` cannot duplicate commit beat 80.
+
+### Brain receipt
+
+Append to `.brain/data/prototype-build-log.jsonl`:
+
+- schema `PrototypeBuildLogEntry.v1`
+- slice `run-state-invariants`
+- commands run
+- failing run symptom references
+
+### Production validation
+
+- Deploy Worker.
+- Start a capped 25-beat run; verify no clock displays above max.
+- Start one 100-beat run; fetch summary endpoint and confirm `duplicateBeats=[]`, `clockOverflow=[]` after repair path.
+
+## Vertical slice 2 — Scene budget and mandatory cut-away
+
+Goal: prevent one tavern/flood scene from eating the whole run.
+
+### Domain schema changes
+
+In `TableRunCoreStateSchema`:
+
+- Add `scene`:
+  - `id: string`
+  - `title: string`
+  - `locationId?: string`
+  - `startedBeat: number`
+  - `budgetBeats: number`
+  - `pressureSpent: string[]`
+  - `resolvedLeadIds: string[]`
+- Add `SceneExitReasonSchema` enum:
+  - `budget_exhausted`
+  - `clocks_maxed`
+  - `encounter_resolved`
+  - `party_withdraws`
+  - `lead_resolved`
+  - `recovery_required`
+
+### Worker runtime changes
+
+- Initialize opening scene with `budgetBeats: 12` or `15`, not 100.
+- Add `shouldCutTownTableScene(state)`:
+  - true if scene exceeds budget;
+  - true if 2+ clocks are maxed;
+  - true after encounter/aftermath has been unresolved for N beats;
+  - true if the next question key repeats 3 times.
+- Add `cutTownTableScene(reason)`:
+  - commits a `world_update` that closes/changes the opening scene;
+  - marks scene leads as spent/degraded/resolved;
+  - chooses a next available module node from town graph;
+  - starts a new scene with fresh affordances and 1-2 carried consequences.
+
+### Prompt changes
+
+Referee ruling prompt gets one hard rule:
+
+> You are resolving the current scene, not preserving it. If scene budget is spent, write a closing consequence and point to a new location/lead. Do not ask another question about the same object unless the runtime marks that lead unresolved.
+
+Player prompt gets current scene budget:
+
+> Scene budget: X/Y beats. If low, commit to exiting, securing one thing, or cutting losses.
+
+### Tests
+
+- Unit: `shouldCutTownTableScene` returns true when opening scene reaches budget.
+- Unit: repeated question keys trigger cut-away.
+- Integration: after `cornered Fenwater cutter` avoided/defeated, runtime enters aftermath then a different location within 3 beats.
+
+### Brain receipt
+
+Update this note with before/after run summary and add build-log JSONL entry.
+
+### Production validation
+
+- 50-beat production run must visit at least 3 scene IDs.
+- 100-beat production run must not spend more than 20 consecutive committed beats in one scene.
+
+## Vertical slice 3 — Expanded module graph for long play
+
+Goal: give the Referee real material to move into instead of recycling the opener.
+
+### Domain schema changes
+
+In `packages/domain/src/adventure-module.ts`:
+
+Add typed payload schemas instead of opaque `z.unknown()` for the town-table slice:
+
+- `ModuleLocationSchema`
+  - `id`, `name`, `kind`, `publicDescription`, `visibleAffordances`, `exits`, `leadIds`, `encounterIds`, `restSafety`, `revisitPressure`
+- `ModuleLeadSchema`
+  - `id`, `title`, `status: fresh|active|resolved|degraded|lost`, `pointsToLocationIds`, `clueText`, `cost`, `expiresOnClockIds`
+- `ModuleEncounterSchema`
+  - `id`, `title`, `kind: social|hazard|ambush|discovery|combat|weird`, `locationIds`, `trigger`, `objective`, `cooldownBeats`, `repeatable`
+- `ModuleRecoverySiteSchema`
+  - `id`, `locationId`, `services`, `risks`, `costs`, `safeForTurns`
+- `ModuleFrontSchema`
+  - faction/pressure state that can advance while party recovers or explores elsewhere.
+
+Keep the old component-ref manifest compatible. Add `AdventureModule.v2` or `AdventureModuleContent.v1` behind the current adapter so existing monitor does not break.
+
+### Module content changes
+
+Expand Fenwater from “opening tavern/flood pressure” into a small town sandbox:
+
+- 8-12 explorable locations, including at least:
+  - Mort's tavern/bar as opener;
+  - North Ditch door/sluice;
+  - grain-buyer yard;
+  - cutter bunk/boat shed;
+  - chapel or shrine recovery site;
+  - market/common room rumor site;
+  - drowned lane/drainage route;
+  - hidden or semi-hidden old workroom/cistern.
+- 12+ leads, each pointing somewhere else.
+- 10+ latent encounters, with types mixed across social, hazard, discovery, chase, combat, weird pressure.
+- 3 recovery opportunities with real costs.
+- 3 factions/fronts that move when clocks max or the party rests.
+
+### Worker runtime changes
+
+- Replace hard-coded `activeLeads` opener list with module-derived leads.
+- Track lead status. Once a lead is resolved/degraded/lost, do not ask about it as a fresh next action.
+- Encounter selector must prefer:
+  - unused encounters;
+  - encounters linked to current/new location;
+  - encounter type not equal to the last encounter type.
+- Add encounter cooldown so `cornered Fenwater cutter` cannot be the only encounter for 80 beats.
+
+### Prompt changes
+
+Referee prompt gets module frontier:
+
+- current scene;
+- fresh leads;
+- spent leads;
+- available exits;
+- unused encounters by title/type only;
+- recovery sites if party is wounded.
+
+Hard prompt rule:
+
+> Do not invent a new town centerpiece when the module frontier has unused locations/leads. Pick from the frontier first.
+
+### Tests
+
+- Domain: module content validates minimum counts.
+- Domain: projection hides referee/private payloads.
+- Runtime: encounter selector does not repeat the same non-repeatable encounter.
+- Runtime: resolved leads are excluded from next prompt frontier.
+
+### Brain receipt
+
+Create/update `.brain/resources/fenwater-module-content-map.svx` with a compact map of locations/leads/encounters and source/artifact references.
+
+### Production validation
+
+- 100-beat run must show:
+  - at least 5 unique locations/scenes;
+  - at least 3 encounter titles;
+  - no non-repeatable encounter repeated;
+  - no fresh prompt for a resolved/lost lead.
+
+## Vertical slice 4 — Aftermath and recovery procedure
+
+Goal: stop wounded-at-0hp aftermath from becoming another pressure monologue.
+
+### Domain schema changes
+
+Add `TableRunPhaseSchema` values or subphase:
+
+- Keep top-level `aftermath`, but add `aftermathKind`:
+  - `bind_wounds`
+  - `secure_evidence`
+  - `escape_scene`
+  - `choose_recovery_site`
+  - `town_turn`
+
+Add `PartyConditionSchema`:
+
+- `downCount`
+- `walkingWoundedCount`
+- `needsRecovery: boolean`
+- `canExplore: boolean`
+
+### Worker runtime changes
+
+- If any party member is 0hp after encounter, force a recovery choice before normal exploration.
+- Add deterministic recovery actions:
+  - bind wounds in place with risk;
+  - carry wounded to recovery site;
+  - abandon/lose one lead to escape;
+  - spend a town turn, advancing fronts/clocks.
+- Introduce “town turn” after recovery/rest:
+  - advance one front;
+  - refresh some leads;
+  - move NPCs;
+  - cut to a new scene.
+
+### Prompt changes
+
+Referee aftermath prompt:
+
+> In aftermath, do not escalate the same hazard unless the party chooses to stay. First offer recovery, evidence, escape, or pursuit. If 2+ PCs are at 0hp, recovery is mandatory.
+
+Player prompt:
+
+> If you are at 0hp, do not act normally. Ask for aid, cling to one object, reveal fear, or go silent. Living allies must decide who carries whom and what gets left behind.
+
+### Tests
+
+- Unit: party with 2+ at 0hp yields `needsRecovery=true`.
+- Integration: combat ending with wounded party produces recovery choice, not another normal lead prompt.
+- Integration: town turn advances one front and starts a new scene.
+
+### Production validation
+
+- Reproduce high-difficulty run until aftermath. Confirm page shows recovery choices and next scene differs from opening scene.
+
+## Vertical slice 5 — Prompt freshness and anti-recursion guard
+
+Goal: make the model stop worshipping the recent transcript nouns.
+
+### Domain/runtime changes
+
+- Track `recentNounSaturation` or simpler `topicCounts` for lead/location/clock keywords.
+- Add `bannedNextQuestionTerms` for one beat after a cut-away, e.g. Mort/ledger/sluice if those caused stall.
+- Add `promptFrontier` object, generated by runtime, not model:
+  - `mustMoveAwayFrom: string[]`
+  - `freshOptions: string[]`
+  - `spentOptions: string[]`
+  - `recoveryOptions: string[]`
+
+### Prompt changes
+
+Add at top of Referee resolution prompt:
+
+> Runtime frontier wins over transcript inertia. Avoid `mustMoveAwayFrom` terms unless a player explicitly chooses them. Use `freshOptions` for NEXT.
+
+Add to player prompt:
+
+> Prefer fresh options over repeated analysis of spent objects.
+
+### Tests
+
+- Unit: after cut-away from opening scene, prompt frontier includes Mort/ledger/sluice in `mustMoveAwayFrom`.
+- Snapshot-ish test: constructed prompt includes fresh options and spent options.
+
+### Production validation
+
+- 50-beat run after cut-away should not immediately ask about Mort/ledger/sluice unless a player chooses to return.
+
+## Vertical slice 6 — Run receipt and evaluation harness
+
+Goal: make “did it actually improve?” cheap to answer.
+
+### Domain schema changes
+
+Add `TableRunEvaluationSchema`:
+
+- `beats`
+- `uniqueScenes`
+- `uniqueLocations`
+- `uniqueEncounters`
+- `maxConsecutiveSceneBeats`
+- `duplicateCommitBeats`
+- `clockOverflowCount`
+- `repeatedQuestionStalls`
+- `downedPartyBeats`
+- `recoveryChoicesOffered`
+- `freshLeadPrompts`
+- `spentLeadPrompts`
+
+### Worker runtime changes
+
+- Add/extend summary endpoint to return evaluation metrics.
+- Store run receipt as JSON in R2 or durable state with run ID.
+- Expose public-safe summary in monitor; dev-only detailed transcript remains private/dev.
+
+### Tests
+
+- Unit evaluator on synthetic transcripts.
+- Integration evaluator on a mocked 30-beat run.
+
+### Brain receipt
+
+- Append production run metrics to `.brain/data/prototype-build-log.jsonl`.
+- Update `.brain/projects/town-module-table-gameplay-run-summary.svx` with only a concise summary and link to JSONL data.
+
+### Production validation
+
+Run sequence:
+
+1. deploy Worker;
+2. browser-test monitor with `agent_browser`;
+3. run 25-beat smoke;
+4. run 100-beat validation;
+5. inspect Worker logs for model/tool failures;
+6. capture evaluation JSON;
+7. update Brain receipts.
+
+Acceptance target for the next production 100-beat run:
+
+- no duplicated commit beat numbers;
+- no clock values above max;
+- at least 5 unique scenes;
+- at least 4 unique locations;
+- at least 3 distinct encounter/discovery/social/hazard events;
+- no scene lasts more than 20 committed beats unless explicitly marked `boss_or_dungeon_scene`;
+- aftermath with 2+ downed PCs offers recovery before new danger;
+- opener nouns do not dominate more than 35% of NEXT prompts after beat 25.
+
+## Recommended implementation order
+
+1. **Invariants first** — duplicated beats and `8/6` clocks are trust-killers.
+2. **Scene budget cut-away** — cheapest behavior fix; prevents another 100-beat opener loop.
+3. **Aftermath/recovery** — current run ended with three downed characters; make that playable.
+4. **Expanded module graph** — content breadth, but only after runtime can actually leave a scene.
+5. **Prompt frontier freshness** — use prompts to respect deterministic rails, not replace them.
+6. **Evaluation harness** — run after each slice so we stop arguing vibes.
+
+## First concrete PR shape
+
+PR 1 should be small:
+
+- `packages/domain/src/table-run.ts`
+  - clock clamp helpers;
+  - invariant analyzer;
+  - tests.
+- `apps/worker/src/index.ts`
+  - clamp clock writes;
+  - prevent duplicated commit beats;
+  - expose invariant counts in summary.
+- `packages/domain/src/table-run.test.ts`
+  - regression tests for `8/6` and duplicated beats.
+- Brain:
+  - append one JSONL build-log receipt.
+
+Do **not** expand the town content in PR 1. That would mix content work with trust repair and make bugs harder to see.

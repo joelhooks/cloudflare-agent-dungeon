@@ -1,0 +1,330 @@
+---
+title: Town Module Table 100 Beat Improvement Plan
+kind: project
+status: active
+created: 2026-05-30
+tags:
+  - agent-dungeon
+  - town-module-table
+  - fenwater
+  - gameplay
+  - adventure-module
+---
+
+# Town Module Table 100 Beat Improvement Plan
+
+## Question
+
+The production `maxBeats=100` run reached beat 100, but the table stayed hyper-fixated on the opening Fenwater tavern/flood scene. Joel wants the system and the **module content** improved so Fenwater can support 100–1000 beats of actual world exploration, not 100 beats of drowning in Mort's bar.
+
+Production route observed:
+
+- `https://agentdungeon.ai/prototype/town-module-table?prod=100-fixed`
+- Final public state summary from the pasted transcript:
+  - `stopped · beat 100`
+  - phase: `aftermath`
+  - clocks: `Mort panic 6/6`, `North Ditch water 6/6`, `Grain-buyer warned 6/6`
+  - party: Gorunn 0hp, Lysa 0hp, Wren 0hp, Corra 3hp
+  - last encounter: `cornered Fenwater cutter avoided beat 19`
+
+## Workflow receipt
+
+A Pi workflow/subagent review was run with three lanes:
+
+1. 100-beat run diagnosis.
+2. Fenwater AdventureModule expansion design.
+3. Code seam scout for domain/worker implementation.
+
+Files/seams called out by the workflow:
+
+- `apps/worker/src/index.ts`
+- `apps/worker/src/adventure-module/fenwater.ts`
+- `packages/domain/src/adventure-module.ts`
+- `packages/domain/src/table-run.ts`
+
+## Bottom line
+
+The 100-beat run proved the loop can run long, but also proved the current runtime has no strong concept of **scene progression**. The Referee kept increasing pressure inside the same opening location instead of making the bar a finite scene that unlocks broader Fenwater.
+
+The fix is not “more prose.” It is:
+
+1. Fix runtime safety bugs.
+2. Add real AdventureModule content frontiers.
+3. Add agency-preserving scene/location transition mechanics.
+4. Make maxed clocks change opportunities/consequences, not infinite pressure soup or forced exits.
+5. Test long-run summaries for diversity, agency, and safety.
+
+## P0 system fixes
+
+### 1. Stop dead characters from acting
+
+Current behavior: exploration micro-events still ask every party member for actions, even at `0hp`.
+
+Fix:
+
+- Add `status: active | incapacitated | dead | missing` to `TablePartyMember`.
+- Normalize `hp <= 0` into `incapacitated` unless a later explicit death procedure exists.
+- Exploration and combat should only prompt active characters.
+- If all PCs are incapacitated, stop or shift to a capture/rescue/aftermath state.
+
+### 2. Clamp clocks everywhere
+
+Current behavior: clock tick helpers clamp, but model/state patches can produce values like `8/6`.
+
+Fix:
+
+- Add `clampTableClock()` / `normalizeTableRunPatch()` in `packages/domain/src/table-run.ts`.
+- Apply normalization in `appendTownTableEvent()` before state parsing.
+- Prefer domain schema refinement once persisted over-max state is no longer needed.
+
+### 3. Prevent duplicate beat commits
+
+Current behavior: duplicate beat commits can appear around high beats. Likely causes include overlapping run fibers and commits without expected-beat guards.
+
+Fix:
+
+- Add `runningFiberId`, `beatInFlight`, or equivalent run lock to town-table state.
+- Use stable idempotency keys per run.
+- Add commit guard: apply state patches only when `runId` and expected beat match current state.
+- Use deterministic commit event IDs where useful.
+
+### 4. Make aftermath finite and consequential
+
+Current behavior: after an avoided encounter, the table can remain in aftermath indefinitely while still generating normal moments.
+
+Fix:
+
+- After 1–3 aftermath beats, present a changed situation with real options:
+  - pursue a new scene/location,
+  - recover/rest with cost,
+  - chase an escaping front,
+  - barricade/stay and accept external clock movement,
+  - stop with clear outcome if play cannot continue.
+
+Do **not** teleport or railroad the party out. Staying should remain legal, but it should not generate the same clue loop forever.
+
+## P1 AdventureModule content expansion
+
+Create a curated, source-safe Fenwater expansion layer instead of relying on the opening tavern affordances.
+
+Suggested new file:
+
+- `apps/worker/src/adventure-module/fenwater-content.ts`
+
+This should export validated components and deterministic helpers. Keep payload schemas local at first; `AdventureModuleComponent.payload` can remain `unknown` at the domain boundary.
+
+### Locations / nodes
+
+Add at least these playable nodes:
+
+- Mort's bar / hearth beam / North Ditch door / sluice mouth
+- South-cut trail
+- Reed maze
+- Eel-net worksite
+- Old pump house
+- Tithe mill yard
+- Charter house
+- Causeway shrine
+- Reedwright camp
+- Alder knoll dry rest site
+- Sunken chapel
+- Midden weir
+- Lockkeeper's cistern
+- Glasswort sink
+- Backwater ferry
+
+### Routes / transitions
+
+Routes should include:
+
+- from / to
+- time cost
+- hazard tags
+- visible clue/reveal text
+- clock ticks
+- exit prompt
+
+Critical first transitions:
+
+- bar → North Ditch door
+- North Ditch door → sluice mouth
+- sluice mouth → south-cut trail
+- south-cut trail → reed maze
+- reed maze → pump house / eel nets / ferry / shrine
+
+### Factions
+
+- Mort's debt web
+- Shell-token / grain-buyer syndicate
+- Fen cutters
+- Reedwright families
+- Charter/bailiff office
+- Chapel bell keepers
+- Rival reclaimers
+
+### Encounter fronts
+
+Add fronts that can trigger from route/location/clock state:
+
+- Mort bolts
+- Cutter intercepts
+- Flooded door
+- Grain-buyer runner escapes
+- Reed maze lost party
+- Pump house failure
+- Bailiff confiscates evidence
+- Waterlogged debt thing
+- Rival reclaimers arrive
+- Fever/exposure after black water
+
+Each front should define:
+
+- trigger tags
+- stakes
+- public clues
+- noncombat outs
+- escalation
+- aftermath mutation
+- linked clocks
+
+### Clocks beyond the tavern
+
+Keep original three, but add world clocks:
+
+- Evidence spoils
+- Ditch gang musters
+- Safe rest compromised
+- Pump pressure
+- Bailiff claims jurisdiction
+- Fever after exposure
+- Bell under water
+- Ferry leaves early
+
+Clock max consequences should change the opportunity landscape: reveal routes, close routes, move NPC fronts, alter safety, or tax resources. They should not simply repeat pressure, and they should not automatically override player agency.
+
+### Rest/recovery spots
+
+Long runs need safe-ish recovery surfaces:
+
+- Alder Knoll dry camp
+- Reedwright stove boat
+- Pump House mezzanine
+- Causeway Shrine loft
+- Secured Mort cellar
+- Charter House back office
+- Sunken Chapel bell loft
+
+Each rest spot needs:
+
+- cost
+- safety condition
+- what clock ticks on use
+- what limited recovery is plausible
+
+## P1 runtime progression mechanics
+
+### 1. Preserve agency while preventing content loops
+
+The bar should not be infinite, but agents must keep agency. The runtime should reveal changing circumstances and consequences, not forcibly invalidate staying.
+
+Use opportunity cost:
+
+- If the party keeps pressing Mort, Mort's posture changes and outside fronts advance.
+- If they barricade the bar, the bar becomes a defended scene with resource/rest risks.
+- If they search the bar, repeated searches degrade returns and tick external clocks.
+- If they stay after water rises, staying remains possible but costs position, light, supplies, or safety.
+- If they ignore a route, that route can become harder, occupied, flooded, watched, or lost.
+
+### 2. Add real scene/location IDs
+
+Current state uses free-text `location` and party `position` strings.
+
+Add:
+
+- `locationId`
+- `sceneId`
+- `visitedLocationIds`
+- `revealedComponentIds`
+- maybe `closedLeadIds`
+
+Then recompute:
+
+- `affordances`
+- `activeLeads`
+- `procedure tags`
+- `available fronts`
+
+from module content instead of hardcoded Mort strings.
+
+### 3. Bar pressure triggers
+
+The opening bar should be finite as a source of fresh clues, not finite as a legal location.
+
+Triggers:
+
+- beat 3 still at Mort's bar → outside bell/ditch event reveals a route choice; staying remains legal.
+- Mort panic 3/6 → Mort gives one outside lead, changes leverage, or changes posture instead of another bar answer.
+- Mort panic 6/6 → Mort bolts, barricades, faints, bargains, calls help, or reveals a dangerous truth depending on current fiction.
+- North Ditch water 3/6 → water visibly reaches the door and changes what actions are safe.
+- North Ditch water 6/6 → bar becomes hazardous; staying remains possible but has costs and external opportunities degrade.
+- repeated `press Mort` after first truth → no new clue; the Referee reports what changes elsewhere while time passes.
+
+### 3. Data-driven locality
+
+Replace regex-only locality with module route/location anchors.
+
+Actions mentioning:
+
+- tithe mill
+- pump house
+- reed maze
+- charter house
+- ferry
+- cistern
+- shrine
+- eel nets
+
+should update party positions and visible affordances without new per-phrase code.
+
+## Validation plan
+
+Add tests for:
+
+- expanded Fenwater component counts and unique IDs
+- projection safety: public output does not include referee-only expansion payloads
+- clock clamping: no `value > max`
+- 0hp characters do not produce player micro-events
+- duplicate commit prevention
+- after 30+ beats, summary includes multiple visited locations or intentionally stopped reason
+- after opening scene pressure maxes, active question names an outside route
+
+Run:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/domain check
+pnpm --filter @cloudflare-agent-dungeon/domain test
+pnpm --filter @cloudflare-agent-dungeon/worker test
+pnpm --filter @cloudflare-agent-dungeon/worker check
+pi_notes_brain_check
+```
+
+## What not to do
+
+- Do not add a giant VTT.
+- Do not make 1000 beats by letting the Referee produce infinite escalating prose in one room.
+- Do not hide failed generation behind fake fallback content.
+- Do not leak referee-only expansion payloads to public monitor state.
+- Do not quote OSE rule text publicly; use safe procedure summaries and internal receipts.
+
+## Recommended next slice
+
+Build the smallest useful vertical slice:
+
+1. Add `status` and clock normalization in domain/worker.
+2. Add `fenwater-content.ts` with 8–12 new components and two forced exits from Mort's bar.
+3. Wire initialization and transition helpers so a run can visibly leave Mort's bar.
+4. Run a 30-beat production/dev sample and verify:
+   - no 0hp actions,
+   - no clocks above max,
+   - at least 3 locations visited,
+   - no dev/private leakage.

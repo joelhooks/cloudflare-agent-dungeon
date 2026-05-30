@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { TOWN_FORGE_SKILL_KEY, type TownGraph } from "../town-forge";
 import { adventureModuleFromFenwaterTownGraph } from "./fenwater";
+import { FENWATER_EXPANDED_COMPONENTS, fenwaterInitialClocks, fenwaterInitialLeads, fenwaterOpeningAffordances } from "./fenwater-content";
 
 function townGraph(): TownGraph {
   const locations = Array.from({ length: 5 }, (_, index) => ({
@@ -88,5 +89,20 @@ describe("Fenwater AdventureModule adapter", () => {
     expect(module.components.filter((component) => component.kind === "localityAnchor").map((component) => component.title)).toEqual(["Mort's bar", "North Ditch door", "sluice mouth"]);
     expect(module.components.find((component) => component.id === "npc-1")?.visibility).toBe("public");
     expect(module.components.find((component) => component.id === "npc-2")?.visibility).toBe("referee");
+    expect(module.components.some((component) => component.id === "fenwater-location-reed-maze")).toBe(true);
+    expect(module.components.some((component) => component.id === "fenwater-front-runner-warns")).toBe(true);
+  });
+
+  it("adds source-safe expanded Fenwater components with deterministic helper surfaces", () => {
+    const ids = new Set(FENWATER_EXPANDED_COMPONENTS.map((component) => component.id));
+    expect(ids.size).toBe(FENWATER_EXPANDED_COMPONENTS.length);
+    expect(FENWATER_EXPANDED_COMPONENTS.filter((component) => ["location", "wilderness", "dungeon"].includes(component.kind)).length).toBeGreaterThanOrEqual(15);
+    expect(FENWATER_EXPANDED_COMPONENTS.filter((component) => component.kind === "route").length).toBeGreaterThanOrEqual(4);
+    expect(FENWATER_EXPANDED_COMPONENTS.filter((component) => component.kind === "faction").length).toBeGreaterThanOrEqual(6);
+    expect(FENWATER_EXPANDED_COMPONENTS.filter((component) => component.kind === "encounterPressure").length).toBeGreaterThanOrEqual(6);
+    expect(FENWATER_EXPANDED_COMPONENTS.filter((component) => component.kind === "clock").length).toBeGreaterThanOrEqual(4);
+    expect(fenwaterInitialLeads()).toContain("old pump house");
+    expect(fenwaterOpeningAffordances()).toContain("barricade and wait");
+    expect(fenwaterInitialClocks(5).some((clock) => clock.name === "Evidence spoils")).toBe(true);
   });
 });
