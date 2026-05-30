@@ -2166,7 +2166,7 @@ const TownModuleTableStateSchema = z.object({
 
 type TownModuleTableState = z.infer<typeof TownModuleTableStateSchema>;
 
-function publicTownModuleTableState(state: TownModuleTableState): TownModuleTableState {
+function tableSafeTownModuleTableState(state: TownModuleTableState): TownModuleTableState {
   return TownModuleTableStateSchema.parse({
     ...state,
     playerArtifacts: {},
@@ -2181,6 +2181,13 @@ function publicTownModuleTableState(state: TownModuleTableState): TownModuleTabl
     events: state.events.filter((event) => event.visibility === "public").map(({ devText: _devText, ...event }) => event)
   });
 }
+
+function monitorTownModuleTableState(state: TownModuleTableState, opts: { xray?: boolean } = {}): TownModuleTableState {
+  if (!opts.xray) return tableSafeTownModuleTableState(state);
+  return TownModuleTableStateSchema.parse(state);
+}
+
+const publicTownModuleTableState = tableSafeTownModuleTableState;
 
 type RefereeState = Campaign & {
   prototypeTavernTown?: PrototypeTavernTownState;
@@ -2381,6 +2388,7 @@ type PrototypeSocketConnectionState = {
   monitorKind?: MonitorSocketKind;
   townForgeRaw?: boolean;
   prototypeDev?: boolean;
+  townTableView?: "table" | "xray" | "split";
   prototypeAutoStepsUsed?: number;
 };
 
@@ -2527,12 +2535,16 @@ export class Referee extends Agent<Env, RefereeState> {
     }
     const townForgeRaw = kind === "town-forge" ? isTownForgeRawSocketRequest(ctx.request, this.env) : false;
     const prototypeDev = kind === "tavern-town" || kind === "town-table" ? isPrototypeBrainDevRequest(ctx.request, this.env) : false;
+    const requestUrl = new URL(ctx.request.url);
+    const requestedTownTableView = requestUrl.searchParams.get("view");
+    const townTableView = kind === "town-table" ? (requestedTownTableView === "table" ? "table" : requestedTownTableView === "split" ? "split" : "xray") : undefined;
     if (townForgeRaw) this.rawTownForgeConnectionIds.add(connection.id);
     connection.setState({
       ...(connection.state as PrototypeSocketConnectionState | undefined),
       monitorKind: kind,
       townForgeRaw,
       prototypeDev,
+      townTableView,
       prototypeAutoStepsUsed: 0
     });
     if (kind === "town-forge") {
@@ -2648,9 +2660,14 @@ export class Referee extends Agent<Env, RefereeState> {
 
   private emitTownTableSocketEvent(event: TownModuleTableSocketEvent): void {
     for (const connection of this.getConnections("town-table-monitor")) {
-      const isDev = (connection.state as PrototypeSocketConnectionState | undefined)?.prototypeDev === true;
-      if (event.type === "town_table.event" && !isDev && event.event.visibility !== "public") continue;
-      const safeEvent = event.type === "town_table.event" && !isDev ? { ...event, event: (({ devText: _devText, ...publicEvent }) => publicEvent)(event.event) } : event;
+      const connectionState = connection.state as PrototypeSocketConnectionState | undefined;
+      const isXray = connectionState?.townTableView !== "table";
+      if (event.type === "town_table.event" && !isXray && event.event.visibility !== "public") continue;
+      const safeEvent = event.type === "town_table.event" && !isXray
+        ? { ...event, event: (({ devText: _devText, ...publicEvent }) => publicEvent)(event.event) }
+        : event.type === "town_table.state"
+          ? { ...event, state: monitorTownModuleTableState(event.state, { xray: isXray }) }
+          : event;
       connection.send(JSON.stringify(safeEvent));
     }
   }
@@ -2659,7 +2676,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const state = this.getTownModuleTableState();
     this.sendTownTableSocketEvent(connection, {
       type: "town_table.state",
-      state: (connection.state as PrototypeSocketConnectionState | undefined)?.prototypeDev ? state : publicTownModuleTableState(state),
+      state: monitorTownModuleTableState(state, { xray: (connection.state as PrototypeSocketConnectionState | undefined)?.townTableView !== "table" }),
       reason,
       at: new Date().toISOString(),
       campaignId: this.name
@@ -2669,7 +2686,7 @@ export class Referee extends Agent<Env, RefereeState> {
   private emitTownTableState(reason: string): void {
     this.emitTownTableSocketEvent({
       type: "town_table.state",
-      state: publicTownModuleTableState(this.getTownModuleTableState()),
+      state: monitorTownModuleTableState(this.getTownModuleTableState(), { xray: true }),
       reason,
       at: new Date().toISOString(),
       campaignId: this.name
@@ -6410,7 +6427,8 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   if (url.pathname === "/api/prototype/town-module-table-state") {
     const referee = await getAgentByName(env.Referee, "town-module-table");
     const state = await referee.getTownModuleTableStateRpc();
-    return json({ state: isPrototypeBrainDevRequest(request, env) ? state : publicTownModuleTableState(state) });
+    const view = url.searchParams.get("view");
+    return json({ state: monitorTownModuleTableState(state, { xray: view !== "table" }) });
   }
   if (url.pathname === "/api/prototype/town-module-table-summary") {
     const referee = await getAgentByName(env.Referee, "town-module-table");
@@ -6636,15 +6654,17 @@ function townModuleTableUiPage(): Response {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Agent Dungeon — Town Module Table</title>
   <style>
-    body{margin:0;background:#050605;color:#eaf8de;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}header{position:sticky;top:0;z-index:3;background:#0b0f0a;border-bottom:1px solid #2d3a2a;padding:10px 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}.tag{background:#b7ff5a;color:#050605;font-weight:800;padding:2px 6px;text-transform:uppercase}.muted{color:#8ca184}.dot{width:10px;height:10px;border-radius:99px;background:#ffd166;box-shadow:0 0 12px #ffd166;display:inline-block}.dot.on{background:#b7ff5a;box-shadow:0 0 14px #b7ff5a}.dot.err{background:#ff6b57;box-shadow:0 0 14px #ff6b57}.strip{position:sticky;top:45px;z-index:2;background:#081008;border-bottom:1px solid #21331e;padding:8px 12px;display:grid;grid-template-columns:1fr 1fr 1fr 1.5fr 1.5fr;gap:8px}.strip h2{font-size:10px;color:#8ca184;margin:0 0 2px;text-transform:uppercase}.strip div{min-width:0}.strip p{margin:0;color:#dfffd2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.clockline{color:#ffd166}.partyline{color:#d6a4ff}@media(max-width:900px){.strip{grid-template-columns:1fr 1fr;top:72px}}main{display:grid;grid-template-columns:1fr;gap:0}.event{border-bottom:1px solid #1e2a1b;padding:9px 12px;background:#050605}.event:first-child{background:#091009}.meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:#8ca184;font-size:11px;text-transform:uppercase}.lane{background:#6dd3ff;color:#031018;font-weight:800;padding:1px 5px}.lane.referee{background:#b7ff5a}.lane.world{background:#ffd166}.lane.commit{background:#d6a4ff}.lane.error{background:#ff6b57}.lane.artifacts{background:#cfe7c6}.lane.rules{background:#ffef9a}.lane.dice{background:#ffad69}.lane.clock{background:#ff7ab6}.kind{color:#cfe7c6}.speaker{color:#f6ffe9;font-weight:800}p{margin:4px 0 0;white-space:pre-wrap}.thought p{color:#d6a4ff}.event.encounter_start{background:#241008;border-left:8px solid #ff6b57;padding:16px 14px}.event.encounter_start p{font-size:18px;font-weight:900;color:#fff1d6}.event.combat_round{background:#18090b;border-left:8px solid #ffad69}.event.combat_round p{font-size:16px;color:#ffe6cf}.phase-combat{color:#ffad69;font-weight:900}.phase-aftermath{color:#d6a4ff;font-weight:900}.state{margin-left:auto}.empty{padding:32px 12px;color:#8ca184}
+    body{margin:0;background:#050605;color:#eaf8de;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}header{position:sticky;top:0;z-index:3;background:#0b0f0a;border-bottom:1px solid #2d3a2a;padding:10px 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}.tag{background:#b7ff5a;color:#050605;font-weight:800;padding:2px 6px;text-transform:uppercase}.muted{color:#8ca184}.dot{width:10px;height:10px;border-radius:99px;background:#ffd166;box-shadow:0 0 12px #ffd166;display:inline-block}.dot.on{background:#b7ff5a;box-shadow:0 0 14px #b7ff5a}.dot.err{background:#ff6b57;box-shadow:0 0 14px #ff6b57}.strip{position:sticky;top:45px;z-index:2;background:#081008;border-bottom:1px solid #21331e;padding:8px 12px;display:grid;grid-template-columns:1fr 1fr 1fr 1.5fr 1.5fr;gap:8px}.strip h2,.xray h2{font-size:10px;color:#8ca184;margin:0 0 2px;text-transform:uppercase}.strip div{min-width:0}.strip p{margin:0;color:#dfffd2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.clockline{color:#ffd166}.partyline{color:#d6a4ff}.xray{display:none;border-bottom:1px solid #35264a;background:#090711;padding:8px 12px;grid-template-columns:1.2fr 1.4fr 1fr;gap:8px}.xray.on{display:grid}.xray p{margin:0;color:#d6a4ff;max-height:110px;overflow:auto}.mode{border:1px solid #394534;color:#dfffd2;padding:2px 6px;text-decoration:none}.mode.active{background:#d6a4ff;color:#120619}@media(max-width:900px){.strip,.xray{grid-template-columns:1fr;top:72px}}main{display:grid;grid-template-columns:1fr;gap:0}.event{border-bottom:1px solid #1e2a1b;padding:9px 12px;background:#050605}.event:first-child{background:#091009}.meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:#8ca184;font-size:11px;text-transform:uppercase}.lane{background:#6dd3ff;color:#031018;font-weight:800;padding:1px 5px}.lane.referee{background:#b7ff5a}.lane.world{background:#ffd166}.lane.commit{background:#d6a4ff}.lane.error{background:#ff6b57}.lane.artifacts{background:#cfe7c6}.lane.rules{background:#ffef9a}.lane.dice{background:#ffad69}.lane.clock{background:#ff7ab6}.kind{color:#cfe7c6}.speaker{color:#f6ffe9;font-weight:800}p{margin:4px 0 0;white-space:pre-wrap}.thought p{color:#d6a4ff}.event.encounter_start{background:#241008;border-left:8px solid #ff6b57;padding:16px 14px}.event.encounter_start p{font-size:18px;font-weight:900;color:#fff1d6}.event.combat_round{background:#18090b;border-left:8px solid #ffad69}.phase-combat{color:#ffad69;font-weight:900}.phase-aftermath{color:#d6a4ff;font-weight:900}.state{margin-left:auto}.empty{padding:32px 12px;color:#8ca184}
   </style>
 </head>
 <body>
-  <header><span class="tag">Town Module Table</span><span id="dot" class="dot"></span><strong>Fenwater Drainage live table</strong><span id="status" class="muted state">connecting…</span></header>
+  <header><span class="tag">Town Module Table</span><span id="dot" class="dot"></span><strong>Fenwater Drainage live table</strong><a id="xrayLink" class="mode" href="?view=xray">x-ray</a><a id="tableLink" class="mode" href="?view=table">table-safe</a><span id="status" class="muted state">connecting…</span></header>
   <section class="strip" id="strip"><div><h2>Phase</h2><p>—</p></div><div><h2>Location</h2><p>—</p></div><div><h2>Clocks</h2><p>—</p></div><div><h2>Leads</h2><p>—</p></div><div><h2>Party</h2><p>—</p></div></section>
+  <section class="xray" id="xray"><div><h2>Referee memory</h2><p>—</p></div><div><h2>Player memory</h2><p>—</p></div><div><h2>Audit counters</h2><p>—</p></div></section>
   <main id="feed"><div class="empty">Attaching to Referee stream…</div></main>
 <script>
-const feed=document.getElementById('feed'); const status=document.getElementById('status'); const dot=document.getElementById('dot'); const strip=document.getElementById('strip');
+const feed=document.getElementById('feed'); const status=document.getElementById('status'); const dot=document.getElementById('dot'); const strip=document.getElementById('strip'); const xray=document.getElementById('xray');
+const params=new URLSearchParams(location.search); const view=params.get('view')||'xray'; document.getElementById(view==='table'?'tableLink':'xrayLink').classList.add('active');
 let events=[]; let tableState=null;
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function render(){
@@ -6657,13 +6677,20 @@ function render(){
     const phase=(tableState.tablePhase||'exploration')+(combat?' · '+combat.foe+' HP '+combat.foeHp+'/'+(combat.foeMaxHp||combat.foeHp)+' AC '+combat.foeArmorClass:(last?' · last: '+last.foe+' '+last.outcome+' beat '+last.beat:''));
     const phaseClass=tableState.tablePhase==='combat'?'phase-combat':(tableState.tablePhase==='aftermath'?'phase-aftermath':'');
     strip.innerHTML='<div><h2>Phase</h2><p class="'+phaseClass+'">'+esc(phase)+'</p></div><div><h2>Location</h2><p>'+esc(tableState.location||'—')+'</p></div><div><h2>Clocks</h2><p class="clockline">'+esc(clocks||'—')+'</p></div><div><h2>Leads</h2><p>'+esc(leads||'—')+'</p></div><div><h2>Party</h2><p class="partyline">'+esc(party||'—')+'</p></div>';
+    const counters=tableState.summaryCounters||{};
+    const referee=tableState.refereeMemory||{};
+    const refText=['revealed: '+(referee.revealedFacts||[]).slice(0,4).join(' | '),'unresolved: '+(referee.unresolvedThreads||[]).slice(0,4).join(' | '),'npc: '+(referee.npcState||[]).slice(0,3).join(' | '),'hidden: '+(referee.hiddenStillPrivate||[]).slice(0,2).join(' | ')].join('\n');
+    const playerText=Object.entries(tableState.partyMemory||{}).map(([id,m])=>id+': '+[...(m.knows||[]).slice(0,2),...(m.goals||[]).slice(0,1),...(m.losses||[]).slice(0,1),...(m.tactics||[]).slice(0,1)].join(' | ')).join('\n');
+    const counterText='events '+(counters.totalEvents??events.length)+' retained '+events.length+'\nlocality '+(counters.localityCorrections??0)+' combat '+(counters.combatRows??0)+' objective '+(counters.objectiveProgress??0)+'\ninactive attempts '+(counters.inactiveActionAttempts??0)+' duplicate commits '+(counters.duplicateCommitBeats??0);
+    xray.classList.toggle('on', view!=='table');
+    xray.innerHTML='<div><h2>Referee memory</h2><p>'+esc(refText)+'</p></div><div><h2>Player memory</h2><p>'+esc(playerText||'—')+'</p></div><div><h2>Audit counters</h2><p>'+esc(counterText)+'</p></div>';
   }
   events.sort((a,b)=>Date.parse(b.at||0)-Date.parse(a.at||0));
   feed.innerHTML=events.length?events.map(e=>'<article class="event '+esc(e.kind)+'"><div class="meta"><span class="lane '+esc(e.lane)+'">'+esc(e.lane)+'</span><span class="kind">'+esc(e.kind)+'</span><span class="speaker">'+esc(e.speaker)+'</span><span>beat '+esc(e.beat)+'</span><span>'+new Date(e.at).toLocaleTimeString()+'</span></div><p>'+esc(e.text)+'</p>'+(e.devText?'<p class="muted">'+esc(e.devText)+'</p>':'')+'</article>').join(''):'<div class="empty">Waiting for table events…</div>';
 }
 function connect(){
   const protocol=location.protocol==='https:'?'wss:':'ws:';
-  const ws=new WebSocket(protocol+'//'+location.host+'/agents/referee/town-module-table?monitor=town-table');
+  const ws=new WebSocket(protocol+'//'+location.host+'/agents/referee/town-module-table?monitor=town-table&view='+encodeURIComponent(view));
   ws.onopen=()=>{status.textContent='connected · server starts/resumes automatically';dot.className='dot on'};
   ws.onclose=()=>{status.textContent='disconnected · retrying';dot.className='dot';setTimeout(connect,1200)};
   ws.onerror=()=>{status.textContent='socket error';dot.className='dot err'};

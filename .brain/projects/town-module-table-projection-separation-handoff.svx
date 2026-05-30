@@ -1,0 +1,293 @@
+---
+title: "Town Module Table Projection Separation Handoff"
+type: "project"
+status: "active"
+created_at: "2026-05-30"
+tags:
+  - handoff
+  - agent-dungeon
+  - town-module-table
+  - monitor
+  - xray
+---
+
+# Town Module Table Projection Separation Handoff
+
+## Current objective
+
+Build a clean separation between **player capability projections** and **human monitor projections**, then make the production human monitor x-ray-ish by default.
+
+Corrected invariant from Joel: **public monitor is not the same thing as player projection**. We were overprotecting the human-facing feed because we conflated “public” with “player-safe.” The runtime should protect PlayerAgent capabilities, not hide useful internal state from human viewers by default.
+
+Desired production behavior:
+
+- `agentdungeon.ai/prototype/town-module-table` should be a human/operator documentary/x-ray monitor by default.
+- PlayerAgents must still receive strict table/player-safe context only.
+- X-ray feed may show Referee memory, front state, player memory summaries, dev/operator reasoning, and small fair-use source snippets/receipts when useful.
+- Avoid dumping big source blocks. Small fair-use snippets are allowed; prefer concise excerpts plus doc/chunk IDs.
+
+## Durable artifacts updated
+
+Recent durable docs already validated the long-run work:
+
+- `.brain/projects/fenwater-long-run-adventure-module-prd.svx`
+- `.brain/projects/town-module-table-100-beat-improvement-plan.svx`
+- `.brain/data/prototype-build-log.jsonl`
+
+This handoff is the next implementation note for projection separation:
+
+- `.brain/projects/town-module-table-projection-separation-handoff.svx`
+
+Document Host URL when served locally should follow the project notes route, likely:
+
+- `/notes/projects/town-module-table-projection-separation-handoff`
+
+## Current live state
+
+Branch:
+
+- `feat/realtime-agent-dungeon-campaign`
+
+Git state at handoff creation:
+
+- clean before writing this handoff
+- recent remote/local head before this note: `d198a08 docs: record cumulative counters prod smoke`
+
+Recent completed work:
+
+- Fenwater long-run module content and runtime progression validated.
+- 100-beat production run reached beat 100 with broad location/front coverage.
+- Cumulative summary counters added so long-run metrics are no longer derived only from the capped 500-event transcript window.
+
+Important recent commits:
+
+- `24d5a38 feat: add cumulative table run counters`
+- `d198a08 docs: record cumulative counters prod smoke`
+- `9b9f180 docs: validate Fenwater hundred beat run`
+
+Known deploy wrinkle remains:
+
+- Wrangler uploads Worker successfully.
+- Route update still fails with Cloudflare auth error `10000` because current token lacks route permission.
+- Existing `agentdungeon.ai` custom-domain route serves the uploaded Worker anyway.
+
+## Current code shape to inspect next
+
+Projection/privacy surfaces in `apps/worker/src/index.ts`:
+
+- `TownModuleTableStateSchema`
+- `publicTownModuleTableState(state)`
+- `emitTownTableState(reason)`
+- socket monitor attach path for `monitor=town-table`
+- `/api/prototype/town-module-table-state`
+- `townModuleTableUiPage()`
+- `runTownModuleTableMoment()` prompt construction for PlayerAgents
+- Referee prompt around the `Referee memory:` and `Player memories:` lines
+
+Current memory fields:
+
+```ts
+partyMemory: Record<playerId, {
+  knows: string[]
+  suspects: string[]
+  goals: string[]
+  losses: string[]
+  tactics: string[]
+  relationships: string[]
+}>
+
+refereeMemory: {
+  revealedFacts: string[]
+  unresolvedThreads: string[]
+  npcState: string[]
+  clocksExplained: string[]
+  hiddenStillPrivate: string[]
+}
+```
+
+Current public sanitizer currently strips too much for the desired human monitor:
+
+```ts
+publicTownModuleTableState(state) => {
+  playerArtifacts: {},
+  partyMemory: {},
+  refereeMemory.hiddenStillPrivate: [],
+  events: public only, devText removed
+}
+```
+
+This is still correct for **player-safe/table projection**, but not for the default human monitor.
+
+## Decisions and invariants to preserve
+
+### Separate surfaces from capabilities
+
+Do not use one overloaded `public` concept for everything.
+
+Use this mental model:
+
+```txt
+PlayerAgent capability projection
+  strict, table-safe, no hidden Referee state, no other players' private memory
+
+Human monitor projection
+  x-ray/documentary by default in production
+  shows internal state useful for observing the toy/game
+
+Referee/private truth
+  canonical hidden module state, unrevealed causes, event ledger, receipts
+```
+
+### PlayerAgents must not consume x-ray
+
+Even if the production page shows x-ray info to humans, PlayerAgent prompts/tools must remain strict. Do not route monitor state back into PlayerAgent context.
+
+### Source snippets policy
+
+Joel explicitly approved fair-use snippets:
+
+- Small source snippets are allowed in x-ray/operator/human monitor where useful.
+- Avoid big quoted blocks.
+- Prefer short excerpt + source/doc/chunk ID.
+- Do not paste full paid corpus chunks or pages into the feed.
+
+This is not a “copyright forbids everything” rule. It is an agent taste/safety rule: quote narrowly, with receipts.
+
+### Naming correction
+
+`public` should increasingly mean `table` or `tableSafe`, not “the production website.”
+
+Prefer future names like:
+
+```ts
+projection: "player" | "table" | "monitor" | "operator" | "referee"
+visibility: "table" | "player_private" | "referee_private" | "operator"
+```
+
+Do not do a giant rename first unless necessary. Start with wrapper functions.
+
+## Suggested implementation plan
+
+### 1. Add explicit projection helpers
+
+In `apps/worker/src/index.ts`, split current sanitizer into at least:
+
+```ts
+function tableSafeTownModuleTableState(state: TownModuleTableState): TownModuleTableState
+function monitorTownModuleTableState(state: TownModuleTableState, opts?: { xray?: boolean }): TownModuleTableState
+function playerTownModuleTableContext(state: TownModuleTableState, playerId: PlayerId): unknown
+```
+
+Initial behavior:
+
+- `tableSafe...` = current `publicTownModuleTableState` behavior.
+- `monitor...({ xray: true })` = keep `partyMemory`, `refereeMemory`, `playerArtifacts`, public+dev/operator events, and `devText` or x-ray fields.
+- `player...` = only table-safe events + that player’s own memory/artifact if needed; never other players' private memory or hidden Referee notes.
+
+### 2. Make production monitor x-ray by default
+
+For `/prototype/town-module-table`, use monitor projection by default.
+
+Possible query modes:
+
+```txt
+?view=table     strict table-safe feed
+?view=xray      x-ray monitor feed
+?view=split     later: table feed + x-ray panel
+```
+
+Joel asked to make x-ray the production default, so `view` absent should behave like x-ray for the human monitor route.
+
+### 3. Keep API route explicit
+
+For `/api/prototype/town-module-table-state`:
+
+- default can become monitor/x-ray if the route is considered operator/human observability.
+- or safer incremental step: add `?view=xray` now, leave default as table-safe until UI migration is complete.
+
+Do not silently change PlayerAgent inputs.
+
+### 4. Add x-ray UI affordances
+
+In `townModuleTableUiPage()`:
+
+- show Referee memory panel:
+  - revealed facts
+  - unresolved threads
+  - NPC state
+  - clocks explained
+  - hidden/private reminders
+- show player memory cards:
+  - knows
+  - goals
+  - losses
+  - tactics
+- show summary counters:
+  - `events`
+  - `retainedEvents`
+  - `localityCorrections`
+  - `combatRows`
+  - `inactiveActionAttempts`
+  - `duplicateCommitBeats`
+- visually label x-ray rows/panels so they are not mistaken for table fiction.
+
+### 5. Emit explicit x-ray/operator events later
+
+Do not rely only on devText forever. Add event-like records or derived rows for:
+
+```ts
+kind: "referee_memory" | "player_memory" | "front_state" | "rule_receipt" | "projection_boundary"
+visibility/projection: "operator"
+```
+
+This can be a later slice after projection helpers land.
+
+## Tests / checks to run
+
+Run after implementation:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/domain check
+pnpm --filter @cloudflare-agent-dungeon/domain test
+pnpm --filter @cloudflare-agent-dungeon/worker test
+pnpm --filter @cloudflare-agent-dungeon/worker check
+pi_notes_brain_check
+```
+
+Then deploy and verify with browser:
+
+```bash
+cd apps/worker
+CLOUDFLARE_API_TOKEN="$(secrets lease 'wzrrd::cloudflare_api_token' --ttl 30m --client-id projection-separation)" \
+CLOUDFLARE_ACCOUNT_ID="$(secrets lease 'wzrrd::cloudflare_account_id' --ttl 30m --client-id projection-separation)" \
+pnpm deploy
+```
+
+Expect Wrangler route auth error `10000`; verify existing route serves uploaded Worker.
+
+Use `agent_browser` against:
+
+- `https://agentdungeon.ai/prototype/town-module-table`
+- `https://agentdungeon.ai/prototype/town-module-table?view=table`
+- `https://agentdungeon.ai/prototype/town-module-table?view=xray`
+
+Verify:
+
+- default production monitor shows x-ray panels/rows.
+- table view hides player artifacts/private memory/devText.
+- PlayerAgent prompts still use strict table/player-safe context.
+- no giant source blocks appear.
+
+## Relevant skills next
+
+- `autoreview` after code changes; Codex review may currently fail due token auth, but try and report if blocked.
+- `agent-browser` for production UI verification.
+- `brain-maintenance` / `brain-component-composition` if this note or Brain components need richer rendering.
+- `ose-rules-access` only if adding rule-source snippet behavior.
+
+## Risks / blockers
+
+- Naming churn: avoid massive `public` rename first. Add projection helpers and migrate call sites.
+- Security theatre: do not block Joel/operator x-ray just because the route is public. The important boundary is PlayerAgent capability input, not hiding useful monitor data from human observers.
+- Source excerpt overreach: snippets are allowed, but agents should not dump large paid book chunks into the page.
+- Existing state objects may not have new fields. Keep schemas default-compatible.
