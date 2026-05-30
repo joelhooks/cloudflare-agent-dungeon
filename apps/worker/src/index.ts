@@ -6679,9 +6679,9 @@ function render(){
     strip.innerHTML='<div><h2>Phase</h2><p class="'+phaseClass+'">'+esc(phase)+'</p></div><div><h2>Location</h2><p>'+esc(tableState.location||'—')+'</p></div><div><h2>Clocks</h2><p class="clockline">'+esc(clocks||'—')+'</p></div><div><h2>Leads</h2><p>'+esc(leads||'—')+'</p></div><div><h2>Party</h2><p class="partyline">'+esc(party||'—')+'</p></div>';
     const counters=tableState.summaryCounters||{};
     const referee=tableState.refereeMemory||{};
-    const refText=['revealed: '+(referee.revealedFacts||[]).slice(0,4).join(' | '),'unresolved: '+(referee.unresolvedThreads||[]).slice(0,4).join(' | '),'npc: '+(referee.npcState||[]).slice(0,3).join(' | '),'hidden: '+(referee.hiddenStillPrivate||[]).slice(0,2).join(' | ')].join('\n');
-    const playerText=Object.entries(tableState.partyMemory||{}).map(([id,m])=>id+': '+[...(m.knows||[]).slice(0,2),...(m.goals||[]).slice(0,1),...(m.losses||[]).slice(0,1),...(m.tactics||[]).slice(0,1)].join(' | ')).join('\n');
-    const counterText='events '+(counters.totalEvents??events.length)+' retained '+events.length+'\nlocality '+(counters.localityCorrections??0)+' combat '+(counters.combatRows??0)+' objective '+(counters.objectiveProgress??0)+'\ninactive attempts '+(counters.inactiveActionAttempts??0)+' duplicate commits '+(counters.duplicateCommitBeats??0);
+    const refText=['revealed: '+(referee.revealedFacts||[]).slice(0,4).join(' | '),'unresolved: '+(referee.unresolvedThreads||[]).slice(0,4).join(' | '),'npc: '+(referee.npcState||[]).slice(0,3).join(' | '),'hidden: '+(referee.hiddenStillPrivate||[]).slice(0,2).join(' | ')].join('\\n');
+    const playerText=Object.entries(tableState.partyMemory||{}).map(([id,m])=>id+': '+[...(m.knows||[]).slice(0,2),...(m.goals||[]).slice(0,1),...(m.losses||[]).slice(0,1),...(m.tactics||[]).slice(0,1)].join(' | ')).join('\\n');
+    const counterText='events '+(counters.totalEvents??events.length)+' retained '+events.length+'\\nlocality '+(counters.localityCorrections??0)+' combat '+(counters.combatRows??0)+' objective '+(counters.objectiveProgress??0)+'\\ninactive attempts '+(counters.inactiveActionAttempts??0)+' duplicate commits '+(counters.duplicateCommitBeats??0);
     xray.classList.toggle('on', view!=='table');
     xray.innerHTML='<div><h2>Referee memory</h2><p>'+esc(refText)+'</p></div><div><h2>Player memory</h2><p>'+esc(playerText||'—')+'</p></div><div><h2>Audit counters</h2><p>'+esc(counterText)+'</p></div>';
   }
