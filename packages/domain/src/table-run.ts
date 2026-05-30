@@ -1,7 +1,11 @@
 import { z } from "zod";
+import type { AdventureModule } from "./adventure-module";
 
 export const TableRunPhaseSchema = z.enum(["exploration", "encounter", "combat", "aftermath"]);
 export type TableRunPhase = z.infer<typeof TableRunPhaseSchema>;
+
+export const TableRunLifecycleSchema = z.enum(["idle", "session_zero", "opening_selection", "running", "stopped", "failed"]);
+export type TableRunLifecycle = z.infer<typeof TableRunLifecycleSchema>;
 
 export const TableEventLaneSchema = z.enum(["player", "referee", "world", "rules", "dice", "clock", "commit", "error", "artifacts"]);
 export const PlayerActionLabelSchema = z.enum(["THOUGHT", "TALK", "FLOAT", "ASK", "LOCK", "ATTACK", "DEFEND", "GRAB", "AID", "WITHDRAW", "CAST"]);
@@ -22,6 +26,10 @@ export const TableEventKindSchema = z.enum([
   "world_update",
   "procedure_check",
   "dice_roll",
+  "session_zero_roll",
+  "session_zero_character_committed",
+  "opening_seed_draft",
+  "opening_committed",
   "clock_tick",
   "encounter_start",
   "combat_round",
@@ -179,6 +187,38 @@ export function normalizeTableRunStartOptions(options: TableRunStartOptions): No
   });
 }
 
+export const TableRunOpeningSeedSchema = z.object({
+  id: z.string().min(1).regex(/^opening-[a-z0-9-]+$/),
+  title: z.string().min(1).max(160),
+  startingLocationId: z.string().min(1),
+  visibleSituation: z.string().min(1).max(1200),
+  immediatePressure: z.string().min(1).max(700),
+  whyPartyIsTogether: z.string().min(1).max(700),
+  initialAffordances: z.array(z.string().min(1).max(180)).min(2).max(8),
+  activeFrontIds: z.array(z.string().min(1)).default([]),
+  publicClocks: z.array(TableClockSchema).default([]),
+  refereeNotes: z.array(z.string().min(1).max(500)).default([]),
+  sourceRefs: z.array(z.string().min(1).max(220)).default([])
+});
+export type TableRunOpeningSeed = z.infer<typeof TableRunOpeningSeedSchema>;
+
+export function tableRunOpeningSeedComponentIds(module: AdventureModule): { locationIds: Set<string>; pressureIds: Set<string> } {
+  return {
+    locationIds: new Set(module.components.filter((component) => component.kind === "location").map((component) => component.id)),
+    pressureIds: new Set(module.components.filter((component) => component.kind === "encounterPressure" || component.kind === "faction" || component.kind === "clock").map((component) => component.id))
+  };
+}
+
+export function validateTableRunOpeningSeedForModule(seedInput: unknown, module: AdventureModule): TableRunOpeningSeed {
+  const seed = TableRunOpeningSeedSchema.parse(seedInput);
+  const ids = tableRunOpeningSeedComponentIds(module);
+  if (!ids.locationIds.has(seed.startingLocationId)) throw new Error(`Opening seed used unknown location id: ${seed.startingLocationId}`);
+  for (const frontId of seed.activeFrontIds) {
+    if (!ids.pressureIds.has(frontId)) throw new Error(`Opening seed used unknown pressure/front id: ${frontId}`);
+  }
+  return seed;
+}
+
 export const TableRunSummaryCountersSchema = z.object({
   totalEvents: z.number().int().nonnegative().default(0),
   localityCorrections: z.number().int().nonnegative().default(0),
@@ -191,6 +231,7 @@ export type TableRunSummaryCounters = z.infer<typeof TableRunSummaryCountersSche
 
 export const TableRunCoreStateSchema = z.object({ 
   mode: z.enum(["idle", "running", "stopped", "failed"]),
+  lifecycle: TableRunLifecycleSchema.default("idle"),
   runId: z.string().optional(),
   moduleId: z.string().min(1),
   moduleTitle: z.string().min(1),
@@ -207,6 +248,7 @@ export const TableRunCoreStateSchema = z.object({
   activeQuestion: z.string().min(1),
   affordances: z.array(z.string()).default([]),
   activeLeads: z.array(z.string()).default([]),
+  openingSeed: TableRunOpeningSeedSchema.optional(),
   clocks: z.array(TableClockSchema).default([]),
   party: z.array(TablePartyMemberSchema).default([]),
   combat: CombatStateSchema.optional(),

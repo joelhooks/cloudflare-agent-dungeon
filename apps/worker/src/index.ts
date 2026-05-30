@@ -58,9 +58,12 @@ import {
   TableEventSchema as DomainTableEventSchema,
   TablePartyMemberSchema as DomainTablePartyMemberSchema,
   TableRunCoreStateSchema as DomainTableRunCoreStateSchema,
+  TableRunOpeningSeedSchema as DomainTableRunOpeningSeedSchema,
   TableRunLimitsSchema as DomainTableRunLimitsSchema,
   TableRunSummaryCountersSchema as DomainTableRunSummaryCountersSchema,
   advanceCombatObjective as advanceDomainCombatObjective,
+  tableRunOpeningSeedComponentIds,
+  validateTableRunOpeningSeedForModule,
   normalizeTableRunPatch,
   normalizeTableRunStartOptions,
   parseLabeledActionProposal,
@@ -71,10 +74,13 @@ import {
   requiredLocalityForAction as requiredDomainLocalityForAction,
   starterGearForClass as domainStarterGearForClass,
   type AdventureChoice,
+  type AdventureModule,
   type Campaign,
   type Character,
   type CharacterCreationDraft,
   type CharacterCreationPlan,
+  type DiceRoll,
+  type TableRunOpeningSeed,
   type HookId,
   type PlayerId,
   type RefereeOutcome,
@@ -2121,9 +2127,22 @@ const TownModuleTableEventSchema = DomainTableEventSchema.extend({
 
 type TownModuleTableEvent = z.infer<typeof TownModuleTableEventSchema>;
 
+const TownModuleTableOpeningSeedSchema = DomainTableRunOpeningSeedSchema;
+type TownModuleTableOpeningSeed = z.infer<typeof TownModuleTableOpeningSeedSchema>;
+
+const LooseStringArraySchema = z.preprocess((value) => {
+  if (Array.isArray(value)) return value.map((item) => compactText(typeof item === "string" ? item : JSON.stringify(item), 480));
+  if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).map((item) => compactText(typeof item === "string" ? item : JSON.stringify(item), 480));
+  if (typeof value === "string" && value.trim()) return [compactText(value.trim(), 480)];
+  return [];
+}, z.array(z.string()));
+
+const LooseOpeningStringSchema = (maxLength: number) => z.preprocess((value) => compactText(typeof value === "string" ? value : value == null ? "" : JSON.stringify(value), maxLength), z.string().min(1).max(maxLength));
+
 const TownModuleTableStateSchema = z.object({
   schema: z.literal("TownModuleTableState.v1"),
   mode: z.enum(["idle", "running", "stopped", "failed"]),
+  lifecycle: z.enum(["idle", "session_zero", "opening_selection", "running", "stopped", "failed"]).default("idle"),
   runId: z.string().optional(),
   runningFiberId: z.string().optional(),
   townId: z.string(),
@@ -2144,6 +2163,7 @@ const TownModuleTableStateSchema = z.object({
   affordances: z.array(z.string()),
   visibleThreads: z.array(z.string()),
   activeLeads: z.array(z.string()).default([]),
+  openingSeed: TownModuleTableOpeningSeedSchema.optional(),
   clocks: z.array(DomainTableClockSchema).default([]),
   party: z.array(DomainTablePartyMemberSchema),
   combat: DomainCombatStateSchema.optional(),
@@ -2169,6 +2189,7 @@ type TownModuleTableState = z.infer<typeof TownModuleTableStateSchema>;
 function tableSafeTownModuleTableState(state: TownModuleTableState): TownModuleTableState {
   return TownModuleTableStateSchema.parse({
     ...state,
+    ...(state.openingSeed ? { openingSeed: { ...state.openingSeed, refereeNotes: [] } } : {}),
     playerArtifacts: {},
     partyMemory: {},
     refereeMemory: {
@@ -2493,15 +2514,19 @@ function generatedTownTablePlayerArtifact(input: { playerId: string; playerName:
   return { soulMd, identityMd };
 }
 
-function generatedTownTableCharacterName(playerId: (typeof TOWN_MODULE_TABLE_PLAYER_IDS)[number], className: string): string {
-  const pools: Record<(typeof TOWN_MODULE_TABLE_PLAYER_IDS)[number], string[]> = {
-    "player-a": ["Hrum", "Gorunn", "Kest", "Berric", "Orren", "Sable"],
-    "player-b": ["Vex", "Bramble", "Nessa", "Pell", "Corra", "Moss"],
-    "player-c": ["Lysa", "Dorn", "Fen", "Rook", "Ash", "Merrit"],
-    "player-d": ["Olla", "Bran", "Siv", "Nix", "Wren", "Cairn"]
-  };
-  const pool = pools[playerId];
-  return `${pool[secureRandomInt(pool.length) - 1] ?? pool[0]} the ${className}`;
+function tableRunOpeningSlug(input: string): string {
+  const slugged = input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);
+  return slugged || crypto.randomUUID().slice(0, 8);
+}
+
+function tableRunSessionZeroRollText(roll: DiceRoll): string {
+  const terms = roll.terms.length ? ` [${roll.terms.join("+")}]` : "";
+  return `${roll.reason}: ${roll.result} on ${roll.formula}${terms}.`;
+}
+
+function townTableCharacterSheetSummary(character: Character): string {
+  const abilities = character.abilities ? formatAbilityScores(character.abilities) : "abilities unavailable";
+  return `${character.name} (${character.className ?? "adventurer"}) hp=${character.stats.hp} ac=${character.stats.armorClass}; ${abilities}; gear=${character.inventory.join(", ") || "none"}; gold=${character.goldGp ?? 0}gp`;
 }
 
 export class Referee extends Agent<Env, RefereeState> {
@@ -2802,7 +2827,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const message = publicPrototypeError(error);
     const detail = String(error instanceof Error ? error.message : error);
     const state = this.getTownModuleTableState();
-    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, mode: "failed", runningFiberId: undefined, error: detail, updatedAt: new Date().toISOString() } });
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, mode: "failed", lifecycle: "failed", runningFiberId: undefined, error: detail, updatedAt: new Date().toISOString() } });
     this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "error", speaker: "Referee", kind: "error", text: message, devText: detail });
     this.emitTownTableSocketEvent({ type: "town_table.error", message, at: new Date().toISOString(), campaignId: this.name });
   }
@@ -4899,6 +4924,7 @@ export class Referee extends Agent<Env, RefereeState> {
     return TownModuleTableStateSchema.parse({
       schema: "TownModuleTableState.v1",
       mode: "idle",
+      lifecycle: "idle",
       townId: "fenwater-drainage",
       townName: "Fenwater Drainage",
       artifactRepo: TOWN_FORGE_ARTIFACT_REPO,
@@ -4960,9 +4986,64 @@ export class Referee extends Agent<Env, RefereeState> {
     return { town: TownGraphSchema.parse(JSON.parse(artifact.files["towns/fenwater-drainage/graph.json"] ?? "{}")), receipts: artifact.files["towns/fenwater-drainage/receipts.jsonl"] ?? "", artifactCommit: artifact.commit ?? artifactCommit };
   }
 
+  private async generateTableRunOpeningSeed(input: {
+    module: AdventureModule;
+    party: Array<{ playerId: string; player: string; character: Character }>;
+    difficulty: number;
+    avoidStartingLocationIds?: string[];
+  }): Promise<TownModuleTableOpeningSeed> {
+    const locationComponents = input.module.components.filter((component) => component.kind === "location");
+    const pressureIds = tableRunOpeningSeedComponentIds(input.module).pressureIds;
+    const pressureComponents = input.module.components.filter((component) => pressureIds.has(component.id));
+    const locationBriefs = locationComponents.map((component) => `${component.id}: ${component.title}`).join("; ");
+    const pressureBriefs = pressureComponents.map((component) => `${component.id}: ${component.title} (${component.kind})`).join("; ");
+    const partyBrief = input.party.map(({ player, character }) => `${player} pilots ${townTableCharacterSheetSummary(character)}`).join("\n");
+    const prompt = [
+      "You are the Referee preparing the opening seed for one bounded Agent Dungeon TableRun.",
+      "Return exactly one JSON object. No markdown. No prose wrapper.",
+      "This is after real Session Zero. Use this actual newly rolled party.",
+      "Compose a fresh one-party-wide starting situation from the known AdventureModule ingredients.",
+      "The party must start together. If there is any viable non-default location, start away from the module default. Do not invent component ids.",
+      "Shape: {title, startingLocationId, visibleSituation, immediatePressure, whyPartyIsTogether, initialAffordances, activeFrontIds, publicClocks, refereeNotes, sourceRefs}.",
+      "publicClocks shape: [{name,value,max,note}]. Use 0-2 clocks. activeFrontIds: 0-3 known pressure/front ids.",
+      "visibleSituation and initialAffordances are player-safe. refereeNotes may include hidden/private x-ray notes.",
+      `Module: ${input.module.manifest.moduleId} — ${input.module.manifest.title}`,
+      `Difficulty: ${input.difficulty}`,
+      `Avoid starting at these default location ids if another known location works: ${(input.avoidStartingLocationIds ?? []).join(", ") || "none"}`,
+      `Known locations: ${locationBriefs}`,
+      `Known pressure/front components: ${pressureBriefs || "none"}`,
+      `Party:\n${partyBrief}`
+    ].join("\n");
+    const raw = await runPrototypeModelJson(this.env, prompt, 1600);
+    const parsed = z.object({
+      title: LooseOpeningStringSchema(160),
+      startingLocationId: z.string().min(1),
+      visibleSituation: LooseOpeningStringSchema(1200),
+      immediatePressure: LooseOpeningStringSchema(700),
+      whyPartyIsTogether: LooseOpeningStringSchema(700),
+      initialAffordances: z.preprocess((value) => Array.isArray(value) ? value.map((item) => compactText(typeof item === "string" ? item : JSON.stringify(item), 180)) : value, z.array(z.string().min(1).max(180)).min(2).max(8)),
+      activeFrontIds: LooseStringArraySchema.default([]),
+      publicClocks: z.array(DomainTableClockSchema).default([]),
+      refereeNotes: LooseStringArraySchema.default([]),
+      sourceRefs: LooseStringArraySchema.default([])
+    }).parse(raw);
+    const seed = validateTableRunOpeningSeedForModule({
+      id: `opening-${tableRunOpeningSlug(parsed.title)}-${crypto.randomUUID().slice(0, 8)}`,
+      ...parsed,
+      sourceRefs: parsed.sourceRefs.length ? parsed.sourceRefs : [input.module.manifest.moduleId]
+    }, input.module);
+    const avoidIds = new Set(input.avoidStartingLocationIds ?? []);
+    if (avoidIds.has(seed.startingLocationId) && locationComponents.some((component) => !avoidIds.has(component.id))) {
+      throw new Error(`Opening seed used avoided default starting location id: ${seed.startingLocationId}`);
+    }
+    this.appendTownTableEvent({ beat: 0, visibility: "dev", lane: "referee", speaker: "Referee", kind: "opening_seed_draft", text: `Referee generated opening seed draft: ${seed.title}`, devText: JSON.stringify({ prompt, seed }, null, 2) });
+    return seed;
+  }
+
   private async initializeTownModuleTableFromArtifacts(): Promise<TownModuleTableState> {
     const current = this.getTownModuleTableState();
     if (current.mode !== "idle") return current;
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, lifecycle: "session_zero", updatedAt: new Date().toISOString() } });
     this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "artifacts", speaker: "Referee", kind: "frame_moment", text: "Loading Fenwater Drainage from the Town Forge Artifacts repo." });
     const { town, artifactCommit } = await this.loadFenwaterTownModuleFromArtifacts();
     const adventureModule = adventureModuleFromFenwaterTownGraph({ town, artifactRepo: TOWN_FORGE_ARTIFACT_REPO, artifactCommit });
@@ -4983,20 +5064,13 @@ export class Referee extends Agent<Env, RefereeState> {
       const rolled = rollCharacterCreationDraft(campaign, playerId, secureRandomInt);
       campaign = rolled.campaign;
       const playerName = campaign.players[playerId]?.name ?? playerId;
-      this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "player", agentId: playerId, speaker: playerName, kind: "thought_bubble", text: `${playerName} studies the rolled sheet before entering Fenwater.` });
-      const abilities = rolled.draft.rawAbilities;
-      const best = Object.entries(abilities).sort(([, a], [, b]) => b - a)[0]?.[0] ?? "strength";
-      const className = best === "dexterity" ? "thief" : best === "wisdom" ? "cleric" : best === "intelligence" ? "magic-user" : best === "constitution" ? "dwarf" : best === "charisma" ? "halfling" : "fighter";
-      let plan = assertDistinctCharacterName(toCharacterCreationPlan(playerId, CharacterCreationPlanSchema.parse({
-        name: generatedTownTableCharacterName(playerId, className),
-        className,
-        alignment: "neutral",
-        reasonExceptional: `${playerName} follows the Fenwater rumors because staying still near bad water feels worse than moving.`,
-        innerMonologue: `${playerName} is watching for the first small lie at the table.`,
-        goal: "find leverage before accepting danger",
-        fear: "being trapped underground without a clean exit",
-        purchases: []
-      })), playerName);
+      const latestRolls = campaign.diceLedger.filter((roll) => roll.playerId === playerId).slice(-7);
+      for (const roll of latestRolls) {
+        this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "dice", agentId: playerId, speaker: "Session Zero", kind: "session_zero_roll", text: tableRunSessionZeroRollText(roll), devText: JSON.stringify(roll) });
+      }
+      this.appendTownTableEvent({ beat: 0, visibility: "dev", lane: "player", agentId: playerId, speaker: playerName, kind: "thought_bubble", text: `${playerName} studies the rolled sheet before entering Fenwater.`, devText: JSON.stringify(rolled.draft, null, 2) });
+      const playerAgent = await this.subAgent(PlayerAgent, playerId);
+      let plan = assertDistinctCharacterName(await playerAgent.createCharacterPlan(rolled.draft, campaign.stores), playerName);
       try {
         campaign = commitCharacterCreation(campaign, rolled.draft, plan, secureRandomInt);
       } catch (error) {
@@ -5006,45 +5080,56 @@ export class Referee extends Agent<Env, RefereeState> {
       }
       const character = Object.values(campaign.characters).find((candidate) => candidate.playerId === playerId);
       if (!character) throw new Error(`No character committed for ${playerId}`);
-      const artifact = generatedTownTablePlayerArtifact({ playerId, playerName, characterName: character.name, className: character.className ?? className, hp: character.stats.hp, armorClass: character.stats.armorClass, reasonExceptional: plan.reasonExceptional ?? `${playerName} follows Fenwater rumors because bad water makes honest folk lie.`, goal: plan.goal ?? "find leverage before accepting danger", fear: plan.fear ?? "being trapped without a clean exit" });
-      const playerAgent = await this.subAgent(PlayerAgent, playerId);
+      const artifact = generatedTownTablePlayerArtifact({ playerId, playerName, characterName: character.name, className: character.className ?? plan.className, hp: character.stats.hp, armorClass: character.stats.armorClass, reasonExceptional: plan.reasonExceptional ?? `${playerName} follows Fenwater rumors because bad water makes honest folk lie.`, goal: plan.goal ?? "find leverage before accepting danger", fear: plan.fear ?? "being trapped without a clean exit" });
+      this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "player", agentId: playerId, speaker: character.name, kind: "session_zero_character_committed", text: `${character.name}, a level 1 ${character.className ?? plan.className}, joins the gang: ${plan.reasonExceptional}`, devText: JSON.stringify({ character, plan }, null, 2) });
       playerAgent.syncTownTablePersona({ playerId, ...artifact });
       players.push({ playerId, player: playerName, character, ...artifact });
     }
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...this.getTownModuleTableState(), lifecycle: "opening_selection", updatedAt: new Date().toISOString() } });
+    const openingSeed = await this.generateTableRunOpeningSeed({ module: adventureModule, party: players, difficulty: current.difficulty, avoidStartingLocationIds: projection.startingLocationId ? [projection.startingLocationId] : [] });
+    const openingLocationComponent = adventureModule.components.find((component) => component.id === openingSeed.startingLocationId);
+    const openingLocationName = openingLocationComponent?.title ?? fenwaterLocationTitle(openingSeed.startingLocationId) ?? startingLocation.name;
+    const openingLocationDescription = typeof (openingLocationComponent as { payload?: { publicDescription?: unknown } } | undefined)?.payload?.publicDescription === "string"
+      ? String((openingLocationComponent as { payload?: { publicDescription?: unknown } }).payload?.publicDescription)
+      : startingLocation.publicDescription;
     const visibleNpcIds = new Set(projection.visibleNpcIds);
     const visibleRumorIds = new Set(projection.visibleRumorIds);
     const table = TownModuleTableStateSchema.parse({
       ...current,
       mode: "running",
+      lifecycle: "running",
       runId: current.runId ?? crypto.randomUUID(),
       townId: adventureModule.manifest.moduleId,
       townName: adventureModule.manifest.title,
       artifactRepo: TOWN_FORGE_ARTIFACT_REPO,
       artifactCommit,
-      location: startingLocation.name,
-      locationId: projection.startingLocationId,
-      sceneId: "fenwater-opening-bar",
-      visitedLocationIds: [projection.startingLocationId],
-      mentionedLocationIds: [projection.startingLocationId],
+      location: openingLocationName,
+      locationId: openingSeed.startingLocationId,
+      sceneId: openingSeed.id,
+      visitedLocationIds: [openingSeed.startingLocationId],
+      mentionedLocationIds: [openingSeed.startingLocationId],
       tablePhase: "exploration",
-      activeQuestion: `You are at ${startingLocation.name}. Start exhausting this town: pick a concrete lead, person, object, or exit to press first.`,
-      affordances: [...fenwaterOpeningAffordances(), ...startingLocation.visibleAffordances, ...town.locations.filter((location) => projection.visibleLocationIds.includes(location.id)).flatMap((location) => location.visibleAffordances.map((affordance) => `${location.name}: ${affordance}`))].slice(0, 18),
-      visibleThreads: town.rumors.filter((rumor) => visibleRumorIds.has(rumor.id)).map((rumor) => rumor.text).slice(0, 8),
-      activeLeads: fenwaterInitialLeads(),
-      clocks: fenwaterInitialClocks(current.difficulty),
-      party: players.map(({ playerId, player, character }) => ({ playerId, player, character: character.name, className: character.className, hp: character.stats.hp, armorClass: character.stats.armorClass, inventory: character.inventory.length ? character.inventory : domainStarterGearForClass(character.className), position: startingLocation.name, intent: "arriving", status: "active" as const })),
+      activeQuestion: `${openingSeed.visibleSituation} What does the party do first: ${openingSeed.initialAffordances.slice(0, 4).join(", ")}?`,
+      affordances: [...openingSeed.initialAffordances, ...fenwaterOpeningAffordances(), ...town.locations.filter((location) => projection.visibleLocationIds.includes(location.id)).flatMap((location) => location.visibleAffordances.map((affordance) => `${location.name}: ${affordance}`))].slice(0, 18),
+      visibleThreads: [openingSeed.immediatePressure, openingSeed.whyPartyIsTogether, ...town.rumors.filter((rumor) => visibleRumorIds.has(rumor.id)).map((rumor) => rumor.text)].slice(0, 8),
+      activeLeads: takeUniqueStrings([...openingSeed.initialAffordances, ...fenwaterInitialLeads()], 12),
+      openingSeed,
+      activeFrontIds: openingSeed.activeFrontIds,
+      clocks: openingSeed.publicClocks.length ? openingSeed.publicClocks : fenwaterInitialClocks(current.difficulty),
+      party: players.map(({ playerId, player, character }) => ({ playerId, player, character: character.name, className: character.className, hp: character.stats.hp, armorClass: character.stats.armorClass, inventory: character.inventory.length ? character.inventory : domainStarterGearForClass(character.className), position: openingLocationName, intent: "arriving", status: "active" as const })),
       playerArtifacts: Object.fromEntries(players.map(({ playerId, soulMd, identityMd }) => [playerId, { soulMd, identityMd }])),
       partyMemory: Object.fromEntries(players.map(({ playerId, soulMd, identityMd }) => [playerId, { knows: [identityMd.split("\n").slice(2, 6).join("; ")], suspects: [], goals: [soulMd.split("Private drive: ")[1]?.split("\n")[0] ?? "find leverage before accepting danger"], losses: [], tactics: ["Coordinate before danger resolves."], relationships: [] }])), 
-      events: current.events,
+      events: this.getTownModuleTableState().events,
       committedBeatIds: [],
       summaryCounters: { totalEvents: 0, localityCorrections: 0, objectiveProgress: 0, combatRows: 0, inactiveActionAttempts: 0, duplicateCommitBeats: 0 },
+      modelCallsUsed: this.getTownModuleTableState().modelCallsUsed + players.length + 1,
       startedAt: current.startedAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
     this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: table });
-    this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "world", speaker: "Referee", kind: "frame_moment", text: `${town.name}: ${town.publicProjection.tableSummary} The party starts at ${startingLocation.name}. ${startingLocation.publicDescription}` });
+    this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "world", speaker: "Referee", kind: "opening_committed", text: `${openingSeed.title}: ${openingSeed.visibleSituation} The party starts at ${openingLocationName}. ${openingSeed.whyPartyIsTogether}`, devText: JSON.stringify({ openingSeed, openingLocationDescription }, null, 2), statePatch: { openingSeed, location: openingLocationName, locationId: openingSeed.startingLocationId, sceneId: openingSeed.id, activeFrontIds: openingSeed.activeFrontIds } });
     for (const member of table.party) {
-      this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "player", agentId: member.playerId, speaker: member.character, kind: "table_talk", text: `${member.character} arrives at ${startingLocation.name}: ${member.className ?? "adventurer"}, ${member.hp ?? "?"} hp, AC ${member.armorClass ?? "?"}.` });
+      this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "player", agentId: member.playerId, speaker: member.character, kind: "table_talk", text: `${member.character} arrives at ${openingLocationName}: ${member.className ?? "adventurer"}, ${member.hp ?? "?"} hp, AC ${member.armorClass ?? "?"}.` });
       const artifact = table.playerArtifacts[member.playerId];
       if (artifact) this.appendTownTableEvent({ beat: 0, visibility: "dev", lane: "artifacts", agentId: member.playerId, speaker: member.character, kind: "frame_moment", text: `${member.character} PlayerAgent identity artifact loaded.`, devText: `${artifact.soulMd}\n\n${artifact.identityMd}` });
     }
@@ -5274,7 +5359,7 @@ export class Referee extends Agent<Env, RefereeState> {
     }
     const ended = foeHp <= 0 || objectiveComplete;
     const outcome = foeHp <= 0 ? "defeated" as const : objectiveComplete ? "avoided" as const : undefined;
-    const nextPatch = { beat: state.beat + 1, moment: state.moment + 1, tablePhase: ended ? "aftermath" : "combat", activeQuestion: ended ? (foeHp <= 0 ? `${combat.foe} is down. What do you secure first? Bind, search, flee, recover gear, or chase the lead?` : `Objective secured: ${combat.objective?.text} What do you secure next: evidence, wounded ally, or exit?`) : `Combat round ${round + 1}: coordinate again—attack, defend, grab the object, aid the wounded, cast, or withdraw?`, party, combat: ended ? undefined : { ...combat, round, foeHp, ...(combat.objective ? { objective: { ...combat.objective, progress: objectiveProgress } } : {}) }, ...(ended && outcome ? { lastEncounter: { foe: combat.foe, outcome, beat: state.beat + 1 } } : {}), modelCallsUsed: tacticalState.modelCallsUsed + party.length };
+    const nextPatch = { beat: state.beat + 1, moment: state.moment + 1, tablePhase: ended ? "aftermath" : "combat", activeQuestion: ended ? (foeHp <= 0 ? `${combat.foe} is down. What do you secure first? Bind, search, flee, recover gear, or chase the lead?` : `Objective secured: ${combat.objective?.text} What do you secure next: evidence, wounded ally, or exit?`) : `Combat round ${round + 1}: coordinate again—attack, defend, grab the object, aid the wounded, cast, or withdraw?`, party, combat: ended ? undefined : { ...combat, round, foeHp, ...(combat.objective ? { objective: { ...combat.objective, progress: objectiveProgress } } : {}) }, ...(ended && outcome ? { lastEncounter: { foe: combat.foe, outcome, beat: state.beat + 1 } } : {}), modelCallsUsed: tacticalState.modelCallsUsed + tacticResults.length };
     this.appendTownTableEvent({ beat: state.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: ended ? (foeHp <= 0 ? `${combat.foe} drops. Aftermath begins.` : `Combat objective complete. Aftermath begins.`) : `Combat round ${round} committed. ${combat.foe} has ${foeHp} hp left.`, statePatch: nextPatch });
   }
 
@@ -5503,7 +5588,7 @@ export class Referee extends Agent<Env, RefereeState> {
       clocks: latestState.clocks,
       party: latestState.party,
       stall: { questionKey: stall.questionKey, count: stall.count },
-      modelCallsUsed: beforeRuling.modelCallsUsed + 2
+      modelCallsUsed: beforeRuling.modelCallsUsed + (hasLockedAction ? 1 : 2)
     };
     this.appendTownTableEvent({ beat: beforeRuling.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${beforeRuling.beat + 1} committed. ${nextPatch.activeQuestion}`, statePatch: nextPatch });
   }

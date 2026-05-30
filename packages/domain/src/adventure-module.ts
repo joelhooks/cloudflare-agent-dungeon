@@ -15,6 +15,8 @@ export const AdventureModuleComponentKindSchema = z.enum([
   "clock",
   "encounterPressure",
   "treasure",
+  "safeHaven",
+  "ruleSupplement",
   "clue",
   "localityAnchor"
 ]);

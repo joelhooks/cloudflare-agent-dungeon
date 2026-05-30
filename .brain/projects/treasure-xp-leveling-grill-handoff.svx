@@ -1,0 +1,284 @@
+---
+title: "Treasure XP Leveling Grill Handoff"
+type: "project"
+status: "active"
+created_at: "2026-05-30"
+tags:
+  - handoff
+  - agent-dungeon
+  - ose
+  - treasure
+  - xp
+  - leveling
+  - safehaven
+---
+
+# Treasure XP Leveling Grill Handoff
+
+## Current objective
+
+Continue the grill or start implementation for OSE-style treasure, XP, leveling, and SafeHaven/domain interfaces.
+
+Joel wants the advancement loop to be real OSE-ish play:
+
+- treasure parcels;
+- extraction / return to safety;
+- campaign-scoped parcel lifecycle;
+- campaign-scoped XP ledger;
+- settlement/accounting procedure;
+- level-up sessions when thresholds are met;
+- player-facing skills/artifacts so PlayerAgents understand when to return, settle loot, buy gear, rest, hire, barter, and level;
+- full OSE ruleset support to the extent possible;
+- interface/domain-first design, not module-specific Worker goo.
+
+## Current live state
+
+Repo:
+
+- cwd: `/Users/joel/Code/joelhooks/cloudflare-agent-dungeon`
+- branch: `feat/realtime-agent-dungeon-campaign`
+
+Git status at handoff:
+
+- modified:
+  - `.brain/data/prototype-build-log.jsonl`
+  - `.pi/APPEND_SYSTEM.md`
+  - `AGENTS.md`
+  - `apps/worker/src/index.ts`
+  - `packages/domain/src/table-run.test.ts`
+  - `packages/domain/src/table-run.ts`
+- untracked:
+  - `.brain/projects/adventure-opening-and-campaign-persistence-handoff.svx`
+  - `.brain/projects/table-run-session-zero-opening-seed-prd.svx`
+  - `.brain/projects/treasure-xp-leveling-sessions-prd.svx`
+  - `.brain/projects/treasure-xp-leveling-grill-handoff.svx`
+  - `.pi/workflow-runs/`
+
+Do not casually delete `.pi/workflow-runs/`; it appeared during this session and was not investigated.
+
+## Durable artifacts updated
+
+- `.brain/projects/treasure-xp-leveling-sessions-prd.svx`
+  - Main PRD for this next workstream.
+- `.pi/APPEND_SYSTEM.md`
+  - Added **Domain-first interfaces** operating rule.
+- `AGENTS.md`
+  - Added concise domain-first interface rule.
+- `.brain/data/prototype-build-log.jsonl`
+  - Added receipt for TableRun Session Zero + opening seed implementation/prod smoke.
+- `.brain/projects/table-run-session-zero-opening-seed-prd.svx`
+  - PRD for completed opening seed slice.
+- `.brain/projects/adventure-opening-and-campaign-persistence-handoff.svx`
+  - Earlier handoff for opening seed/campaign persistence.
+
+Likely Document Host URLs:
+
+- `/notes/projects/treasure-xp-leveling-sessions-prd`
+- `/notes/projects/treasure-xp-leveling-grill-handoff`
+
+## Important current runtime receipt
+
+A production 100-beat run was started after the opening-seed implementation.
+
+Current summary at handoff:
+
+```json
+{
+  "mode": "stopped",
+  "beat": 100,
+  "phase": "aftermath",
+  "stoppedReason": "sample maxBeats 100 reached",
+  "visited": [
+    "fenwater-location-reed-maze",
+    "fenwater-location-sluice-mouth",
+    "fenwater-location-north-ditch-door",
+    "fenwater-location-tithe-mill-yard",
+    "fenwater-location-morts-bar",
+    "fenwater-location-glasswort-sink",
+    "fenwater-location-old-pump-house",
+    "fenwater-location-causeway-shrine",
+    "fenwater-location-alder-knoll"
+  ],
+  "activeFrontIds": [
+    "fenwater-front-mort-bolts",
+    "fenwater-front-cutter-intercepts",
+    "fenwater-front-runner-warns",
+    "fenwater-front-waterlogged-debt",
+    "fenwater-front-pump-failure"
+  ],
+  "counts": {
+    "events": 1138,
+    "retainedEvents": 500,
+    "modelCalls": 499,
+    "localityCorrections": 124,
+    "objectiveProgress": 2,
+    "combatRows": 9,
+    "inactiveActionAttempts": 0,
+    "inactivePartyMembers": 1,
+    "clockOverflows": 0,
+    "duplicateCommitBeats": 0
+  }
+}
+```
+
+Command used:
+
+```bash
+curl -sS 'https://agentdungeon.ai/api/prototype/town-module-table-summary'
+```
+
+## Decisions and invariants from the grill
+
+### Domain/interface-first is now operating law
+
+Joel corrected that we must build against interfaces and a domain model, not hard-coded concrete implementations.
+
+Captured in `.pi/APPEND_SYSTEM.md` and `AGENTS.md`:
+
+- build the domain model, not one-off module goo;
+- promote cross-module gameplay shapes into `packages/domain` or shared boundaries;
+- Fenwater is the first module, not the architecture;
+- avoid Worker switch statements, name pools, prompt-only contracts, and hidden module assumptions.
+
+### Treasure and XP
+
+- Advancement should be driven by **actual recovered treasure**, not milestone XP.
+- Treasure XP should usually happen during settlement/accounting after return-to-safety, not immediately on the danger beat.
+- XP ledger is **campaign-scoped** immediately.
+- TableRun events link into the XP ledger as receipts.
+- Existing prototype hook in `packages/domain/src/index.ts`: `awardRecoveredTreasureXp(...)`.
+
+### Treasure parcel lifecycle
+
+- AdventureModule defines `TreasureParcelTemplate`.
+- Campaign owns `CampaignTreasureParcelState`.
+- Campaign lifecycle states should include at least:
+  - `undiscovered`
+  - `discovered`
+  - `claimed`
+  - `carried`
+  - `cached`
+  - `lost`
+  - `recovered_to_safety`
+
+### SafeHaven / Base Town
+
+Canonical domain term: **SafeHaven**.
+
+OSE source term: **Base Town**. Use `base_town` as subtype/tag/source alias, not the domain ceiling.
+
+A SafeHaven is a capability-bearing safe-enough place, not necessarily a literal town/tavern:
+
+- tavern;
+- inn;
+- camp;
+- patron house;
+- shrine;
+- guild hall;
+- reed boat;
+- other campaign-defined base.
+
+SafeHaven should be split template vs instance:
+
+- AdventureModule/SafeHaven template defines possible services/capabilities.
+- Campaign owns mutable instance state: discovered, friendly, currently safe, available services, risk tonight.
+
+### PlayerAgent skills / artifacts
+
+PlayerAgents need choice-relevant player-safe skills/artifacts for:
+
+- when/why to return to base;
+- risks of pressing on while loaded, wounded, low on supplies, or chased;
+- treasure → recovery → settlement → XP → leveling;
+- town actions: buy gear, sell/appraise loot, negotiate, barter, hire help, rest, recover, follow rumors, bank/cache valuables.
+
+Do not dump raw rules. Referee exposes compact table guidance when choice-relevant.
+
+### OSE rules catalog artifact
+
+- Full OSE rule set is in scope to the extent possible.
+- Anything in the OSE corpus is open for addition when source-backed.
+- Base OSE rules catalog/artifact is global/shared across campaigns/modules.
+- Referee loads the catalog on demand as a dedicated artifact, similar to memory but with a rules-catalog contract.
+- Schemas/interfaces should live in `packages/domain`; data should be a versioned global artifact.
+- Catalog stores lookup tables, safe summaries, and doc/chunk IDs, not large raw rules excerpts.
+- Modules/campaigns can add local supplements and explicit house-rule overrides.
+
+### Rule overrides / supplements
+
+Allowed when they make play better for players, but must be auditable.
+
+Types:
+
+- `temporary_ruling`
+- `campaign_rule`
+- `module_rule`
+
+Each should capture:
+
+- affected base rule/source ref;
+- scope/expiry;
+- Referee reason;
+- whether PlayerAgents receive a player-safe summary;
+- event/ledger id.
+
+PlayerAgents only receive active rulings when choice-relevant.
+
+Important visibility correction from Joel: avoid bare `public` in gameplay/domain visibility because it is ambiguous. Prefer robust enum values like `referee_private`, `party_known`, `player_private`, `player_public`, and `audience_xray`. The x-ray monitor/audience view for Joel may show Referee-private facts, hidden causes, drafts, and receipts because that is observability. PlayerAgent capability access is the hard security/fun boundary and must not leak hidden truth.
+
+## Source receipts found
+
+OSE receipts via JoelClaw:
+
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s700` — Base Town setup concept.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s705` — Base Town services, including selling treasure / black market contacts.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s709` — XP from treasure recovered and monsters defeated.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s710` — recovered non-magical treasure grants XP, including 1 XP per 1 gp value.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s165` and `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s102` — levelling up after enough XP.
+- Retainer/hiring pointers found:
+  - `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s86`
+  - `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s241/s245/s1278`
+
+Design receipts via JoelClaw:
+
+- `domain-driven-design-eric-evans-e33b32520524:s522` — domain model / bounded context / model-driven design glossary.
+- `domain-driven-design-eric-evans-e33b32520524:s90` — Smart UI anti-pattern.
+- `domain-driven-design-eric-evans-e33b32520524:s159` — repository encapsulates data store.
+- `philosophy-of-software-design-48cee0a4a0df:s144` and `:s154` — information hiding / information leakage.
+- `designing-dataintensive-applications-39cc0d1842a5:s95` — logs as durable record principle.
+
+## Checks run in this phase
+
+- `pi_notes_brain_check` passed after PRD/handoff edits.
+- Earlier implementation checks before this grill:
+  - `pnpm --filter @cloudflare-agent-dungeon/domain test`
+  - `pnpm --filter @cloudflare-agent-dungeon/worker test`
+  - `pnpm --filter @cloudflare-agent-dungeon/worker exec tsc --noEmit`
+  - Wrangler deploy succeeded and production smoke verified opening-seed slice.
+
+## Suggested next 3-7 actions
+
+1. Continue grill if needed: decide aggregate boundaries for Campaign vs TableRun vs AdventureModule vs OSE catalog artifact.
+2. If implementing, start with `packages/domain` schemas/interfaces:
+   - `OseRulesCatalogArtifact`
+   - `RuleSupplement`
+   - `TreasureParcelTemplate`
+   - `CampaignTreasureParcelState`
+   - `SafeHavenTemplate` / `CampaignSafeHavenState`
+   - `XpLedgerEntry`
+   - `LevelingSession`
+3. Source OSE class/XP/level-up catalog subset with `ose-rules-access`; capture doc/chunk IDs.
+4. Add Fenwater treasure parcel templates as `AdventureModule` components satisfying generic interfaces.
+5. Add campaign-scoped state/ledger hooks; TableRun only emits receipts/events.
+6. Add player-safe skill/artifact text for return-to-base/settlement/leveling choices.
+7. Test one tracer bullet: discover parcel → carry/cache/recover to SafeHaven → settlement/accounting → XP ledger entry → level-up availability.
+
+## Relevant skills next
+
+- `grill-with-docs` if continuing decisions.
+- `to-prd` if reshaping the PRD further.
+- `ose-rules-access` before implementing exact OSE procedures/classes/thresholds.
+- `brain-maintenance` / `brain-component-composition` for Brain updates.
+- `diagnose` if the prod 100-run or UI state looks broken.
+- `agent-browser` for any production UI validation.
+- `pi-subagents` for review after non-trivial implementation.

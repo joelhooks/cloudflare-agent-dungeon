@@ -39,6 +39,14 @@ North star:
 
 > Use Think for minds, Agents SDK for bodies, Referee for truth, shared party workspace for revealed table artifacts, private player sandboxes for secrets, and event projections for what each mind is allowed to know.
 
+## Domain-first interfaces
+
+- Build the **domain model**, not one-off module goo. When adding gameplay systems, define stable interfaces and schemas in `packages/domain` or another shared domain boundary before wiring a concrete Fenwater/Worker implementation.
+- Code against durable abstractions: `AdventureModule`, `TableRun`, event log, projections, `TreasureParcel`, `XpLedger`, `LevelingSession`, rules catalog, Referee/PlayerAgent boundaries. Concrete modules like Fenwater provide data/components that satisfy those interfaces.
+- Do not hide module-specific assumptions in Worker methods, switch statements, name pools, fallback tables, or prompt-only contracts. If a behavior matters across modules, promote the shape into the domain and test it there.
+- Prototype slices may be small, but the seam should be real: generic interface first, one concrete implementation second. Fenwater is the first module, not the architecture.
+- If an interface would be wrong for another OSE adventure module, stop and reshape it before adding more code.
+
 ## Think-first / Agents SDK idioms
 
 - Prefer Cloudflare Think for agent minds: prompts, tools, session context, memory, streaming, and persisted turns.

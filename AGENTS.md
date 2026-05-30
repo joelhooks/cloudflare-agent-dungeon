@@ -13,6 +13,7 @@ This repo is for the CascadiaJS demo + long-running toy where sandboxed Cloudfla
 - Keep the official Effect source in `./agent-sources/effect` as a shallow local mirror before doing Effect work.
 - Referee and player Skills are first-class artifacts.
 - AT Protocol remains the substrate inspiration for identity, typed records, trust, event sourcing, firehose, agent-to-agent/operator communication, and provenance.
+- Domain-first interfaces beat concrete one-offs: add shared schemas/interfaces for gameplay systems before wiring Fenwater-specific or Worker-specific behavior. Fenwater is the first module, not the architecture.
 
 ## Prototype target
 

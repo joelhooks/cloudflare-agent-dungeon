@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TableRunCoreStateSchema, advanceCombatObjective, clampTableClock, normalizeTablePartyMember, normalizeTableRunPatch, normalizeTableRunStartOptions, parseLabeledActionProposal, parseRefereeRulingText, requiredLocalityForAction, starterGearForClass, summarizeTableRun, tableRunHardStopReason, tableRunSampleStopReason } from "./table-run";
+import { TableRunCoreStateSchema, TableRunOpeningSeedSchema, advanceCombatObjective, clampTableClock, normalizeTablePartyMember, normalizeTableRunPatch, normalizeTableRunStartOptions, parseLabeledActionProposal, parseRefereeRulingText, requiredLocalityForAction, starterGearForClass, summarizeTableRun, tableRunHardStopReason, tableRunSampleStopReason, validateTableRunOpeningSeedForModule } from "./table-run";
 
 describe("table run mechanics", () => {
   it("computes run stop reasons", () => {
@@ -49,6 +49,21 @@ describe("table run mechanics", () => {
     const result = advanceCombatObjective({ kind: "stop_messenger", text: "Stop the runner", progress: 0, target: 1 }, "Nessa trips the runner at the door");
     expect(result.completed).toBe(true);
     expect(result.objective?.progress).toBe(1);
+  });
+
+  it("validates opening seeds against generic AdventureModule components", () => {
+    const module = {
+      schema: "AdventureModule.v1" as const,
+      manifest: { schema: "AdventureModuleManifest.v1" as const, moduleId: "test-module", title: "Test Module", source: { kind: "local" as const, paths: [] }, components: [], aliases: { ose: "AdventureScenario" as const } },
+      components: [
+        { id: "location-sink", kind: "location" as const, title: "The Sink", visibility: "public" as const },
+        { id: "pressure-cutter", kind: "encounterPressure" as const, title: "Cutter", visibility: "referee" as const }
+      ]
+    };
+    const seed = TableRunOpeningSeedSchema.parse({ id: "opening-sink-1", title: "Sink Start", startingLocationId: "location-sink", visibleSituation: "Rain hits the stones.", immediatePressure: "A cutter is watching.", whyPartyIsTogether: "The party owes the same ferryman.", initialAffordances: ["watch", "move"], activeFrontIds: ["pressure-cutter"] });
+    expect(validateTableRunOpeningSeedForModule(seed, module).startingLocationId).toBe("location-sink");
+    expect(() => validateTableRunOpeningSeedForModule({ ...seed, startingLocationId: "location-missing" }, module)).toThrow(/unknown location/);
+    expect(() => validateTableRunOpeningSeedForModule({ ...seed, activeFrontIds: ["pressure-missing"] }, module)).toThrow(/unknown pressure/);
   });
 
   it("parses a runtime table state core without Cloudflare bindings", () => {

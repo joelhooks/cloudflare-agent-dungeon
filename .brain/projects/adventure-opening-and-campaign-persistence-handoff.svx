@@ -1,0 +1,252 @@
+---
+title: "Adventure Opening and Campaign Persistence Handoff"
+type: "project"
+status: "active"
+created_at: "2026-05-30"
+tags:
+  - handoff
+  - agent-dungeon
+  - adventure-opening
+  - campaign-persistence
+  - town-module-table
+---
+
+# Adventure Opening and Campaign Persistence Handoff
+
+## Current objective
+
+Joel wants the next slice to make the **opening of an adventure generative and Referee-led** before normal player play begins.
+
+New prompt from Joel:
+
+> it'd be interesting to add some generatve flavor to the OPENING of the adventure so the ref runs some turns picking a starting scenario for the gang
+>
+> also thinking about how to expand the campaign and persist it broadly
+
+Interpretation: before the current Town Module Table drops the party into the same fixed starting frame, the Referee should run a small bounded setup procedure that chooses / composes a **TableRun opening seed** from AdventureModule material, current fronts, and player-safe starting conditions.
+
+Joel clarified: this is **TableRun first**, not campaign bootstrap. It can be fairly small: a different opening seed so production/test runs are less same-same every reset. Joel also clarified the seed should be **model-generated**, not merely Referee-selected from a fixed authored menu, it should **definitely be allowed to start away from Mort's bar**, it should use **one party-wide starting situation** rather than split-party openings, and the **event log is canonical truth** for the committed opening. The opening seed must happen **after Session Zero / party creation**, because the Referee should pick a starting scenario for the actual gang. Future campaign persistence can later bias openings, but this slice should not require broad campaign infrastructure.
+
+Session Zero must be real: the run should actually roll/create new unique characters every time. Do not use fixed named characters, switch-statement party templates, or table-picked canned characters as runtime behavior. Character creation receipts should be visible in the Agent Dungeon x-ray view / event log.
+
+Approved Session Zero shape: dice/domain logic creates the real receipts first, then the model participates after rolls to choose names, quirks, bonds, personality, and why this specific gang is together. The model should not replace dice receipts or invent unrolled mechanical stats.
+
+Do **not** build a generic VTT. Do **not** create fake fallback content. Do **not** build campaign persistence first. This should be a small runnable learning slice.
+
+## Current live state
+
+Repo:
+
+- cwd: `/Users/joel/Code/joelhooks/cloudflare-agent-dungeon`
+- branch: `feat/realtime-agent-dungeon-campaign`
+- git status before this handoff: clean
+
+Recent production deploy/auth state:
+
+- Wrangler auth error `10000` is fixed after adding the domain/route permission.
+- Verified deploy output showed:
+  - Worker uploaded
+  - triggers deployed
+  - `agentdungeon.ai (custom domain)` succeeded
+- Production smoke after deploy:
+  - `https://agentdungeon.ai` returned `HTTP/2 200`
+  - browser opened `https://agentdungeon.ai/prototype/town-module-table?prod=authfix`
+  - page rendered expected x-ray sections: `PHASE`, `LOCATION`, `CLOCKS`, `REFEREE MEMORY`, `PLAYER MEMORY`, `AUDIT COUNTERS`
+
+Important: the token/domain fix means future deploys should no longer treat route `10000` as expected.
+
+## Durable artifacts to inspect first
+
+Existing validated project notes:
+
+- `.brain/projects/fenwater-long-run-adventure-module-prd.svx`
+  - Fenwater now supports a 100-beat run across multiple locations/fronts.
+  - Remaining product work is quality deepening and long-run campaign shape.
+- `.brain/projects/town-module-table-100-beat-improvement-plan.svx`
+  - Validated runtime safety fixes and broader AdventureModule traversal.
+  - Core invariant: fix scene progression, not more prose soup.
+- `.brain/projects/town-module-table-projection-separation-handoff.svx`
+  - Public human monitor is x-ray by default.
+  - Player capability projection remains strict/table-safe.
+- `.brain/data/prototype-build-log.jsonl`
+  - Machine-readable deploy and validation receipts.
+
+This handoff:
+
+- `.brain/projects/adventure-opening-and-campaign-persistence-handoff.svx`
+
+Likely Document Host URL:
+
+- `/notes/projects/adventure-opening-and-campaign-persistence-handoff`
+
+## Current code seams
+
+Start in these files:
+
+- `apps/worker/src/index.ts`
+  - Town Module Table runtime, Referee prompts, start/reset/run endpoints, summary/state endpoints, Agent Dungeon / x-ray monitor UI page.
+  - Look for `startTownModuleTableRun`, `runTownModuleTableMoment`, `townModuleTableUiPage`, `/api/prototype/town-module-table-run`, `/api/prototype/town-module-table-state`, `/api/prototype/town-module-table-summary`.
+- `apps/worker/src/adventure-module/fenwater.ts`
+  - Fenwater adapter/content to `AdventureModule`.
+- `apps/worker/src/adventure-module/fenwater-content.ts`
+  - Expanded Fenwater module content.
+- `packages/domain/src/adventure-module.ts`
+  - Static authored adventure boundary.
+- `packages/domain/src/table-run.ts`
+  - Runtime table state, events, summaries, normalization.
+
+## Proposed next design slice
+
+### Add a TableRun Opening Selection phase
+
+Introduce a finite pre-play phase before normal table moments:
+
+```txt
+idle/reset
+  → opening_selection
+  → opening_committed
+  → running
+  → stopped/error
+```
+
+Smallest useful behavior:
+
+1. Starting a run performs real Session Zero / party creation first: roll/create new unique characters with dice receipts and event-log entries.
+2. After rolls/mechanics exist, the model may add names, quirks, bonds, personality, and why this specific gang is together.
+3. The `TableRun` then enters `opening_selection` instead of immediately assuming the same fixed scene.
+4. Referee runs a tiny bounded model-generated opening seed turn, likely 1 setup turn first, max 1–3 if useful, using the newly created party as input.
+5. The model composes from AdventureModule-safe opening ingredients, not fake fallback content:
+   - starting location candidate from known Fenwater location components; not always Mort's bar,
+   - immediate pressure/front,
+   - why the party is together in one shared starting situation,
+   - visible hook,
+   - first concrete affordances,
+   - what remains hidden/private.
+6. Referee validates the model output against module component IDs / visibility rules, then commits a typed `opening_committed` event.
+7. The event log is canonical truth: current state may cache the opening seed, but replay/audit should derive it from the committed event.
+8. Normal PlayerAgent turns begin with the committed opening projection only.
+
+If model generation or validation fails, the run should enter an honest failure state with receipts. Do not silently substitute a canned demo opening and call it working.
+
+Important: the Referee may inspect hidden module state. PlayerAgents receive only the committed player/table projection.
+
+### Keep it typed, not blob magic
+
+Add a schema like `TableOpeningScenario` / `AdventureOpeningScenario` rather than jamming the whole thing into prompt prose.
+
+Possible shape:
+
+```ts
+type TableOpeningScenario = {
+  id: `opening-${string}`;
+  title: string;
+  startingLocationId: AdventureLocationId;
+  visibleSituation: string;
+  immediatePressure: string;
+  whyPartyIsTogether: string;
+  initialAffordances: string[];
+  activeFrontIds: string[];
+  publicClocks: TableClock[];
+  refereeSecrets: string[];
+  sourceRefs: string[];
+};
+```
+
+Names can shift, but preserve the boundary:
+
+- public/table-facing facts
+- player-safe starting affordances
+- Referee-only hidden state
+- source/artifact receipts
+
+### Campaign persistence thread
+
+Joel also wants to think about expanding and persisting the campaign broadly, but this is **not the first implementation step** for opening flavor.
+
+Likely future architecture move: separate three durable layers:
+
+1. `AdventureModule` — static authored/source material, immutable-ish.
+2. `TableRun` — current session/run state and event log.
+3. `CampaignLedger` / `CampaignMemory` — durable cross-run truth:
+   - world changes,
+   - faction fronts,
+   - NPC memory,
+   - party consequences,
+   - resolved hooks,
+   - open threads,
+   - session summaries,
+   - artifact/source references.
+
+Avoid cramming broad campaign persistence into the UI state blob. The Worker can keep the prototype slice in Durable Object state for now, but the domain should name the concept clearly so it can later move to D1/R2/Artifacts/DO storage without renaming everything.
+
+## Invariants to preserve
+
+- Use **Referee**, not DM/GM, for new durable code/docs.
+- Referee owns canonical hidden state.
+- PlayerAgents receive only explicit projections.
+- Player outputs are proposals; Referee validates and commits events.
+- The website is **Agent Dungeon**: a view into the running agent dungeon. It may also be described as an **x-ray monitor** when discussing observability. It can show the full Referee process, drafts, rejected bits, hidden notes, and generation receipts. Do **not** over-sanitize it merely because it is public-facing. The hard firewall is PlayerAgent capability access, not human monitor visibility.
+- No fake fallback scenario content at runtime. If generation fails, show an honest failure state with receipts.
+- Default run controls must stay bounded. Do not add unbounded autonomous spending.
+- One AI beat at a time. No overlapping blind intervals.
+- OSE rules/mechanics changes require JoelClaw/OSE source receipts. This opening-scenario work can start from existing AdventureModule content unless it touches rules procedures.
+
+## Suggested implementation steps
+
+1. Inspect current Session Zero / character creation path and verify whether Town Module Table already uses real rolled characters or still uses fixed party data.
+2. Inspect `packages/domain/src/table-run.ts` and `packages/domain/src/adventure-module.ts` for current state/event extension points.
+3. Add typed Session Zero receipts if missing from the TableRun event log.
+4. Add typed opening seed/scenario event schema in domain.
+5. Add a small model-backed Referee opening seed generator in `apps/worker/src/index.ts` using existing Fenwater AdventureModule data and the newly created party.
+6. Validate generated output against known module IDs and projection boundaries before commit.
+7. Change run start/reset to create party, then commit an `opening_committed` event before normal player turns.
+8. Treat the event log as canonical truth; current state may cache the opening seed for convenience only.
+9. Render Session Zero, opening generation process, and committed seed in Agent Dungeon's x-ray view; render only the committed player-safe opening projection to PlayerAgents.
+10. Add tests for:
+   - Session Zero creates unique newly rolled characters instead of fixed named party templates,
+   - character creation dice/receipts are represented in the event log,
+   - model-added character names/flavor happen after rolls and do not replace mechanical receipts,
+   - opening seed parses,
+   - opening seed happens after party creation and can reference the newly created gang,
+   - generated IDs must refer to known module components,
+   - opening seeds can start at non-Mort's-bar known locations,
+   - opening seeds keep the party together in one shared starting situation,
+   - hidden fields may appear in Agent Dungeon's x-ray view but do not appear in PlayerAgent/table-safe capability projection,
+   - reset/start can produce different seeds without fake fallback content,
+   - run transitions from opening to running,
+   - replay/audit can recover the opening seed from the event log,
+   - failure returns honest error state.
+11. Deploy a tiny bounded prod smoke and verify with `agent_browser`.
+12. Append receipt to `.brain/data/prototype-build-log.jsonl`, then run `pi_notes_brain_check`.
+7. Deploy a tiny bounded prod smoke and verify with `agent_browser`.
+8. Append receipt to `.brain/data/prototype-build-log.jsonl`, then run `pi_notes_brain_check`.
+
+## Verification commands used in recent session
+
+Recent deploy command that succeeded after auth/domain fix:
+
+```bash
+CLOUDFLARE_API_TOKEN=<leased token> pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts
+```
+
+Recent prod smoke:
+
+```bash
+curl -sS -I https://agentdungeon.ai | head -20
+```
+
+Browser smoke used:
+
+```bash
+agent_browser open https://agentdungeon.ai/prototype/town-module-table?prod=authfix
+agent_browser snapshot -i -c -d 4
+```
+
+## Relevant skills next
+
+- `diagnose` if prod run/UI fails.
+- `agent-browser` for required production UI verification.
+- `brain-maintenance` / `brain-component-composition` for Brain updates.
+- `ose-rules-access` only if opening setup starts encoding OSE procedures.
+- `source-mirror` if making new Cloudflare Agents/Think API claims.
+- `pi-subagents` for a reviewer pass after non-trivial runtime edits.
