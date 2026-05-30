@@ -330,7 +330,7 @@ export function summarizeTableRun(state: TableRunCoreState): TableRunSummary {
   const interesting = state.events.filter((event) => /Party tactic|Objective|Encounter|drops|Aftermath|Position matters|acts first|runner|water takes|damage|attacks|sample|maxBeats|sampleSeconds/i.test(event.text)).slice(0, 30).map((event) => ({ beat: event.beat, lane: event.lane, kind: event.kind, speaker: event.speaker, text: event.text }));
   const commitBeats = new Map<number, number>();
   for (const event of state.events) {
-    if (event.kind !== "commit") continue;
+    if (event.kind !== "commit" || /^(sample|maxBeats|sampleSeconds|server hard-stop)/i.test(event.text)) continue;
     commitBeats.set(event.beat, (commitBeats.get(event.beat) ?? 0) + 1);
   }
 
