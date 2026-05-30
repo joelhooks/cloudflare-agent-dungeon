@@ -2130,6 +2130,8 @@ const TownModuleTableStateSchema = z.object({
   locationId: z.string().optional(),
   sceneId: z.string().optional(),
   visitedLocationIds: z.array(z.string()).default([]),
+  mentionedLocationIds: z.array(z.string()).default([]),
+  transitionIntentLocationId: z.string().optional(),
   activeFrontIds: z.array(z.string()).default([]),
   tablePhase: z.enum(["exploration", "encounter", "combat", "aftermath"]).default("exploration"),
   activeQuestion: z.string(),
@@ -4849,6 +4851,7 @@ export class Referee extends Agent<Env, RefereeState> {
       moment: 0,
       location: "Loading Fenwater Drainage",
       visitedLocationIds: [],
+      mentionedLocationIds: [],
       activeFrontIds: [],
       tablePhase: "exploration",
       activeQuestion: "The Referee is loading the town module from Artifacts.",
@@ -4964,6 +4967,7 @@ export class Referee extends Agent<Env, RefereeState> {
       locationId: projection.startingLocationId,
       sceneId: "fenwater-opening-bar",
       visitedLocationIds: [projection.startingLocationId],
+      mentionedLocationIds: [projection.startingLocationId],
       tablePhase: "exploration",
       activeQuestion: `You are at ${startingLocation.name}. Start exhausting this town: pick a concrete lead, person, object, or exit to press first.`,
       affordances: [...fenwaterOpeningAffordances(), ...startingLocation.visibleAffordances, ...town.locations.filter((location) => projection.visibleLocationIds.includes(location.id)).flatMap((location) => location.visibleAffordances.map((affordance) => `${location.name}: ${affordance}`))].slice(0, 18),
@@ -5068,13 +5072,15 @@ export class Referee extends Agent<Env, RefereeState> {
     const current = this.getTownModuleTableState();
     const inferredLocationId = inferFenwaterLocationId(event.text);
     const inferredLocation = fenwaterLocationTitle(inferredLocationId);
+    const isMovementLock = event.kind === "lock_action" && /\b(go|head|move|travel|follow|chase|enter|leave|exit|withdraw|sprint|run|cross|descend|climb|crawl|push on|press on)\b/i.test(event.text);
     const party = current.party.map((member) => member.playerId === event.agentId ? {
       ...member,
-      position: inferredLocation ?? this.inferTownTablePosition(event.text, member.position ?? current.location),
+      position: isMovementLock && inferredLocation ? inferredLocation : this.inferTownTablePosition(event.text, member.position ?? current.location),
       intent: event.kind === "lock_action" ? compactText(event.text, 140) : member.intent === "arriving" ? compactText(event.text, 100) : member.intent
     } : member);
-    const visitedLocationIds = inferredLocationId ? takeUniqueStrings([inferredLocationId, ...current.visitedLocationIds], 32) : current.visitedLocationIds;
-    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, party, ...(inferredLocationId && inferredLocation ? { locationId: inferredLocationId, location: inferredLocation, visitedLocationIds } : { visitedLocationIds }), updatedAt: new Date().toISOString() } });
+    const mentionedLocationIds = inferredLocationId ? takeUniqueStrings([inferredLocationId, ...current.mentionedLocationIds], 48) : current.mentionedLocationIds;
+    const visitedLocationIds = inferredLocationId && isMovementLock ? takeUniqueStrings([inferredLocationId, ...current.visitedLocationIds], 32) : current.visitedLocationIds;
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, party, mentionedLocationIds, ...(inferredLocationId && isMovementLock && inferredLocation ? { locationId: inferredLocationId, location: inferredLocation, visitedLocationIds, transitionIntentLocationId: inferredLocationId } : { visitedLocationIds }), updatedAt: new Date().toISOString() } });
   }
 
   private townTableProcedureFor(state: TownModuleTableState): { procedure: string; check: string } | undefined {
@@ -6522,6 +6528,8 @@ function townModuleTableToDomainRunState(state: TownModuleTableState): TableRunC
     locationId: state.locationId,
     sceneId: state.sceneId,
     visitedLocationIds: state.visitedLocationIds,
+    mentionedLocationIds: state.mentionedLocationIds,
+    transitionIntentLocationId: state.transitionIntentLocationId,
     activeFrontIds: state.activeFrontIds,
     phase: state.tablePhase,
     activeQuestion: state.activeQuestion,

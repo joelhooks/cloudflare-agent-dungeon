@@ -190,6 +190,8 @@ export const TableRunCoreStateSchema = z.object({
   locationId: z.string().optional(),
   sceneId: z.string().optional(),
   visitedLocationIds: z.array(z.string()).default([]),
+  mentionedLocationIds: z.array(z.string()).default([]),
+  transitionIntentLocationId: z.string().optional(),
   activeFrontIds: z.array(z.string()).default([]),
   phase: TableRunPhaseSchema.default("exploration"),
   activeQuestion: z.string().min(1),
@@ -293,6 +295,8 @@ export const TableRunSummarySchema = z.object({
   combatObjective: CombatObjectiveSchema.optional(),
   party: z.array(TablePartyMemberSchema),
   visitedLocationIds: z.array(z.string()).default([]),
+  mentionedLocationIds: z.array(z.string()).default([]),
+  transitionIntentLocationId: z.string().optional(),
   activeFrontIds: z.array(z.string()).default([]),
   counts: z.object({
     events: z.number().int().nonnegative(),
@@ -342,6 +346,8 @@ export function summarizeTableRun(state: TableRunCoreState): TableRunSummary {
     combatObjective: state.combat?.objective,
     party: state.party,
     visitedLocationIds: state.visitedLocationIds,
+    mentionedLocationIds: state.mentionedLocationIds,
+    transitionIntentLocationId: state.transitionIntentLocationId,
     activeFrontIds: state.activeFrontIds,
     counts: {
       events: state.events.length,
