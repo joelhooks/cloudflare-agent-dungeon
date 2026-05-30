@@ -41,7 +41,7 @@ import {
 
 import { MemoryFS } from "./memory-fs";
 import { FENWATER_DRAINAGE_ARTIFACT_COMMIT, FENWATER_DRAINAGE_ARTIFACT_PATHS, adventureModuleFromFenwaterTownGraph } from "./adventure-module/fenwater";
-import { fenwaterInitialClocks, fenwaterInitialLeads, fenwaterOpeningAffordances } from "./adventure-module/fenwater-content";
+import { fenwaterInitialClocks, fenwaterInitialLeads, fenwaterLocationTitle, fenwaterOpeningAffordances, inferFenwaterLocationId } from "./adventure-module/fenwater-content";
 import {
   advanceCampaignTurn,
   commitAdventureChoice,
@@ -2127,6 +2127,10 @@ const TownModuleTableStateSchema = z.object({
   beat: z.number().int().nonnegative(),
   moment: z.number().int().nonnegative(),
   location: z.string(),
+  locationId: z.string().optional(),
+  sceneId: z.string().optional(),
+  visitedLocationIds: z.array(z.string()).default([]),
+  activeFrontIds: z.array(z.string()).default([]),
   tablePhase: z.enum(["exploration", "encounter", "combat", "aftermath"]).default("exploration"),
   activeQuestion: z.string(),
   affordances: z.array(z.string()),
@@ -4844,6 +4848,8 @@ export class Referee extends Agent<Env, RefereeState> {
       beat: 0,
       moment: 0,
       location: "Loading Fenwater Drainage",
+      visitedLocationIds: [],
+      activeFrontIds: [],
       tablePhase: "exploration",
       activeQuestion: "The Referee is loading the town module from Artifacts.",
       affordances: [],
@@ -4955,6 +4961,9 @@ export class Referee extends Agent<Env, RefereeState> {
       artifactRepo: TOWN_FORGE_ARTIFACT_REPO,
       artifactCommit,
       location: startingLocation.name,
+      locationId: projection.startingLocationId,
+      sceneId: "fenwater-opening-bar",
+      visitedLocationIds: [projection.startingLocationId],
       tablePhase: "exploration",
       activeQuestion: `You are at ${startingLocation.name}. Start exhausting this town: pick a concrete lead, person, object, or exit to press first.`,
       affordances: [...fenwaterOpeningAffordances(), ...startingLocation.visibleAffordances, ...town.locations.filter((location) => projection.visibleLocationIds.includes(location.id)).flatMap((location) => location.visibleAffordances.map((affordance) => `${location.name}: ${affordance}`))].slice(0, 18),
@@ -5022,6 +5031,8 @@ export class Referee extends Agent<Env, RefereeState> {
 
   private inferTownTablePosition(text: string, fallback: string): string {
     const lower = text.toLowerCase();
+    const expandedLocation = fenwaterLocationTitle(inferFenwaterLocationId(text));
+    if (expandedLocation) return expandedLocation;
     if (/north ditch|ditch door|shell-token|shell token/.test(lower)) return "North Ditch door";
     if (/sluice|black water|water|ladder/.test(lower)) return "sluice mouth";
     if (/bar|mort|ledger|drink|tap/.test(lower)) return "Mort's bar";
@@ -5055,12 +5066,15 @@ export class Referee extends Agent<Env, RefereeState> {
   private updateTownTablePartyIntent(event: TownModuleTableEvent): void {
     if (event.lane !== "player" || !event.agentId) return;
     const current = this.getTownModuleTableState();
+    const inferredLocationId = inferFenwaterLocationId(event.text);
+    const inferredLocation = fenwaterLocationTitle(inferredLocationId);
     const party = current.party.map((member) => member.playerId === event.agentId ? {
       ...member,
-      position: this.inferTownTablePosition(event.text, member.position ?? current.location),
+      position: inferredLocation ?? this.inferTownTablePosition(event.text, member.position ?? current.location),
       intent: event.kind === "lock_action" ? compactText(event.text, 140) : member.intent === "arriving" ? compactText(event.text, 100) : member.intent
     } : member);
-    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, party, updatedAt: new Date().toISOString() } });
+    const visitedLocationIds = inferredLocationId ? takeUniqueStrings([inferredLocationId, ...current.visitedLocationIds], 32) : current.visitedLocationIds;
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, party, ...(inferredLocationId && inferredLocation ? { locationId: inferredLocationId, location: inferredLocation, visitedLocationIds } : { visitedLocationIds }), updatedAt: new Date().toISOString() } });
   }
 
   private townTableProcedureFor(state: TownModuleTableState): { procedure: string; check: string } | undefined {
@@ -6505,6 +6519,10 @@ function townModuleTableToDomainRunState(state: TownModuleTableState): TableRunC
     beat: state.beat,
     moment: state.moment,
     location: state.location,
+    locationId: state.locationId,
+    sceneId: state.sceneId,
+    visitedLocationIds: state.visitedLocationIds,
+    activeFrontIds: state.activeFrontIds,
     phase: state.tablePhase,
     activeQuestion: state.activeQuestion,
     affordances: state.affordances,

@@ -124,6 +124,54 @@ export function fenwaterInitialClocks(difficulty: number): Array<{ name: string;
   ];
 }
 
+export const FENWATER_LOCATION_TITLES: Record<string, string> = {
+  "fenwater-location-morts-bar": "Mort's bar",
+  "fenwater-location-hearth-beam": "hearth beam",
+  "fenwater-location-north-ditch-door": "North Ditch door",
+  "fenwater-location-sluice-mouth": "sluice mouth",
+  "fenwater-location-south-cut-trail": "South-cut trail",
+  "fenwater-location-reed-maze": "Reed maze",
+  "fenwater-location-eel-nets": "Eel-net worksite",
+  "fenwater-location-old-pump-house": "Old pump house",
+  "fenwater-location-tithe-mill-yard": "Tithe mill yard",
+  "fenwater-location-charter-house": "Charter house",
+  "fenwater-location-causeway-shrine": "Causeway shrine",
+  "fenwater-location-reedwright-camp": "Reedwright camp",
+  "fenwater-location-alder-knoll": "Alder Knoll dry camp",
+  "fenwater-location-sunken-chapel": "Sunken chapel",
+  "fenwater-location-midden-weir": "Midden weir",
+  "fenwater-location-lockkeepers-cistern": "Lockkeeper's cistern",
+  "fenwater-location-glasswort-sink": "Glasswort sink",
+  "fenwater-location-backwater-ferry": "Backwater ferry"
+};
+
+export function inferFenwaterLocationId(text: string): string | undefined {
+  const lower = text.toLowerCase();
+  if (/reed maze|pole marks|reeds/.test(lower)) return "fenwater-location-reed-maze";
+  if (/eel-net|eel net|net children/.test(lower)) return "fenwater-location-eel-nets";
+  if (/pump house|pump/.test(lower)) return "fenwater-location-old-pump-house";
+  if (/tithe mill|grain-buyer|grain buyer|corvin/.test(lower)) return "fenwater-location-tithe-mill-yard";
+  if (/charter house|bailiff|writ|records/.test(lower)) return "fenwater-location-charter-house";
+  if (/causeway|shrine/.test(lower)) return "fenwater-location-causeway-shrine";
+  if (/reedwright|stove boat|guide/.test(lower)) return "fenwater-location-reedwright-camp";
+  if (/alder knoll|dry camp/.test(lower)) return "fenwater-location-alder-knoll";
+  if (/sunken chapel|chapel bell|bell under water/.test(lower)) return "fenwater-location-sunken-chapel";
+  if (/midden weir|weir/.test(lower)) return "fenwater-location-midden-weir";
+  if (/lockkeeper|cistern|lockwheel|valve/.test(lower)) return "fenwater-location-lockkeepers-cistern";
+  if (/glasswort|sink/.test(lower)) return "fenwater-location-glasswort-sink";
+  if (/backwater ferry|ferry|skiff/.test(lower)) return "fenwater-location-backwater-ferry";
+  if (/south-cut|south cut|drainage trail/.test(lower)) return "fenwater-location-south-cut-trail";
+  if (/sluice|black water|ladder|drain/.test(lower)) return "fenwater-location-sluice-mouth";
+  if (/north ditch|ditch door|shell-token|shell token/.test(lower)) return "fenwater-location-north-ditch-door";
+  if (/beam|hearth|knife-nick|nicks|harp/.test(lower)) return "fenwater-location-hearth-beam";
+  if (/bar|mort|ledger|drink|tap/.test(lower)) return "fenwater-location-morts-bar";
+  return undefined;
+}
+
+export function fenwaterLocationTitle(id: string | undefined): string | undefined {
+  return id ? FENWATER_LOCATION_TITLES[id] : undefined;
+}
+
 export function fenwaterOpeningAffordances(): string[] {
   return ["press Mort", "inspect the knife-nicked beam", "watch who leaves", "brace the North Ditch door", "secure evidence", "barricade and wait", "follow wet tracks", "seek a reedwright guide", "ask about the pump house", "trace shell-token traffic"];
 }
