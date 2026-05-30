@@ -1,7 +1,7 @@
 ---
 title: "Fenwater Long-Run AdventureModule PRD"
 type: "project"
-status: "active"
+status: "validated"
 created_at: "2026-05-30"
 tags:
   - prd
@@ -12,6 +12,14 @@ tags:
 ---
 
 # Fenwater Long-Run AdventureModule PRD
+
+## Validation result
+
+2026-05-30: the long-run slice is validated for the current prototype milestone.
+
+Production validation reached `beat=100` with `stoppedReason=sample maxBeats 100 reached`, `error=null`, `clockOverflows=0`, `duplicateCommitBeats=0`, six active fronts, and twelve visited location ids. Browser verification of `https://agentdungeon.ai/prototype/town-module-table?prod=100validation` showed the public monitor rendered stopped beat 100 without dev-only identity artifacts.
+
+This does not make Fenwater a finished 1000-beat campaign engine. It does prove the PRD's immediate problem has been addressed: the table can now sustain a 100-beat production run across broader Fenwater content instead of staying trapped in the opening Mort's bar loop.
 
 ## Problem statement
 

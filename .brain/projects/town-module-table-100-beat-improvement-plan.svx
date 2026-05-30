@@ -1,7 +1,7 @@
 ---
 title: Town Module Table 100 Beat Improvement Plan
 kind: project
-status: active
+status: validated
 created: 2026-05-30
 tags:
   - agent-dungeon
@@ -12,6 +12,20 @@ tags:
 ---
 
 # Town Module Table 100 Beat Improvement Plan
+
+## Validation result
+
+2026-05-30: implementation and validation for this plan reached the current milestone.
+
+Receipts:
+
+- 30-beat production validation: `mode=stopped`, `beat=30`, `clockOverflows=0`, `duplicateCommitBeats=0`, broad visited-location/front coverage, and no normal action rows after the observed `0hp` incapacitation.
+- 100-beat production validation: `mode=stopped`, `beat=100`, `stoppedReason=sample maxBeats 100 reached`, `error=null`, `modelCalls=586`, `localityCorrections=82`, `inactivePartyMembers=0`, `clockOverflows=0`, `duplicateCommitBeats=0`.
+- 100-beat visited locations included North Ditch door, old pump house, Mort's bar, Reedwright camp, Glasswort sink, sluice mouth, reed maze, south-cut trail, tithe mill yard, hearth beam, midden weir, and Fenwater Drainage.
+- 100-beat active fronts included Mort bolts, cutter intercepts, pump failure, bailiff, waterlogged debt, and runner warns.
+- Public monitor was browser-verified at `https://agentdungeon.ai/prototype/town-module-table?prod=100validation`.
+
+Remaining product work is quality deepening, not this plan's blocker: summary counts are based on the capped 500-event transcript window, and future validation should add cumulative counters if we need exact whole-run event metrics.
 
 ## Question
 
