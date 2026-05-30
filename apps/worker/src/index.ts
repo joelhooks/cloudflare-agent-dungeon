@@ -2120,6 +2120,7 @@ const TownModuleTableStateSchema = z.object({
   schema: z.literal("TownModuleTableState.v1"),
   mode: z.enum(["idle", "running", "stopped", "failed"]),
   runId: z.string().optional(),
+  runningFiberId: z.string().optional(),
   townId: z.string(),
   townName: z.string(),
   artifactRepo: z.string(),
@@ -2727,6 +2728,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const state = this.requireRefereeState();
     const current = state.prototypeTownModuleTable ?? this.emptyTownModuleTableState();
     const rawPatch = event.kind === "commit" && event.statePatch && typeof event.statePatch === "object" ? event.statePatch as Record<string, unknown> : {};
+    if (event.kind === "commit" && typeof rawPatch.beat === "number" && rawPatch.beat <= current.beat) return event;
     const normalizedPatch = normalizeTableRunPatch(rawPatch as { clocks?: TownModuleTableState["clocks"]; party?: TownModuleTableState["party"] });
     const patched = TownModuleTableStateSchema.parse({
       ...current,
@@ -2746,7 +2748,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const message = publicPrototypeError(error);
     const detail = String(error instanceof Error ? error.message : error);
     const state = this.getTownModuleTableState();
-    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, mode: "failed", error: detail, updatedAt: new Date().toISOString() } });
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, mode: "failed", runningFiberId: undefined, error: detail, updatedAt: new Date().toISOString() } });
     this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "error", speaker: "Referee", kind: "error", text: message, devText: detail });
     this.emitTownTableSocketEvent({ type: "town_table.error", message, at: new Date().toISOString(), campaignId: this.name });
   }
@@ -4994,8 +4996,9 @@ export class Referee extends Agent<Env, RefereeState> {
 
   async startTownModuleTableRun(): Promise<TownModuleTableState> {
     const current = this.getTownModuleTableState();
-    if (current.mode === "running" && current.modelCallsUsed > 0) return current;
-    const fiberId = `town-module-table-run-${crypto.randomUUID()}`;
+    if (current.mode === "running" || current.runningFiberId) return current;
+    const fiberId = `town-module-table-run-${current.runId ?? crypto.randomUUID()}`;
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, runningFiberId: fiberId, updatedAt: new Date().toISOString() } });
     await this.startFiber("town-module-table-run", async () => {
       await this.executeTownModuleTableRun();
     }, { fiberId, idempotencyKey: fiberId, waitForCompletion: false });
@@ -5026,8 +5029,8 @@ export class Referee extends Agent<Env, RefereeState> {
       const state = this.getTownModuleTableState();
       const sampleStop = shouldStopForSample();
       const stoppedReason = sampleStop ?? tableRunHardStopReason({ phase: state.tablePhase, maxMoments: TOWN_MODULE_TABLE_MAX_MOMENTS, maxCombatRounds: TOWN_MODULE_TABLE_MAX_COMBAT_ROUNDS, maxAfterCombatMoments: TOWN_MODULE_TABLE_MAX_AFTER_COMBAT_MOMENTS });
-      this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, mode: "stopped", stoppedReason, updatedAt: new Date().toISOString() } });
-      this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `${stoppedReason}. Restart the Worker or clear state to run another slice.`, statePatch: { mode: "stopped", stoppedReason } });
+      this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, mode: "stopped", runningFiberId: undefined, stoppedReason, updatedAt: new Date().toISOString() } });
+      this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `${stoppedReason}. Restart the Worker or clear state to run another slice.`, statePatch: { mode: "stopped", runningFiberId: undefined, stoppedReason } });
     } catch (error) {
       this.emitTownTableError(error);
     }
