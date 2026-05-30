@@ -179,6 +179,16 @@ export function normalizeTableRunStartOptions(options: TableRunStartOptions): No
   });
 }
 
+export const TableRunSummaryCountersSchema = z.object({
+  totalEvents: z.number().int().nonnegative().default(0),
+  localityCorrections: z.number().int().nonnegative().default(0),
+  objectiveProgress: z.number().int().nonnegative().default(0),
+  combatRows: z.number().int().nonnegative().default(0),
+  inactiveActionAttempts: z.number().int().nonnegative().default(0),
+  duplicateCommitBeats: z.number().int().nonnegative().default(0)
+});
+export type TableRunSummaryCounters = z.infer<typeof TableRunSummaryCountersSchema>;
+
 export const TableRunCoreStateSchema = z.object({ 
   mode: z.enum(["idle", "running", "stopped", "failed"]),
   runId: z.string().optional(),
@@ -204,6 +214,8 @@ export const TableRunCoreStateSchema = z.object({
   difficulty: z.number().int().min(1).max(8).default(1),
   runLimits: TableRunLimitsSchema.optional(),
   events: z.array(TableEventSchema).default([]),
+  committedBeatIds: z.array(z.number().int().nonnegative()).default([]),
+  summaryCounters: TableRunSummaryCountersSchema.default({ totalEvents: 0, localityCorrections: 0, objectiveProgress: 0, combatRows: 0, inactiveActionAttempts: 0, duplicateCommitBeats: 0 }),
   modelCallsUsed: z.number().int().nonnegative().default(0),
   stoppedReason: z.string().optional(),
   error: z.string().optional()
@@ -300,10 +312,12 @@ export const TableRunSummarySchema = z.object({
   activeFrontIds: z.array(z.string()).default([]),
   counts: z.object({
     events: z.number().int().nonnegative(),
+    retainedEvents: z.number().int().nonnegative().default(0),
     modelCalls: z.number().int().nonnegative(),
     localityCorrections: z.number().int().nonnegative(),
     objectiveProgress: z.number().int().nonnegative(),
     combatRows: z.number().int().nonnegative(),
+    inactiveActionAttempts: z.number().int().nonnegative().default(0),
     inactivePartyMembers: z.number().int().nonnegative().default(0),
     clockOverflows: z.number().int().nonnegative().default(0),
     duplicateCommitBeats: z.number().int().nonnegative().default(0)
@@ -334,6 +348,9 @@ export function summarizeTableRun(state: TableRunCoreState): TableRunSummary {
     commitBeats.set(event.beat, (commitBeats.get(event.beat) ?? 0) + 1);
   }
 
+  const counters = TableRunSummaryCountersSchema.parse(state.summaryCounters ?? {});
+  const useCounters = counters.totalEvents > 0;
+
   return TableRunSummarySchema.parse({
     mode: state.mode,
     difficulty: state.difficulty,
@@ -350,14 +367,16 @@ export function summarizeTableRun(state: TableRunCoreState): TableRunSummary {
     transitionIntentLocationId: state.transitionIntentLocationId,
     activeFrontIds: state.activeFrontIds,
     counts: {
-      events: state.events.length,
+      events: useCounters ? counters.totalEvents : state.events.length,
+      retainedEvents: state.events.length,
       modelCalls: state.modelCallsUsed,
-      localityCorrections: state.events.filter((event) => /Position matters/i.test(event.text)).length,
-      objectiveProgress: state.events.filter((event) => /Objective progress/i.test(event.text)).length,
-      combatRows: state.events.filter((event) => event.kind === "combat_round").length,
+      localityCorrections: useCounters ? counters.localityCorrections : state.events.filter((event) => /Position matters/i.test(event.text)).length,
+      objectiveProgress: useCounters ? counters.objectiveProgress : state.events.filter((event) => /Objective progress/i.test(event.text)).length,
+      combatRows: useCounters ? counters.combatRows : state.events.filter((event) => event.kind === "combat_round").length,
+      inactiveActionAttempts: useCounters ? counters.inactiveActionAttempts : 0,
       inactivePartyMembers: state.party.filter((member) => (member.status ?? "active") !== "active" || (member.hp ?? 1) <= 0).length,
       clockOverflows: state.clocks.filter((clock) => clock.value > clock.max).length,
-      duplicateCommitBeats: [...commitBeats.values()].filter((count) => count > 1).length
+      duplicateCommitBeats: useCounters ? counters.duplicateCommitBeats : [...commitBeats.values()].filter((count) => count > 1).length
     },
     interesting
   });

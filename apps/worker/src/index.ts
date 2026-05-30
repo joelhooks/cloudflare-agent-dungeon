@@ -59,6 +59,7 @@ import {
   TablePartyMemberSchema as DomainTablePartyMemberSchema,
   TableRunCoreStateSchema as DomainTableRunCoreStateSchema,
   TableRunLimitsSchema as DomainTableRunLimitsSchema,
+  TableRunSummaryCountersSchema as DomainTableRunSummaryCountersSchema,
   advanceCombatObjective as advanceDomainCombatObjective,
   normalizeTableRunPatch,
   normalizeTableRunStartOptions,
@@ -1396,6 +1397,10 @@ function takeUniqueStrings(values: string[], max: number): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, max);
 }
 
+function takeUniqueNumbers(values: number[], max: number): number[] {
+  return [...new Set(values.filter((value) => Number.isInteger(value) && value >= 0))].slice(0, max);
+}
+
 function compactText(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length <= maxLength ? normalized : `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
@@ -2150,6 +2155,8 @@ const TownModuleTableStateSchema = z.object({
   refereeMemory: z.object({ revealedFacts: z.array(z.string()).default([]), unresolvedThreads: z.array(z.string()).default([]), npcState: z.array(z.string()).default([]), clocksExplained: z.array(z.string()).default([]), hiddenStillPrivate: z.array(z.string()).default([]) }).default({ revealedFacts: [], unresolvedThreads: [], npcState: [], clocksExplained: [], hiddenStillPrivate: [] }),
   stall: z.object({ questionKey: z.string(), count: z.number().int().nonnegative() }).optional(),
   events: z.array(TownModuleTableEventSchema),
+  committedBeatIds: z.array(z.number().int().nonnegative()).default([]),
+  summaryCounters: DomainTableRunSummaryCountersSchema.default({ totalEvents: 0, localityCorrections: 0, objectiveProgress: 0, combatRows: 0, inactiveActionAttempts: 0, duplicateCommitBeats: 0 }),
   modelCallsUsed: z.number().int().nonnegative().default(0),
   startedAt: z.string().optional(),
   updatedAt: z.string(),
@@ -2728,8 +2735,27 @@ export class Referee extends Agent<Env, RefereeState> {
     const state = this.requireRefereeState();
     const current = state.prototypeTownModuleTable ?? this.emptyTownModuleTableState();
     const rawPatch = event.kind === "commit" && event.statePatch && typeof event.statePatch === "object" ? event.statePatch as Record<string, unknown> : {};
-    if (event.kind === "commit" && typeof rawPatch.beat === "number" && rawPatch.beat <= current.beat) return event;
+    const isStopReceiptCommit = event.kind === "commit" && /^(sample|maxBeats|sampleSeconds|server hard-stop)/i.test(event.text);
+    if (event.kind === "commit" && typeof rawPatch.beat === "number" && rawPatch.beat <= current.beat) {
+      if (!isStopReceiptCommit) {
+        const summaryCounters = DomainTableRunSummaryCountersSchema.parse({ ...current.summaryCounters, duplicateCommitBeats: current.summaryCounters.duplicateCommitBeats + 1 });
+        this.setState({ ...state, prototypeTownModuleTable: { ...current, summaryCounters, updatedAt: at } });
+      }
+      return event;
+    }
     const normalizedPatch = normalizeTableRunPatch(rawPatch as { clocks?: TownModuleTableState["clocks"]; party?: TownModuleTableState["party"] });
+    const isDuplicateCommitBeat = event.kind === "commit" && !isStopReceiptCommit && current.committedBeatIds.includes(event.beat);
+    const committedBeatIds = event.kind === "commit" && !isStopReceiptCommit && !isDuplicateCommitBeat ? takeUniqueNumbers([event.beat, ...current.committedBeatIds], 1000) : current.committedBeatIds;
+    const inactiveActionAttempts = event.lane === "player" && event.agentId && current.party.some((member) => member.playerId === event.agentId && ((member.status ?? "active") !== "active" || (member.hp ?? 1) <= 0)) ? 1 : 0;
+    const summaryCounters = DomainTableRunSummaryCountersSchema.parse({
+      ...current.summaryCounters,
+      totalEvents: current.summaryCounters.totalEvents + 1,
+      localityCorrections: current.summaryCounters.localityCorrections + (/Position matters/i.test(event.text) ? 1 : 0),
+      objectiveProgress: current.summaryCounters.objectiveProgress + (/Objective progress/i.test(event.text) ? 1 : 0),
+      combatRows: current.summaryCounters.combatRows + (event.kind === "combat_round" ? 1 : 0),
+      inactiveActionAttempts: current.summaryCounters.inactiveActionAttempts + inactiveActionAttempts,
+      duplicateCommitBeats: current.summaryCounters.duplicateCommitBeats + (isDuplicateCommitBeat ? 1 : 0)
+    });
     const activeFrontIds = takeUniqueStrings([...inferFenwaterFrontIds(event.text), ...current.activeFrontIds], 24);
     const inferredLocationId = inferFenwaterLocationId(event.text);
     const inferredLocation = fenwaterLocationTitle(inferredLocationId);
@@ -2739,6 +2765,8 @@ export class Referee extends Agent<Env, RefereeState> {
     const patched = TownModuleTableStateSchema.parse({
       ...current,
       events: [event, ...current.events].slice(0, 500),
+      committedBeatIds,
+      summaryCounters,
       activeFrontIds,
       mentionedLocationIds,
       ...(inferredLocationId && isRefereeTransition && inferredLocation ? { locationId: inferredLocationId, location: inferredLocation, visitedLocationIds, transitionIntentLocationId: inferredLocationId } : { visitedLocationIds }),
@@ -4872,6 +4900,8 @@ export class Referee extends Agent<Env, RefereeState> {
       clocks: [],
       party: [],
       events: [],
+      committedBeatIds: [],
+      summaryCounters: { totalEvents: 0, localityCorrections: 0, objectiveProgress: 0, combatRows: 0, inactiveActionAttempts: 0, duplicateCommitBeats: 0 },
       modelCallsUsed: 0,
       updatedAt: new Date().toISOString()
     });
@@ -4989,6 +5019,8 @@ export class Referee extends Agent<Env, RefereeState> {
       playerArtifacts: Object.fromEntries(players.map(({ playerId, soulMd, identityMd }) => [playerId, { soulMd, identityMd }])),
       partyMemory: Object.fromEntries(players.map(({ playerId, soulMd, identityMd }) => [playerId, { knows: [identityMd.split("\n").slice(2, 6).join("; ")], suspects: [], goals: [soulMd.split("Private drive: ")[1]?.split("\n")[0] ?? "find leverage before accepting danger"], losses: [], tactics: ["Coordinate before danger resolves."], relationships: [] }])), 
       events: current.events,
+      committedBeatIds: [],
+      summaryCounters: { totalEvents: 0, localityCorrections: 0, objectiveProgress: 0, combatRows: 0, inactiveActionAttempts: 0, duplicateCommitBeats: 0 },
       startedAt: current.startedAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
@@ -6554,6 +6586,8 @@ function townModuleTableToDomainRunState(state: TownModuleTableState): TableRunC
     difficulty: state.difficulty,
     runLimits: state.runLimits,
     events: state.events,
+    committedBeatIds: state.committedBeatIds,
+    summaryCounters: state.summaryCounters,
     modelCallsUsed: state.modelCallsUsed,
     stoppedReason: state.stoppedReason,
     error: state.error

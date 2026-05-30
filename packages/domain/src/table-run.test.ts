@@ -95,4 +95,28 @@ describe("table run mechanics", () => {
     expect(summary.counts.duplicateCommitBeats).toBe(0);
     expect(summary.stoppedReason).toBe("sampleSeconds 60s reached");
   });
+
+  it("prefers cumulative summary counters over retained event-window counts", () => {
+    const state = TableRunCoreStateSchema.parse({
+      mode: "stopped",
+      moduleId: "fenwater-drainage",
+      moduleTitle: "Fenwater Drainage",
+      beat: 100,
+      moment: 100,
+      location: "North Ditch door",
+      activeQuestion: "What survives the flood?",
+      summaryCounters: { totalEvents: 1200, localityCorrections: 77, objectiveProgress: 9, combatRows: 31, inactiveActionAttempts: 2, duplicateCommitBeats: 1 },
+      events: [
+        { schema: "TableEvent.v1", id: "recent-1", at: "2026-05-29T00:00:00.000Z", beat: 100, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: "Beat 100 committed." }
+      ]
+    });
+
+    const summary = summarizeTableRun(state);
+    expect(summary.counts.events).toBe(1200);
+    expect(summary.counts.retainedEvents).toBe(1);
+    expect(summary.counts.localityCorrections).toBe(77);
+    expect(summary.counts.combatRows).toBe(31);
+    expect(summary.counts.inactiveActionAttempts).toBe(2);
+    expect(summary.counts.duplicateCommitBeats).toBe(1);
+  });
 });
