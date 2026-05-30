@@ -41,7 +41,7 @@ import {
 
 import { MemoryFS } from "./memory-fs";
 import { FENWATER_DRAINAGE_ARTIFACT_COMMIT, FENWATER_DRAINAGE_ARTIFACT_PATHS, adventureModuleFromFenwaterTownGraph } from "./adventure-module/fenwater";
-import { fenwaterInitialClocks, fenwaterInitialLeads, fenwaterLocationTitle, fenwaterOpeningAffordances, inferFenwaterLocationId } from "./adventure-module/fenwater-content";
+import { fenwaterInitialClocks, fenwaterInitialLeads, fenwaterLocationTitle, fenwaterOpeningAffordances, inferFenwaterFrontIds, inferFenwaterLocationId } from "./adventure-module/fenwater-content";
 import {
   advanceCampaignTurn,
   commitAdventureChoice,
@@ -2730,9 +2730,11 @@ export class Referee extends Agent<Env, RefereeState> {
     const rawPatch = event.kind === "commit" && event.statePatch && typeof event.statePatch === "object" ? event.statePatch as Record<string, unknown> : {};
     if (event.kind === "commit" && typeof rawPatch.beat === "number" && rawPatch.beat <= current.beat) return event;
     const normalizedPatch = normalizeTableRunPatch(rawPatch as { clocks?: TownModuleTableState["clocks"]; party?: TownModuleTableState["party"] });
+    const activeFrontIds = takeUniqueStrings([...inferFenwaterFrontIds(event.text), ...current.activeFrontIds], 24);
     const patched = TownModuleTableStateSchema.parse({
       ...current,
       events: [event, ...current.events].slice(0, 500),
+      activeFrontIds,
       updatedAt: at,
       ...normalizedPatch
     });

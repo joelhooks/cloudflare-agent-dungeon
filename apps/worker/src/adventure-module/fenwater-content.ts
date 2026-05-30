@@ -172,6 +172,18 @@ export function fenwaterLocationTitle(id: string | undefined): string | undefine
   return id ? FENWATER_LOCATION_TITLES[id] : undefined;
 }
 
+export function inferFenwaterFrontIds(text: string): string[] {
+  const lower = text.toLowerCase();
+  const fronts: string[] = [];
+  if (/mort|panic|bar/.test(lower)) fronts.push("fenwater-front-mort-bolts");
+  if (/cutter|net knife|paid muscle|ditch gang/.test(lower)) fronts.push("fenwater-front-cutter-intercepts");
+  if (/runner|warn|grain-buyer|grain buyer|corvin|tithe/.test(lower)) fronts.push("fenwater-front-runner-warns");
+  if (/pump|pressure|valve|lockwheel/.test(lower)) fronts.push("fenwater-front-pump-failure");
+  if (/bailiff|charter|writ|jurisdiction|confiscat/.test(lower)) fronts.push("fenwater-front-bailiff");
+  if (/debt thing|chapel|bell|black-water|black water|waterlogged/.test(lower)) fronts.push("fenwater-front-waterlogged-debt");
+  return [...new Set(fronts)];
+}
+
 export function fenwaterOpeningAffordances(): string[] {
   return ["press Mort", "inspect the knife-nicked beam", "watch who leaves", "brace the North Ditch door", "secure evidence", "barricade and wait", "follow wet tracks", "seek a reedwright guide", "ask about the pump house", "trace shell-token traffic"];
 }
