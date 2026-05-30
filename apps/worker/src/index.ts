@@ -4996,31 +4996,17 @@ export class Referee extends Agent<Env, RefereeState> {
       const runLimits = { ...initialized.runLimits, startedAtMs: Date.now() };
       this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...initialized, runLimits } });
       const shouldStopForSample = () => tableRunSampleStopReason(townModuleTableToDomainRunState(this.getTownModuleTableState()), Date.now());
-      for (let i = 0; i < TOWN_MODULE_TABLE_MAX_MOMENTS; i++) {
+      const maxMoments = Math.max(TOWN_MODULE_TABLE_MAX_MOMENTS, runLimits.maxBeats ?? 0);
+      for (let i = 0; i < maxMoments; i++) {
         const state = this.getTownModuleTableState();
         if (state.mode !== "running" || state.runId !== runId) return;
-        if (state.tablePhase !== "exploration") break;
         const sampleStop = shouldStopForSample();
         if (sampleStop) break;
-        await this.runTownModuleTableMoment();
-      }
-      for (let i = 0; i < TOWN_MODULE_TABLE_MAX_COMBAT_ROUNDS; i++) {
-        const state = this.getTownModuleTableState();
-        if (state.mode !== "running" || state.runId !== runId || state.tablePhase !== "combat" || !state.combat) break;
-        const sampleStop = shouldStopForSample();
-        if (sampleStop) break;
-        await this.runTownModuleTableMoment();
-      }
-      const afterCombat = this.getTownModuleTableState();
-      if (afterCombat.mode === "running" && afterCombat.runId === runId && afterCombat.tablePhase === "combat" && afterCombat.combat) {
-        const foe = afterCombat.combat.foe;
-        this.appendTownTableEvent({ beat: afterCombat.beat + 1, visibility: "public", lane: "world", speaker: "Referee", kind: "world_update", text: `${foe} survives the exchange and breaks contact before the table can grind forever. The fight leaves a cost, a trail, and an aftermath choice.`, statePatch: { beat: afterCombat.beat + 1, moment: afterCombat.moment + 1, tablePhase: "aftermath", activeQuestion: `${foe} is not safely dead. Do you chase, bind wounds and secure evidence, or retreat before the clocks bite again?`, combat: undefined, lastEncounter: { foe, outcome: "escaped", beat: afterCombat.beat + 1 } } });
-      }
-      for (let i = 0; i < TOWN_MODULE_TABLE_MAX_AFTER_COMBAT_MOMENTS; i++) {
-        const state = this.getTownModuleTableState();
-        if (state.mode !== "running" || state.runId !== runId || state.tablePhase !== "aftermath") break;
-        const sampleStop = shouldStopForSample();
-        if (sampleStop) break;
+        if (state.tablePhase === "combat" && state.combat && state.combat.round >= TOWN_MODULE_TABLE_MAX_COMBAT_ROUNDS) {
+          const foe = state.combat.foe;
+          this.appendTownTableEvent({ beat: state.beat + 1, visibility: "public", lane: "world", speaker: "Referee", kind: "world_update", text: `${foe} survives the exchange and breaks contact before the table can grind forever. The fight leaves a cost, a trail, and an aftermath choice.`, statePatch: { beat: state.beat + 1, moment: state.moment + 1, tablePhase: "aftermath", activeQuestion: `${foe} is not safely dead. Do you chase, bind wounds and secure evidence, or retreat before the clocks bite again?`, combat: undefined, lastEncounter: { foe, outcome: "escaped", beat: state.beat + 1 } } });
+          continue;
+        }
         await this.runTownModuleTableMoment();
       }
       if (this.getTownModuleTableState().runId !== runId) return;
