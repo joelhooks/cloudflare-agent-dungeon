@@ -37,7 +37,7 @@ export function adventureModuleFromFenwaterTownGraph(input: {
 
   const generatedComponents: AdventureModuleComponent[] = [
     {
-      id: town.id,
+      id: `${town.id}-settlement`,
       kind: "settlement",
       title: town.name,
       visibility: "public",
