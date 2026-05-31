@@ -418,6 +418,64 @@ OSE receipts for this correction:
 
 Next runtime seam: introduce a generic `EncounterOpportunity`/`EncounterApproach` domain shape and detection path so hostile actors, maxed threat clocks, immediate violence, or physical danger trigger procedure choice instead of cinematic death spiral loops.
 
+### TableRun Steward evolution path
+
+Repeated production runs exposed a bad seam: the Worker was accumulating word-list janitor patches for stuck beats, maxed-clock extraction loops, menu-level PlayerAgent prompts, and debuggy encounter names. That is the wrong long-term shape. The system needs a focused smart **TableRun StewardAgent**: an AI judge/janitor that audits live TableRun state and proposes bounded interventions before the run calls PlayerAgents or the Referee ruling model.
+
+Canonical responsibility split:
+
+- `Referee` owns canonical truth, dice, events, and state commits.
+- `RefereeAgent` narrates/adjudicates table-facing Referee moments.
+- `PlayerAgent`s choose visible character actions.
+- `TableRunStewardAgent` audits flow quality, stuckness, naming, arc momentum, and model-call necessity; it proposes exactly one intervention with receipts.
+
+Hard invariant: **the Steward can be smart, but it is not sovereign**. It proposes; the Referee body commits or rejects. No direct state mutation by the Steward in the first slices.
+
+First tracer slice should use named interventions, not arbitrary AI-authored patches:
+
+```ts
+type TableRunStewardAction =
+  | "continue"
+  | "close_maxed_clock_extraction"
+  | "repair_menu_question"
+  | "rename_threat"
+  | "force_return_to_safety"
+  | "force_downtime_close"
+  | "fail_honestly";
+```
+
+The Worker translates these named interventions into deterministic patches. This keeps the Steward useful without creating spooky AI state writes.
+
+Steward prompt should be focused:
+
+```txt
+You are the TableRun Steward for Cloudflare Agent Dungeon.
+You are not a PlayerAgent. You are not the Referee narrator. You do not own canonical truth.
+Your job is to keep the autonomous table playable, legible, and moving.
+Audit committed TableRun state and propose one bounded intervention when needed.
+Never invent hidden facts. Use only committed state, player-visible facts, clocks, events, module-safe names, and player-safe CampaignArcBrief inputs.
+Keep receipts short. The Referee body commits or rejects your proposal.
+```
+
+Steward skills/playbooks should be narrow and loadable:
+
+- loop detection: repeated hard choice, same actor asked repeatedly, maxed clock still producing choices;
+- arc momentum: expedition → danger → haul/info → return → settlement → downtime/training → next expedition;
+- encounter naming: no `immediate hostile contact`, no raw clock names as monsters unless intentionally personified, prefer module nouns;
+- model-call budget: skip AI when lifecycle state already implies a transition; do not ask PlayerAgents menu-level logistics;
+- projection safety: no hidden facts in player-facing repairs; x-ray may show Steward reasoning.
+
+Upgrade path:
+
+1. Add domain schemas for `TableRunStewardDecision` and named intervention actions.
+2. Add deterministic Worker handlers for each named action.
+3. Add `TableRunStewardAgent extends Think` with read-only tools: recent events, CampaignArc summary, active clocks, party positions, advancement state, module naming palette, steward playbook.
+4. Call Steward before `player_micro_events`, before `referee_ruling`, after encounter opportunity detection, and after combat/aftermath transitions.
+5. Emit `steward_review` / `steward_intervention` events with x-ray reasoning and table-safe receipts.
+6. Only after production receipts prove stability, allow narrow structured patch fields for safe values like `activeQuestion`, `threatLabel`, or `routeTarget`; never broad arbitrary `statePatch`.
+
+This is the replacement path for regex patch soup. Word lists may remain as deterministic fallback receipts, but the table-quality call should come from a bounded StewardAgent.
+
 ### Implementation order inside one work session
 
 The durable direction is full OSE support to the extent possible. The sequencing should still protect the interfaces:

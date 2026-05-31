@@ -61,6 +61,7 @@ import {
   TableRunOpeningSeedSchema as DomainTableRunOpeningSeedSchema,
   TableRunLimitsSchema as DomainTableRunLimitsSchema,
   TableRunSummaryCountersSchema as DomainTableRunSummaryCountersSchema,
+  TableRunStewardDecisionSchema as DomainTableRunStewardDecisionSchema,
   EncounterOpportunitySchema as DomainEncounterOpportunitySchema,
   CampaignFactSchema as DomainCampaignFactSchema,
   CampaignSafeHavenStateSchema as DomainCampaignSafeHavenStateSchema,
@@ -116,6 +117,7 @@ import {
   type LevelingSession,
   type TableRunAppendLogEntry,
   type XpLedgerEntry,
+  type TableRunStewardDecision,
   type Store,
   type StoreId
 } from "@cloudflare-agent-dungeon/domain";
@@ -1428,6 +1430,40 @@ function repairTavernSetup(setup: TavernSetup): TavernSetup {
     startingAffordances: takeUniqueStrings(setup.startingAffordances, 7),
     visibleThreads: takeUniqueStrings(setup.visibleThreads, 7)
   });
+}
+
+export class TableRunStewardAgent extends Think<Env, { reviewCount: number; lastDecision?: TableRunStewardDecision }> {
+  initialState = { reviewCount: 0 };
+
+  override getModel(): LanguageModel {
+    const workersai = createWorkersAI({ binding: this.env.AI });
+    return workersai("@cf/moonshotai/kimi-k2.6", { sessionAffinity: this.sessionAffinity, safePromptCaching: true });
+  }
+
+  async reviewMoment(input: unknown): Promise<TableRunStewardDecision> {
+    const result = await generateObject({
+      model: this.getModel(),
+      schema: DomainTableRunStewardDecisionSchema,
+      prompt: [
+        "You are the TableRun Steward for Cloudflare Agent Dungeon.",
+        "You are not a PlayerAgent. You are not the Referee narrator. You do not own canonical truth.",
+        "Your job is to keep the autonomous table playable, legible, and moving.",
+        "Audit committed TableRun state and propose exactly one bounded intervention when needed.",
+        "Never invent hidden facts. Use only committed state, player-visible facts, clocks, events, module-safe names, and player-safe CampaignArcBrief inputs.",
+        "Prefer continue unless a lifecycle/model call would obviously waste money or wedge the run.",
+        "Use close_maxed_clock_extraction when maxed clocks plus rescue/haul/evidence/escape choices are looping.",
+        "Use repair_menu_question when PlayerAgents are being asked broad route/menu logistics instead of an actionable in-fiction beat.",
+        "Use force_return_to_safety when the arc is already returning or the party has wounded/haul pressure and the current question still asks for more danger.",
+        "Use force_downtime_close when a SafeHaven downtime prompt should become a concrete expedition target.",
+        "Use rename_threat only for debug labels like immediate hostile contact, dangerous situation, raw clock names as monsters, or placeholder creature names.",
+        "Return JSON only. Keep receipts short.",
+        JSON.stringify(input)
+      ].join("\n")
+    });
+    const decision = DomainTableRunStewardDecisionSchema.parse(result.object);
+    this.setState({ reviewCount: this.state.reviewCount + 1, lastDecision: decision });
+    return decision;
+  }
 }
 
 function takeUniqueStrings(values: string[], max: number): string[] {
@@ -5961,6 +5997,55 @@ export class Referee extends Agent<Env, RefereeState> {
     this.appendTownTableEvent({ beat: state.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${state.beat + 1} committed. ${nextQuestion}`, statePatch: { beat: state.beat + 1, moment: state.moment + 1, tablePhase: "exploration", encounterOpportunity: undefined, activeQuestion: nextQuestion, lastEncounter: { foe: opportunity.threat, outcome: "avoided", beat: state.beat + 1 } } });
   }
 
+  private townTableStewardInput(state: TownModuleTableState, phase: "before_player_micro_events" | "before_referee_ruling"): unknown {
+    return {
+      phase,
+      beat: state.beat,
+      tablePhase: state.tablePhase,
+      activeQuestion: state.activeQuestion,
+      campaignArc: state.campaignArc,
+      campaignArcBrief: state.campaignArcBrief,
+      clocks: state.clocks,
+      party: state.party.map((member) => ({ character: member.character, hp: member.hp, maxHp: member.maxHp, status: member.status, position: member.position, intent: compactText(member.intent ?? "", 160) })),
+      advancement: { recoveredTreasure: Object.values(state.treasureParcels).filter((parcel) => parcel.state === "recovered_to_safety" || parcel.state === "settled").length, xpLedgerEntries: state.xpLedger.length, levelingSessions: state.levelingSessions.length },
+      recentEvents: state.events.slice(0, 12).map((event) => ({ beat: event.beat, kind: event.kind, lane: event.lane, speaker: event.speaker, text: compactText(event.text, 220) }))
+    };
+  }
+
+  private async reviewTownTableWithSteward(state: TownModuleTableState, phase: "before_player_micro_events" | "before_referee_ruling"): Promise<TableRunStewardDecision | undefined> {
+    try {
+      const steward = await this.subAgent(TableRunStewardAgent, "table-run-steward");
+      const decision = await withPrototypeTimeout(steward.reviewMoment(this.townTableStewardInput(state, phase)), `table run steward ${phase}`, 18_000);
+      this.appendTownTableEvent({ beat: state.beat, visibility: "dev", lane: "referee", speaker: "TableRun Steward", kind: "steward_review", text: `Steward ${decision.action}: ${decision.tableSafeReceipt}`, devText: JSON.stringify(decision, null, 2) });
+      return decision;
+    } catch (error) {
+      this.appendTownTableEvent({ beat: state.beat, visibility: "dev", lane: "error", speaker: "TableRun Steward", kind: "error", text: "Steward review failed honestly; continuing without steward intervention.", devText: String(error instanceof Error ? error.message : error) });
+      return undefined;
+    }
+  }
+
+  private applyTownTableStewardDecision(state: TownModuleTableState, decision: TableRunStewardDecision | undefined): boolean {
+    if (!decision || decision.action === "continue" || decision.confidence < 0.62) return false;
+    if (decision.action === "fail_honestly") {
+      this.emitTownTableError(new Error(`TableRun Steward failed the run honestly: ${decision.tableSafeReceipt}`));
+      return true;
+    }
+    const havenId = Object.keys(state.safeHavens).find((id) => /reedwright-stove-boat/.test(id)) ?? Object.keys(state.safeHavens)[0] ?? "fenwater-safehaven-reedwright-stove-boat";
+    const havenName = havenId.includes("reedwright") ? "Reedwright stove boat" : havenId.includes("alder") ? "Alder Knoll dry camp" : "SafeHaven";
+    if (decision.action === "force_return_to_safety" || decision.action === "close_maxed_clock_extraction") {
+      const party = state.party.map((member) => ({ ...member, hp: Math.max(member.hp ?? 0, Math.min(member.maxHp ?? member.hp ?? 1, Math.max(1, member.hp ?? 0) + 1)), status: (member.status === "missing" ? "missing" : "active") as typeof member.status, position: havenName, intent: "following the Steward's return-to-safety call" }));
+      this.appendTownTableEvent({ beat: state.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "steward_intervention", text: `Beat ${state.beat + 1} committed. Steward call: ${decision.tableSafeReceipt}`, devText: JSON.stringify(decision, null, 2), statePatch: { beat: state.beat + 1, moment: state.moment + 1, party, tablePhase: "exploration", location: havenName, activeQuestion: `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?` } });
+      return true;
+    }
+    if (decision.action === "repair_menu_question" || decision.action === "force_downtime_close") {
+      const destination = state.activeLeads.some((lead) => /charter/i.test(lead)) ? "Charter House" : state.activeLeads.some((lead) => /north ditch/i.test(lead)) ? "North Ditch" : state.activeLeads.some((lead) => /pump/i.test(lead)) ? "Old pump house" : "Charter House";
+      const party = state.party.map((member) => ({ ...member, position: destination, intent: `taking point toward ${destination}` }));
+      this.appendTownTableEvent({ beat: state.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "steward_intervention", text: `Beat ${state.beat + 1} committed. Steward call: ${decision.tableSafeReceipt}`, devText: JSON.stringify(decision, null, 2), statePatch: { beat: state.beat + 1, moment: state.moment + 1, party, tablePhase: "exploration", location: destination, activeQuestion: decision.suggestedQuestion ?? `At ${destination}: scout the approach, force entry, question a witness, or fall back before the clocks bite?` } });
+      return true;
+    }
+    return false;
+  }
+
   private async runTownModuleTableMoment(): Promise<void> {
     const before = this.getTownModuleTableState();
     const downed = before.party.filter((member) => (member.status ?? "active") !== "active" || (member.hp ?? 1) <= 0);
@@ -6029,6 +6114,8 @@ export class Referee extends Agent<Env, RefereeState> {
       this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. The party returns to SafeHaven at ${havenName}, binds wounds, stashes treasure, and settles treasure before pressing deeper.`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, party, tablePhase: "exploration", location: havenName, activeQuestion: `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?` } });
       return;
     }
+    const stewardBeforePlayers = await this.reviewTownTableWithSteward(before, "before_player_micro_events");
+    if (this.applyTownTableStewardDecision(before, stewardBeforePlayers)) return;
     const spotlightParty = activeParty.length <= 2 ? activeParty : activeParty.filter((_, index) => (index + before.beat) % 2 === 0).slice(0, 2);
     this.updateTownTableWaitStatus("player_micro_events", `Waiting for ${spotlightParty.length}/${activeParty.length} spotlight PlayerAgent micro-event(s); other intents carry forward.`);
     const microResults = await Promise.all(spotlightParty.map(async (member) => {
@@ -6119,6 +6206,8 @@ export class Referee extends Agent<Env, RefereeState> {
       this.appendTownTableEvent({ beat: beforeRuling.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${beforeRuling.beat + 1} committed. ${maxedClock.name} is already at ${maxedClock.value}/${maxedClock.max}; the table stops grinding the same grab. The party pays the cost, drags the surviving haul to ${havenName}, and the Referee moves to settlement.`, statePatch: { beat: beforeRuling.beat + 1, moment: beforeRuling.moment + 1, party, tablePhase: "exploration", location: havenName, activeQuestion: `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?` } });
       return;
     }
+    const stewardBeforeRuling = await this.reviewTownTableWithSteward(beforeRuling, "before_referee_ruling");
+    if (this.applyTownTableStewardDecision(beforeRuling, stewardBeforeRuling)) return;
     let rulingText: string;
     try {
       this.updateTownTableWaitStatus("referee_ruling", "Resolving the committed table moment.");

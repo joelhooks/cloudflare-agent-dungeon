@@ -43,6 +43,8 @@ export const TableEventKindSchema = z.enum([
   "downtime_action",
   "return_to_safety",
   "memory_compaction",
+  "steward_review",
+  "steward_intervention",
   "combat_round",
   "commit",
   "error"
@@ -118,6 +120,29 @@ export const EncounterOpportunitySchema = z.object({
   sourceRefs: z.array(z.string().min(1).max(220)).default([])
 });
 export type EncounterOpportunity = z.infer<typeof EncounterOpportunitySchema>;
+
+export const TableRunStewardActionSchema = z.enum([
+  "continue",
+  "close_maxed_clock_extraction",
+  "repair_menu_question",
+  "rename_threat",
+  "force_return_to_safety",
+  "force_downtime_close",
+  "fail_honestly"
+]);
+export type TableRunStewardAction = z.infer<typeof TableRunStewardActionSchema>;
+
+export const TableRunStewardDecisionSchema = z.object({
+  schema: z.literal("TableRunStewardDecision.v1"),
+  action: TableRunStewardActionSchema,
+  confidence: z.number().min(0).max(1),
+  reason: z.string().min(1).max(500),
+  tableSafeReceipt: z.string().min(1).max(240),
+  suggestedQuestion: z.string().min(1).max(220).optional(),
+  suggestedThreatLabel: z.string().min(1).max(120).optional(),
+  sourceRefs: z.array(z.string().min(1).max(220)).default([])
+});
+export type TableRunStewardDecision = z.infer<typeof TableRunStewardDecisionSchema>;
 
 export function classifyEncounterApproach(text: string): EncounterApproach {
   const lower = text.toLowerCase();
