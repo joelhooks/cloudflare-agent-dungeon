@@ -2287,6 +2287,7 @@ const TownModuleTableStateSchema = z.object({
 });
 
 const TOWN_TABLE_BEAT_TIMEOUT_MS = 2 * 60 * 1000;
+const TOWN_TABLE_STEWARD_HEARTBEAT_MS = 75 * 1000;
 const TOWN_TABLE_STALE_WAIT_MS = 4 * 60 * 1000;
 
 type TownModuleTableState = z.infer<typeof TownModuleTableStateSchema>;
@@ -2948,7 +2949,7 @@ export class Referee extends Agent<Env, RefereeState> {
     if (firstParcel) {
       treasureParcels[firstParcel.parcelId] = DomainCampaignTreasureParcelStateSchema.parse({ ...firstParcel, state: "claimed", currentHolder: { kind: "party" }, discoveredInRunId: state.runId, claimedInRunId: state.runId, receiptEventIds: takeUniqueStrings([event.id, ...firstParcel.receiptEventIds], 20) });
     }
-    const returning = (event.kind === "commit" || event.kind === "ruling" || event.kind === "world_update") && /safe ?haven|stove boat|alder knoll|dry camp|settle treasure|stash treasure|recover(?:ed)? to safety/.test(text);
+    const returning = (event.kind === "commit" || event.kind === "steward_intervention" || event.kind === "ruling" || event.kind === "world_update") && /safe ?haven|stove boat|alder knoll|dry camp|settle treasure|stash treasure|recover(?:ed)? to safety/.test(text);
     if (returning) {
       const firstHaven = Object.values(safeHavens).find((haven) => text.includes(haven.safeHavenId.replace(/^fenwater-safehaven-/, "").replaceAll("-", " "))) ?? Object.values(safeHavens).find((haven) => /stove boat/.test(text) ? /stove-boat/.test(haven.safeHavenId) : /alder knoll|dry camp/.test(text) ? /alder-knoll/.test(haven.safeHavenId) : /pump/.test(text) ? /pump/.test(haven.safeHavenId) : false) ?? Object.values(safeHavens)[0];
       if (firstHaven) safeHavens[firstHaven.safeHavenId] = DomainCampaignSafeHavenStateSchema.parse({ ...firstHaven, knownToParty: true, lastVisitedRunId: state.runId, standing: firstHaven.standing ?? "tenuous" });
@@ -3041,7 +3042,7 @@ export class Referee extends Agent<Env, RefereeState> {
   }
 
   private downtimeActionsForTownTableEvent(event: TownModuleTableEvent, state: TownModuleTableState, at: string): DowntimeAction[] {
-    if (!(event.kind === "commit" || event.kind === "ruling" || event.kind === "world_update" || event.kind === "downtime_action") || !/cannot take normal actions|rescue\/death aftermath|rest|recover|settle|stash|hire|supplies|rumor|level up/i.test(event.text)) return state.downtimeActions;
+    if (!(event.kind === "commit" || event.kind === "steward_intervention" || event.kind === "ruling" || event.kind === "world_update" || event.kind === "downtime_action") || !/cannot take normal actions|rescue\/death aftermath|rest|recover|settle|stash|hire|supplies|rumor|level up/i.test(event.text)) return state.downtimeActions;
     const downedIds = state.party.filter((member) => (member.status ?? "active") !== "active" || (member.hp ?? 1) <= 0).map((member) => member.characterId ?? member.playerId);
     const action = DomainDowntimeActionSchema.parse({
       schema: "DowntimeAction.v1",
@@ -3184,10 +3185,11 @@ export class Referee extends Agent<Env, RefereeState> {
     });
     const state = this.requireRefereeState();
     const current = state.prototypeTownModuleTable ?? this.emptyTownModuleTableState();
-    const rawPatch = event.kind === "commit" && event.statePatch && typeof event.statePatch === "object" ? event.statePatch as Record<string, unknown> : {};
+    const isCommitLikeEvent = event.kind === "commit" || event.kind === "steward_intervention";
+    const rawPatch = isCommitLikeEvent && event.statePatch && typeof event.statePatch === "object" ? event.statePatch as Record<string, unknown> : {};
     const isStopReceiptCommit = event.kind === "commit" && /^(sample|maxBeats|sampleSeconds|server hard-stop)/i.test(event.text);
     if (current.mode === "failed" && event.kind !== "error") return event;
-    if (event.kind === "commit" && typeof rawPatch.beat === "number" && rawPatch.beat <= current.beat) {
+    if (isCommitLikeEvent && typeof rawPatch.beat === "number" && rawPatch.beat <= current.beat) {
       if (!isStopReceiptCommit) {
         const summaryCounters = DomainTableRunSummaryCountersSchema.parse({ ...current.summaryCounters, duplicateCommitBeats: current.summaryCounters.duplicateCommitBeats + 1 });
         this.setState({ ...state, prototypeTownModuleTable: { ...current, summaryCounters, updatedAt: at } });
@@ -3195,8 +3197,8 @@ export class Referee extends Agent<Env, RefereeState> {
       return event;
     }
     const normalizedPatch = normalizeTableRunPatch(rawPatch as { clocks?: TownModuleTableState["clocks"]; party?: TownModuleTableState["party"] });
-    const isDuplicateCommitBeat = event.kind === "commit" && !isStopReceiptCommit && current.committedBeatIds.includes(event.beat);
-    const committedBeatIds = event.kind === "commit" && !isStopReceiptCommit && !isDuplicateCommitBeat ? takeUniqueNumbers([event.beat, ...current.committedBeatIds], 1000) : current.committedBeatIds;
+    const isDuplicateCommitBeat = isCommitLikeEvent && !isStopReceiptCommit && current.committedBeatIds.includes(event.beat);
+    const committedBeatIds = isCommitLikeEvent && !isStopReceiptCommit && !isDuplicateCommitBeat ? takeUniqueNumbers([event.beat, ...current.committedBeatIds], 1000) : current.committedBeatIds;
     const inactiveActionAttempts = event.lane === "player" && event.agentId && current.party.some((member) => member.playerId === event.agentId && ((member.status ?? "active") !== "active" || (member.hp ?? 1) <= 0)) ? 1 : 0;
     const summaryCounters = DomainTableRunSummaryCountersSchema.parse({
       ...current.summaryCounters,
@@ -3226,7 +3228,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const activeFrontIds = takeUniqueStrings([...inferFenwaterFrontIds(event.text), ...current.activeFrontIds], 24);
     const inferredLocationId = inferFenwaterLocationId(event.text);
     const inferredLocation = fenwaterLocationTitle(inferredLocationId);
-    const isRefereeTransition = (event.kind === "ruling" || event.kind === "world_update" || event.kind === "commit") && /\b(go|head|move|travel|follow|chase|enter|leave|exit|withdraw|sprint|run|cross|descend|climb|crawl|arrive|reach|surface|push on|press on)\b/i.test(event.text);
+    const isRefereeTransition = (event.kind === "ruling" || event.kind === "world_update" || isCommitLikeEvent) && /\b(go|head|move|travel|follow|chase|enter|leave|exit|withdraw|sprint|run|cross|descend|climb|crawl|arrive|reach|surface|push on|press on)\b/i.test(event.text);
     const mentionedLocationIds = inferredLocationId ? takeUniqueStrings([inferredLocationId, ...current.mentionedLocationIds], 48) : current.mentionedLocationIds;
     const visitedLocationIds = inferredLocationId && isRefereeTransition ? takeUniqueStrings([inferredLocationId, ...current.visitedLocationIds], 32) : current.visitedLocationIds;
     const patched = TownModuleTableStateSchema.parse({
@@ -3248,12 +3250,12 @@ export class Referee extends Agent<Env, RefereeState> {
       updatedAt: at,
       ...normalizedPatch
     });
-    const memoryNext = event.kind === "commit" ? this.reduceTownTableMemory(patched, event) : patched;
+    const memoryNext = isCommitLikeEvent ? this.reduceTownTableMemory(patched, event) : patched;
     const campaignArc = this.campaignArcFromTownTableState(memoryNext, at);
     const campaignArcBrief = this.campaignArcBriefFromState(memoryNext, campaignArc);
     const next = TownModuleTableStateSchema.parse({ ...memoryNext, campaignArc, campaignArcBrief });
     this.setState({ ...state, prototypeTownModuleTable: { ...next, waitStatus: undefined } });
-    if (event.kind === "commit") this.ctx.waitUntil(this.syncTownTableMemoryToAgents(next));
+    if (isCommitLikeEvent) this.ctx.waitUntil(this.syncTownTableMemoryToAgents(next));
     this.emitTownTableSocketEvent({ type: "town_table.event", event, at, campaignId: this.name });
     this.emitTownTableState(`event-${event.kind}`);
     return event;
@@ -5402,12 +5404,53 @@ export class Referee extends Agent<Env, RefereeState> {
     return this.getTownModuleTableState();
   }
 
+  private tryTownTableStewardHeartbeatRecovery(table: TownModuleTableState, waitAgeMs: number): TownModuleTableState | undefined {
+    const phase = table.waitStatus?.phase ?? "run";
+    const activeText = [table.activeQuestion, ...table.events.slice(0, 12).map((event) => event.text)].join("\n");
+    const maxedClock = table.clocks.find((clock) => clock.value >= clock.max);
+    const extractionLoop = Boolean(maxedClock && /\b(haul|drag|rope|belt|brace|jamb|gap|door|seal|return|retreat|wounded|ally|evidence|treasure|haul|safehaven|safety|abandon)\b/i.test(activeText));
+    const menuLoop = /\b(launch the next expedition|settle treasure|train if eligible|hire help|gather rumors|follow the charter|press the north ditch|investigate the pump house|seek a safer rumor)\b/i.test(table.activeQuestion);
+    const returningMicroWait = phase === "player_micro_events" && table.campaignArc?.status === "returning";
+    if (!returningMicroWait && !extractionLoop && !menuLoop) return undefined;
+
+    const havenId = Object.keys(table.safeHavens).find((id) => /reedwright-stove-boat/.test(id)) ?? Object.keys(table.safeHavens)[0] ?? "fenwater-safehaven-reedwright-stove-boat";
+    const havenName = havenId.includes("reedwright") ? "Reedwright stove boat" : havenId.includes("alder") ? "Alder Knoll dry camp" : "SafeHaven";
+    const destination = /charter/i.test(activeText) ? "Charter House" : /north ditch/i.test(activeText) ? "North Ditch" : /pump/i.test(activeText) ? "Old pump house" : "Charter House";
+    const action = returningMicroWait || extractionLoop ? "force_return_to_safety" : "repair_menu_question";
+    const receipt = action === "force_return_to_safety"
+      ? `Heartbeat saw ${phase} stuck for ${Math.round(waitAgeMs / 1000)}s while the arc was already returning; the Referee closes the extraction instead of waiting for more PlayerAgent prose.`
+      : `Heartbeat saw ${phase} stuck for ${Math.round(waitAgeMs / 1000)}s on a menu prompt; the Referee chooses ${destination} instead of waiting.`;
+    const targetLocation = action === "force_return_to_safety" ? havenName : destination;
+    const nextQuestion = action === "force_return_to_safety"
+      ? `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?`
+      : `At ${destination}: scout the approach, force entry, question a witness, or fall back before the clocks bite?`;
+    const party = table.party.map((member) => action === "force_return_to_safety"
+      ? ({ ...member, hp: Math.max(member.hp ?? 0, Math.min(member.maxHp ?? member.hp ?? 1, Math.max(1, member.hp ?? 0) + 1)), status: (member.status === "missing" ? "missing" : "active") as typeof member.status, position: targetLocation, intent: "following the Steward heartbeat return-to-safety call" })
+      : ({ ...member, position: targetLocation, intent: `taking point toward ${targetLocation}` }));
+    this.appendTownTableEvent({
+      beat: table.beat + 1,
+      visibility: "public",
+      lane: "commit",
+      speaker: "Referee",
+      kind: "steward_intervention",
+      text: `Beat ${table.beat + 1} committed. Steward heartbeat: ${receipt}`,
+      devText: JSON.stringify({ action, confidence: 0.78, waitAgeMs, phase, maxedClock: maxedClock?.name, campaignArcStatus: table.campaignArc?.status, activeQuestion: table.activeQuestion }, null, 2),
+      statePatch: { beat: table.beat + 1, moment: table.moment + 1, party, mode: "running", lifecycle: "running", runningFiberId: table.runningFiberId, waitStatus: { phase: "steward_heartbeat", detail: receipt, startedAt: new Date().toISOString() }, tablePhase: "exploration", combat: undefined, encounterOpportunity: undefined, location: targetLocation, activeQuestion: nextQuestion }
+    });
+    return TownModuleTableStateSchema.parse(this.requireRefereeState().prototypeTownModuleTable);
+  }
+
   getTownModuleTableState(): TownModuleTableState {
     const state = this.requireRefereeState();
     if (state.prototypeTownModuleTable) {
       const table = TownModuleTableStateSchema.parse(state.prototypeTownModuleTable);
       const startedAt = table.waitStatus?.startedAt ? Date.parse(table.waitStatus.startedAt) : Date.parse(table.updatedAt);
-      if (table.runningFiberId && table.mode !== "stopped" && startedAt && Date.now() - startedAt > TOWN_TABLE_STALE_WAIT_MS) {
+      const waitAgeMs = startedAt ? Date.now() - startedAt : 0;
+      if (table.runningFiberId && table.mode === "running" && table.waitStatus && waitAgeMs > TOWN_TABLE_STEWARD_HEARTBEAT_MS && waitAgeMs <= TOWN_TABLE_STALE_WAIT_MS) {
+        const heartbeat = this.tryTownTableStewardHeartbeatRecovery(table, waitAgeMs);
+        if (heartbeat) return heartbeat;
+      }
+      if (table.runningFiberId && table.mode !== "stopped" && startedAt && waitAgeMs > TOWN_TABLE_STALE_WAIT_MS) {
         const detail = `Stale ${table.waitStatus?.phase ?? "run"} wait exceeded ${Math.round(TOWN_TABLE_STALE_WAIT_MS / 1000)}s; clearing running fiber so the operator can rerun.`;
         const recovered = TownModuleTableStateSchema.parse({ ...table, mode: "failed", lifecycle: "failed", runningFiberId: undefined, waitStatus: undefined, error: detail, updatedAt: new Date().toISOString() });
         this.setState({ ...state, prototypeTownModuleTable: recovered });
@@ -7477,17 +7520,18 @@ function townModuleTableUiPage(): Response {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Agent Dungeon — Town Module Table</title>
   <style>
-    body{margin:0;background:#050605;color:#eaf8de;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}header{position:sticky;top:0;z-index:4;background:#0b0f0a;border-bottom:1px solid #2d3a2a;padding:10px 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}.tag{background:#b7ff5a;color:#050605;font-weight:800;padding:2px 6px;text-transform:uppercase}.muted{color:#8ca184}.dot{width:10px;height:10px;border-radius:99px;background:#ffd166;box-shadow:0 0 12px #ffd166;display:inline-block}.dot.on{background:#b7ff5a;box-shadow:0 0 14px #b7ff5a}.dot.err{background:#ff6b57;box-shadow:0 0 14px #ff6b57}.strip{position:sticky;top:45px;z-index:3;background:#081008;border-bottom:1px solid #21331e;padding:8px 12px;display:grid;grid-template-columns:.85fr 1fr 1fr 1.2fr;gap:8px}.hud{position:sticky;top:118px;z-index:2;background:#050805;border-bottom:1px solid #21331e;padding:8px 12px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.pc{border:1px solid #263a22;background:#081008;padding:8px;min-width:0}.pc.dead,.pc.incapacitated,.pc.missing{border-color:#6b251f;background:#170807}.pc h3{margin:0 0 5px;color:#f6ffe9;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pc .stats{display:flex;gap:8px;flex-wrap:wrap;color:#b7ff5a;font-weight:800}.pc .meta2{color:#8ca184;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.strip h2,.xray h2{font-size:10px;color:#8ca184;margin:0 0 2px;text-transform:uppercase}.strip div{min-width:0}.strip p{margin:0;color:#dfffd2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.clockline{color:#ffd166}.partyline{color:#d6a4ff}.xray{display:none;border-bottom:1px solid #35264a;background:#090711;padding:8px 12px;grid-template-columns:1fr;gap:8px}.xray.on{display:grid}.xray details{border:1px solid #2b2340;background:#07050d;padding:6px}.xray summary{cursor:pointer;color:#8ca184;text-transform:uppercase;font-size:10px;font-weight:800}.xray p{margin:6px 0 0;color:#d6a4ff;max-height:150px;overflow:auto}.mode{border:1px solid #394534;color:#dfffd2;padding:2px 6px;text-decoration:none}.mode.active{background:#d6a4ff;color:#120619}@media(max-width:900px){.strip,.xray,.hud{grid-template-columns:1fr;top:72px}.hud{position:relative;top:auto}}main{display:grid;grid-template-columns:1fr;gap:0}.event{border-bottom:1px solid #1e2a1b;padding:9px 12px;background:#050605}.event:first-child{background:#091009}.meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:#8ca184;font-size:11px;text-transform:uppercase}.lane{background:#6dd3ff;color:#031018;font-weight:800;padding:1px 5px}.lane.referee{background:#b7ff5a}.lane.world{background:#ffd166}.lane.commit{background:#d6a4ff}.lane.error{background:#ff6b57}.lane.artifacts{background:#cfe7c6}.lane.rules{background:#ffef9a}.lane.dice{background:#ffad69}.lane.clock{background:#ff7ab6}.kind{color:#cfe7c6}.speaker{color:#f6ffe9;font-weight:800}p{margin:4px 0 0;white-space:pre-wrap}.thought p{color:#d6a4ff}.event.encounter_start{background:#241008;border-left:8px solid #ff6b57;padding:16px 14px}.event.encounter_start p{font-size:18px;font-weight:900;color:#fff1d6}.event.combat_round{background:#18090b;border-left:8px solid #ffad69}.phase-combat{color:#ffad69;font-weight:900}.phase-aftermath{color:#d6a4ff;font-weight:900}.state{margin-left:auto}.empty{padding:32px 12px;color:#8ca184}
+    body{margin:0;background:#050605;color:#eaf8de;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}header{position:sticky;top:0;z-index:4;background:#0b0f0a;border-bottom:1px solid #2d3a2a;padding:10px 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}.tag{background:#b7ff5a;color:#050605;font-weight:800;padding:2px 6px;text-transform:uppercase}.muted{color:#8ca184}.dot{width:10px;height:10px;border-radius:99px;background:#ffd166;box-shadow:0 0 12px #ffd166;display:inline-block}.dot.on{background:#b7ff5a;box-shadow:0 0 14px #b7ff5a}.dot.err{background:#ff6b57;box-shadow:0 0 14px #ff6b57}.strip{position:sticky;top:45px;z-index:3;background:#081008;border-bottom:1px solid #21331e;padding:8px 12px;display:grid;grid-template-columns:.85fr 1fr 1fr 1.2fr;gap:8px}.hud{position:sticky;top:118px;z-index:2;background:#050805;border-bottom:1px solid #21331e;padding:8px 12px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.pc{border:1px solid #263a22;background:#081008;padding:8px;min-width:0}.pc.dead,.pc.incapacitated,.pc.missing{border-color:#6b251f;background:#170807}.pc h3{margin:0 0 5px;color:#f6ffe9;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pc .stats{display:flex;gap:8px;flex-wrap:wrap;color:#b7ff5a;font-weight:800}.pc .meta2{color:#8ca184;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.steward{border-bottom:1px solid #35264a;background:#08070d;padding:7px 12px;display:grid;grid-template-columns:.8fr 2fr;gap:8px}.steward h2{font-size:10px;color:#d6a4ff;margin:0 0 2px;text-transform:uppercase}.steward p{margin:0;color:#f0e7ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.steward .feed{color:#8ca184}.strip h2,.xray h2{font-size:10px;color:#8ca184;margin:0 0 2px;text-transform:uppercase}.strip div{min-width:0}.strip p{margin:0;color:#dfffd2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.clockline{color:#ffd166}.partyline{color:#d6a4ff}.xray{display:none;border-bottom:1px solid #35264a;background:#090711;padding:8px 12px;grid-template-columns:1fr;gap:8px}.xray.on{display:grid}.xray details{border:1px solid #2b2340;background:#07050d;padding:6px}.xray summary{cursor:pointer;color:#8ca184;text-transform:uppercase;font-size:10px;font-weight:800}.xray p{margin:6px 0 0;color:#d6a4ff;max-height:150px;overflow:auto}.mode{border:1px solid #394534;color:#dfffd2;padding:2px 6px;text-decoration:none}.mode.active{background:#d6a4ff;color:#120619}@media(max-width:900px){.strip,.xray,.hud{grid-template-columns:1fr;top:72px}.hud{position:relative;top:auto}}main{display:grid;grid-template-columns:1fr;gap:0}.event{border-bottom:1px solid #1e2a1b;padding:9px 12px;background:#050605}.event:first-child{background:#091009}.meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:#8ca184;font-size:11px;text-transform:uppercase}.lane{background:#6dd3ff;color:#031018;font-weight:800;padding:1px 5px}.lane.referee{background:#b7ff5a}.lane.world{background:#ffd166}.lane.commit{background:#d6a4ff}.lane.error{background:#ff6b57}.lane.artifacts{background:#cfe7c6}.lane.rules{background:#ffef9a}.lane.dice{background:#ffad69}.lane.clock{background:#ff7ab6}.kind{color:#cfe7c6}.speaker{color:#f6ffe9;font-weight:800}p{margin:4px 0 0;white-space:pre-wrap}.thought p{color:#d6a4ff}.event.encounter_start{background:#241008;border-left:8px solid #ff6b57;padding:16px 14px}.event.encounter_start p{font-size:18px;font-weight:900;color:#fff1d6}.event.combat_round{background:#18090b;border-left:8px solid #ffad69}.phase-combat{color:#ffad69;font-weight:900}.phase-aftermath{color:#d6a4ff;font-weight:900}.state{margin-left:auto}.empty{padding:32px 12px;color:#8ca184}
   </style>
 </head>
 <body>
   <header><span class="tag">Town Module Table</span><span id="dot" class="dot"></span><strong>Fenwater Drainage live table</strong><a id="xrayLink" class="mode" href="?view=xray">x-ray</a><a id="tableLink" class="mode" href="?view=table">table-safe</a><span id="status" class="muted state">connecting…</span></header>
   <section class="strip" id="strip"><div><h2>Phase</h2><p>—</p></div><div><h2>Location</h2><p>—</p></div><div><h2>Clocks</h2><p>—</p></div><div><h2>Leads</h2><p>—</p></div></section>
   <section class="hud" id="hud"><div class="pc"><h3>Party HUD</h3><p class="meta2">waiting for Session Zero…</p></div></section>
+  <section class="steward" id="steward"><div><h2>Steward</h2><p>waiting for table state…</p></div><div><h2>Activity</h2><p class="feed">—</p></div></section>
   <section class="xray" id="xray"><details><summary>Runtime</summary><p>—</p></details><details><summary>Campaign facts</summary><p>—</p></details><details><summary>Memory compaction</summary><p>—</p></details><details><summary>Audit counters</summary><p>—</p></details></section>
   <main id="feed"><div class="empty">Attaching to Referee stream…</div></main>
 <script>
-const feed=document.getElementById('feed'); const status=document.getElementById('status'); const dot=document.getElementById('dot'); const strip=document.getElementById('strip'); const hud=document.getElementById('hud'); const xray=document.getElementById('xray');
+const feed=document.getElementById('feed'); const status=document.getElementById('status'); const dot=document.getElementById('dot'); const strip=document.getElementById('strip'); const hud=document.getElementById('hud'); const steward=document.getElementById('steward'); const xray=document.getElementById('xray');
 const params=new URLSearchParams(location.search); const view=params.get('view')==='xray'?'xray':'table'; document.getElementById(view==='table'?'tableLink':'xrayLink').classList.add('active');
 let events=[]; let tableState=null;
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -7504,12 +7548,18 @@ function render(){
     const phaseClass=tableState.tablePhase==='combat'?'phase-combat':(tableState.tablePhase==='aftermath'?'phase-aftermath':'');
     strip.innerHTML='<div><h2>Arc</h2><p>'+esc(arc?(arc.status+' · '+arc.summary):(phase))+'</p></div><div><h2>Location</h2><p>'+esc(tableState.location||'—')+'</p></div><div><h2>Clocks</h2><p class="clockline">'+esc(clocks||'—')+'</p></div><div><h2>Aim</h2><p class="'+phaseClass+'">'+esc(arcBrief?(arcBrief.aim):phase)+'</p></div>';
     hud.innerHTML=(tableState.party||[]).length?(tableState.party||[]).map(p=>{const status=p.status||'active'; const gear=(p.inventory||[]).slice(0,3).join(' · ')||'gear unknown'; const intent=p.intent?(' · '+p.intent):''; return '<div class="pc '+esc(status)+'"><h3>'+esc(p.character)+'</h3><div class="stats"><span>HP '+esc(p.hp??'?')+'/'+esc(p.maxHp??'?')+'</span><span>AC '+esc(p.armorClass??'?')+'</span><span>L'+esc(p.level||1)+' '+esc(p.className||'adventurer')+'</span><span>XP '+esc(p.xp||0)+'/'+esc(p.nextLevelXp||'—')+'</span><span>'+esc(status)+'</span></div><div class="meta2">'+esc((p.player||p.playerId||'player')+' @ '+(p.position||tableState.location||'?'))+'</div><div class="meta2">'+esc(gear+intent)+'</div></div>'}).join(''):'<div class="pc"><h3>Party HUD</h3><p class="meta2">waiting for Session Zero…</p></div>';
+    const stewardEvents=events.filter(e=>e.kind==='steward_review'||e.kind==='steward_intervention'||e.speaker==='TableRun Steward').slice(0,5);
+    const lastSteward=stewardEvents[0];
+    const wait=tableState.waitStatus;
+    const waitAge=wait&&wait.startedAt?Math.max(0,Math.round((Date.now()-Date.parse(wait.startedAt))/1000)):0;
+    const heartbeatIn=wait?Math.max(0,75-waitAge):null;
+    const stewardStatus=lastSteward?lastSteward.kind+' beat '+lastSteward.beat+': '+lastSteward.text:(wait?('watching '+wait.phase+' · heartbeat in '+heartbeatIn+'s'):'watching · no active wait');
+    const stewardFeed=stewardEvents.length?stewardEvents.map(e=>'b'+e.beat+' '+e.kind+': '+e.text).join(' · '):'No Steward activity this run yet.';
+    steward.innerHTML='<div><h2>Steward</h2><p>'+esc(stewardStatus)+'</p></div><div><h2>Activity</h2><p class="feed">'+esc(stewardFeed)+'</p></div>';
     const counters=tableState.summaryCounters||{};
     const facts=Object.values(tableState.campaignFacts||{}).slice(-8).map(f=>f.kind+': '+f.claim).join('\\n');
     const comp=(tableState.memoryCompactions||[]).slice(0,3).map(m=>m.scope+' '+m.eventSequenceRange.from+'-'+m.eventSequenceRange.to+': '+m.summary).join('\\n');
     const adv=tableState.safeHavens?'safeHavens '+Object.keys(tableState.safeHavens||{}).length+' · treasure '+Object.keys(tableState.treasureParcels||{}).length+' · xp '+(tableState.xpLedger||[]).length:'—';
-    const wait=tableState.waitStatus;
-    const waitAge=wait&&wait.startedAt?Math.max(0,Math.round((Date.now()-Date.parse(wait.startedAt))/1000)):0;
     const runtimeText='mode '+(tableState.mode||'unknown')+' · lifecycle '+(tableState.lifecycle||'unknown')+' · beat '+(tableState.beat??0)+'\\nwaiting '+(wait?(wait.phase+' '+waitAge+'s'+(wait.detail?' — '+wait.detail:'')):'—')+'\\nfiber '+(tableState.runningFiberId||'—')+'\\nupdated '+(tableState.updatedAt||'—');
     const counterText='events '+(counters.totalEvents??events.length)+' retained '+events.length+'\\nlocality '+(counters.localityCorrections??0)+' combat '+(counters.combatRows??0)+' objective '+(counters.objectiveProgress??0)+'\\ninactive attempts '+(counters.inactiveActionAttempts??0)+' duplicate commits '+(counters.duplicateCommitBeats??0);
     xray.classList.toggle('on', view!=='table');
