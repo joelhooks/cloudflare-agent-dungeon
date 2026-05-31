@@ -3077,8 +3077,9 @@ export class Referee extends Agent<Env, RefereeState> {
 
   private applyTownTableXpAndLeveling(state: TownModuleTableState, event: TownModuleTableEvent, at: string): Pick<TownModuleTableState, "party" | "levelingSessions"> {
     const totals = this.xpTotalsByCharacter(state.xpLedger);
-    const atSafeHaven = state.expedition?.lifecycle === "returning" || /safe ?haven|stove boat|alder knoll|dry camp|settle/i.test(event.text.toLowerCase());
-    const currentSafeHaven = state.expedition?.safeHavenId ? state.safeHavens[state.expedition.safeHavenId] : Object.values(state.safeHavens).find((haven) => event.text.toLowerCase().includes(haven.safeHavenId.replace(/^fenwater-safehaven-/, "").replaceAll("-", " ")));
+    const atSafeHaven = state.expedition?.lifecycle === "returning" || /safe ?haven|stove boat|alder knoll|dry camp|settle|reeve hall|training/i.test(event.text.toLowerCase());
+    const eventHaven = Object.values(state.safeHavens).find((haven) => event.text.toLowerCase().includes(haven.safeHavenId.replace(/^fenwater-safehaven-/, "").replaceAll("-", " ")) || (/reeve hall|training/i.test(event.text) && haven.availableCapabilities.includes("train_level_up")));
+    const currentSafeHaven = eventHaven ?? (state.expedition?.safeHavenId ? state.safeHavens[state.expedition.safeHavenId] : undefined);
     const canTrain = Boolean(atSafeHaven && currentSafeHaven?.availableCapabilities.includes("train_level_up"));
     let levelingSessions = state.levelingSessions;
     const party = state.party.map((member) => {
@@ -5985,6 +5986,14 @@ export class Referee extends Agent<Env, RefereeState> {
     });
     const atSafeHavenChoice = /^At .*: .*launch the next expedition/i.test(before.activeQuestion);
     if (atSafeHavenChoice) {
+      const pendingTraining = before.levelingSessions.some((session) => session.status === "pending_training" || session.status === "available") || before.party.some((member) => (member.xp ?? 0) >= (member.nextLevelXp ?? Number.MAX_SAFE_INTEGER) && (member.level ?? 1) < 2);
+      if (pendingTraining) {
+        const trainingHaven = Object.values(before.safeHavens).find((haven) => haven.availableCapabilities.includes("train_level_up"));
+        const havenName = trainingHaven?.safeHavenId.includes("reeve") ? "Reeve Hall back room" : "training SafeHaven";
+        const party = before.party.map((member) => ({ ...member, intent: "following the training lead", position: havenName }));
+        this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. The reedwrights point the XP-ready party toward ${havenName}; training is available if they spend the downtime and accept the political risk.`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, party, tablePhase: "exploration", location: havenName, activeQuestion: `At ${havenName}: train eligible characters, hire help, gather rumors, or launch the next expedition?` } });
+        return;
+      }
       const party = before.party.map((member) => ({ ...member, intent: "launching the next expedition", position: before.location }));
       this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. Downtime closes; the party launches the next expedition from ${before.location}.`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, party, tablePhase: "exploration", activeQuestion: "Launch the next expedition: follow the Charter House lead, press the North Ditch route, investigate the pump house, or seek a safer rumor first?" } });
       return;
