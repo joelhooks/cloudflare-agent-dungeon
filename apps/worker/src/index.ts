@@ -2104,7 +2104,8 @@ function assertDistinctCharacterName(plan: CharacterCreationPlan, playerName: st
   const characterName = baseName.toLowerCase();
   const normalizedPlayer = playerName.trim().toLowerCase();
   const existing = new Set([...existingNames].map((name) => name.trim().toLowerCase()).filter(Boolean));
-  if (characterName !== normalizedPlayer && !characterName.startsWith(`${normalizedPlayer} `) && !characterName.startsWith(`${normalizedPlayer}-`) && !existing.has(characterName)) return plan;
+  const usesPlayerAsByname = characterName.endsWith(` of ${normalizedPlayer}`) || characterName.includes(` ${normalizedPlayer} of `);
+  if (characterName !== normalizedPlayer && !characterName.startsWith(`${normalizedPlayer} `) && !characterName.startsWith(`${normalizedPlayer}-`) && !usesPlayerAsByname && !existing.has(characterName)) return plan;
   let repaired = `${baseName} ${townTableNameByname(plan)}`;
   let suffix = 2;
   while (existing.has(repaired.toLowerCase()) || repaired.toLowerCase() === normalizedPlayer) repaired = `${baseName} ${townTableNameByname(plan)} ${suffix++}`;
