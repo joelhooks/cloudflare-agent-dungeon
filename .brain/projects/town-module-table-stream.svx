@@ -1,0 +1,372 @@
+---
+title: Town Module Table Stream
+kind: project
+status: shaping
+created: 2026-05-28
+tags:
+  - prototype
+  - town-module
+  - live-table
+  - referee
+  - player-agents
+  - think
+---
+
+# Town Module Table Stream
+
+## Purpose
+
+Build a new Cloudflare Agent Dungeon prototype that feels like watching a real OSE table play through a frozen town module, not reading server logs.
+
+Working route:
+
+- `/prototype/town-module-table`
+
+## Decision: always-running first slice, server hard-stop
+
+For the first table-stream prototype, do **not** let Run/Pause/Reset UI machinery dominate the experience.
+
+The prototype should mostly just run. Joel is willing to eat the local/Cloudflare AI cost risk for this slice. Safety should be server-side, not a visible control panel puzzle.
+
+Shape:
+
+- opening the route attaches to the current stream;
+- a server-owned fiber starts or resumes the table stream;
+- server hard-stops after a bounded cap, e.g. max moments, max wall-clock minutes, max model calls, or explicit internal failure;
+- local operator can restart Wrangler / hit a dev endpoint / clear state if needed;
+- UI focuses on table events, not controls.
+
+This is intentionally different from the previous prototype where autoplay/start/stop controls became the product and made the game feel like infrastructure.
+
+## Decision: real Cloudflare primitives, even locally
+
+Do not fake the runtime path for this prototype.
+
+Use real Cloudflare/Workers primitives under Wrangler local dev:
+
+- Durable Object / Agent state for active table state and event stream;
+- Think PlayerAgents / RefereeAgent for minds;
+- Artifacts as the source of the frozen town module;
+- R2 as runtime-addressable module/cache storage when needed;
+- WebSocket/native Agent sockets for the monitor stream;
+- `startFiber()` for server-owned table runner lifecycle.
+
+No canned in-memory town fixtures. Fail honestly if Artifacts/R2/model access breaks.
+
+## Decision: Fenwater comes from Artifacts, not regeneration
+
+Bring forward the successful Town Forge output, but do not regenerate the town each run.
+
+The table stream should read **Fenwater Drainage** from the Town Forge Artifact repo/commit, then use that module for the session.
+
+Current source module:
+
+- Town: Fenwater Drainage
+- Artifact repo: `agent-dungeon-town-forges`
+- Artifact commit: `59ec68209d85ebd7ab6c7fc2441587d672454de6`
+- Artifact paths:
+  - `towns/fenwater-drainage/index.svx`
+  - `towns/fenwater-drainage/referee.svx`
+  - `towns/fenwater-drainage/public-projection.svx`
+  - `towns/fenwater-drainage/graph.json`
+  - `towns/fenwater-drainage/receipts.jsonl`
+- Existing R2 runtime keys, available as cache/runtime blobs:
+  - `towns/fenwater-drainage/v1/graph.json`
+  - `towns/fenwater-drainage/v1/public-projection.json`
+  - `towns/fenwater-drainage/v1/referee-private.json`
+  - `towns/fenwater-drainage/v1/receipts.jsonl`
+
+Artifact is the source of truth. R2 can be the runtime cache, but the new prototype should prove reading/importing from the artifact source before play starts.
+
+Related notes:
+
+- [[resources/think-live-monitor-best-practices]]
+- [[projects/prototype-build-log]]
+- [[decisions/open-world-player-driven-adventure]]
+- [[resources/idiomatic-think-prototype-shape]]
+
+## Decision: one real flowing table
+
+This prototype is a **real single table transcript**, not a montage renderer.
+
+The system should preserve one continuous table with causal play through the frozen town module. It should feel fast because turns are small, explicit, and streamed, not because we skip the actual agent loop or fake summaries.
+
+Accepted loop shape:
+
+```txt
+Beat N
+  Player A emits 1-3 table events
+  Player B emits 1-3 table events
+  Referee emits 1-3 table/ruling events
+  Referee commits compact state delta
+  Next beat starts immediately if RUN is on
+```
+
+No chapter-summary montage. No server-status theater. No fake progress rows. The stream is table play.
+
+## Feel target
+
+Fast, lively, action-forward table flow:
+
+- player speech
+- player action declarations
+- player-safe feelings / private dev notes
+- Referee questions
+- Referee rulings
+- visible world consequences
+- compact state commits
+- next affordances
+
+Example desired rows:
+
+- `Hrum fingers the iron ration and mutters, "That door sweats like a wound."`
+- `Mara privately worries this is bait.`
+- `Vex watches Mort's hands, not his mouth.`
+- `Referee ruling: residue smells of south-cut peat acid.`
+- `Clock tick: Mort's debt pressure +1.`
+- `Next affordances: follow Vard, read the door, inspect the sluice.`
+
+## Decision: role/task-based model routing
+
+Agents may use different models based on role and task.
+
+Default direction:
+
+- PlayerAgent micro-events: fast/cheap model. They need lively table talk, thoughts, reactions, and simple action declarations.
+- Referee readiness classifier: fastest reliable structured-output model. It only judges `keep_accumulating`, `needs_commitment`, or `ready_to_resolve`.
+- Referee rulings / consequence narration: beefier model when adjudication, hidden state, procedure, or narrative quality matter.
+- Referee maintenance / memory compression: cheaper structured model unless complex synthesis is needed.
+- Rules consultation remains source-backed; model choice does not replace OSE receipts.
+
+This should be config-swappable, not hardcoded:
+
+```txt
+PLAYER_MODEL
+REFEREE_CLASSIFIER_MODEL
+REFEREE_RULING_MODEL
+REFEREE_MAINTENANCE_MODEL
+AI_GATEWAY_ID
+```
+
+The product goal is speed plus judgment: cheap models keep the table moving; stronger Referee calls are reserved for moments that need taste, safety, hidden-state reasoning, or rules interpretation.
+
+## Source-backed implementation bias
+
+From [[resources/think-live-monitor-best-practices]]:
+
+- Use `startFiber()` for the app-owned table run supervisor.
+- Use `subAgent(...).chat(callback)` for live child-agent streaming when the parent Referee needs low-level event forwarding.
+- Use `onEvent(json)` to forward child chunks to UI and persist compact table events.
+- Use `onStart` request IDs for pause/cancel.
+- Use custom tools for intentional table events rather than relying on accidental model chunk soup.
+
+## Decision: event stream plus compact state
+
+Use both a table event stream and compact runtime state.
+
+```txt
+TownModuleTableEvent[] = canonical table transcript / audit / product surface
+TownModuleTableState = compact current state / fast runtime read model
+```
+
+The stream is the product. It shows table talk, thought bubbles, questions, rulings, consequences, and commits. The compact state is what the Referee runtime reads quickly to know the current table situation.
+
+Commit events connect the two:
+
+```ts
+event.kind = "commit";
+event.statePatch = { location, clocks, npcMemory, partyStatus, affordances };
+```
+
+Rules:
+
+- UI reads the event stream.
+- Referee runtime reads compact state.
+- Audit/debug can replay stream if needed.
+- If stream and compact state disagree, commit events are the receipt trail.
+
+## Working event concept
+
+`TownModuleTableEvent.v1` should represent table play, not infrastructure status.
+
+Draft fields:
+
+```ts
+type TownModuleTableEvent = {
+  schema: "TownModuleTableEvent.v1";
+  id: string;
+  at: string;
+  beat: number;
+  visibility: "public" | "dev" | "private";
+  lane: "player" | "referee" | "world" | "rules" | "commit" | "error";
+  agentId?: "player-a" | "player-b" | "referee";
+  speaker: string;
+  kind: "table_talk" | "thought" | "note" | "declared_action" | "question" | "ruling" | "world_update" | "commit" | "error";
+  text: string;
+  devText?: string;
+  links?: Array<{ label: string; href?: string; id?: string }>;
+  statePatch?: unknown;
+};
+```
+
+## Non-negotiables
+
+- Use **Referee**, not DM/GM, in new code and docs.
+- Referee owns canonical module truth and hidden notes.
+- PlayerAgents receive only projections and their private memory.
+- Player outputs are proposals/declarations, not direct mutations.
+- Referee validates and commits.
+- Public monitor never leaks hidden graph or raw OSE/source text.
+- Dev/operator view may show explicit private journals/process fields.
+- No runtime fixtures or canned fallback content.
+- Failure states must be honest and visible.
+- Do not build a VTT.
+- Do not keep gardening the old tavern-town prototype forever.
+
+## Decision: accumulation loop, not one packet per actor
+
+Play should feel like a table accumulating intent through short back-and-forth contributions until the Referee judges the table is ready for a ruling/commit.
+
+This is not strict combat initiative. In normal town exploration/social play, the Referee is watching table motion and asking: whose action is pending, who is reacting, what question is unresolved, and has enough intent accumulated to resolve the moment?
+
+Working non-combat loop:
+
+```txt
+Table moment opens
+  Referee frames current situation and active question
+  Players emit short table talk / reactions / questions / tentative actions
+  Players may refine or coordinate based on each other
+  Referee may prompt a quiet player, clarify stakes, answer visible facts, or ask for commitment
+  One or more players explicitly mark ready / action locked / my turn is over
+  Referee judges the moment ready
+  Referee narrates a compact resolution and commits state delta
+  Next table moment opens
+```
+
+This keeps table talk as first-class play instead of forcing every player to immediately produce a final action.
+
+## Micro-event contract
+
+Agents should not write books. Each event is small, but a table moment may accumulate several events.
+
+Player events:
+
+- `table_talk`: one short in-character utterance or visible behavior.
+- `thought_bubble`: audience-visible thought, feeling, worry, read of the situation, or tactical consideration.
+- `ask_referee`: one table-facing question.
+- `float_action`: tentative action, not locked.
+- `lock_action`: committed action / "my turn is over".
+- `private_note`: rare dev-only note for implementation/debug receipts, not the main experience.
+
+Referee events:
+
+- `frame_moment`: table-facing current situation / active question.
+- `clarify_or_answer`: visible fact or answer to a player question.
+- `prompt_player`: invite a player to respond or commit.
+- `judge_ready`: dev/public boundary event that says enough intent exists to resolve.
+- `ruling`: table-facing consequence.
+- `commit`: durable state delta and next affordances.
+- `referee_thought`: audience-visible Referee thought about pacing, pressure, uncertainty, or what is being weighed.
+- `referee_note`: rare dev-only implementation/debug receipt, not the main experience.
+
+Suggested size caps:
+
+- table talk / question / action: 1-2 sentences, roughly <= 240 chars.
+- thought bubble / referee thought: <= 220 chars.
+- ruling: <= 320 chars.
+- commit summary: <= 240 chars plus typed state patch.
+
+## Decision: Referee readiness classifier
+
+The Referee should not use a dumb fixed event count as the main moment-end rule. Use a source-informed **readiness classifier**: the Referee watches the table and decides whether the current moment is ready to resolve, needs one more prompt, or should keep accumulating.
+
+Classifier output:
+
+```ts
+type TableMomentReadiness =
+  | { status: "keep_accumulating"; reason: string; prompt?: string }
+  | { status: "needs_commitment"; reason: string; prompt: string; targetAgentId?: string }
+  | { status: "ready_to_resolve"; reason: string; lockedActions: string[]; procedure?: string };
+```
+
+Inputs:
+
+- current active question / framed situation;
+- table talk, thought bubbles, tentative actions, questions, locked actions;
+- player silence or repeated low-value chatter;
+- visible affordances and risks;
+- whether OSE procedure is triggered;
+- Referee's module state and hidden facts.
+
+Source anchors:
+
+- Game Angry `game-angry-pdf-47a26de25095:s76:n0` frames play around player action and says scene setting should invite action with a clear question like "what do you do?" The prototype should therefore keep the active question visible and prompt players when the table is drifting.
+- Game Angry `game-angry-pdf-47a26de25095:s208:n0` distinguishes player characters, which the Referee does not control, from plot/structure. For this prototype: Referee prepares and maintains structure, but moment resolution follows player action, not scripted outcomes.
+- OSE Basic `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s259:n0` gives encounter sequence as surprise, distance, initiative, actions, conclusion; when strict encounter/combat procedure is active, procedure overrides free table chatter.
+- OSE Basic `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s255:n0` notes searching takes a turn and the Referee rolls secretly. Some declared actions therefore trigger immediate procedure and a time/state commit.
+
+Non-combat town/social/exploration readiness heuristics:
+
+- keep accumulating when players are actively coordinating or asking useful questions;
+- ask a direct commitment question when chatter is fun but no action is emerging;
+- prompt a quiet/relevant player when their character clearly has a stake;
+- resolve when a clear action/plan is locked or an OSE procedure is triggered;
+- do not punish table talk; table talk is part of play;
+- do not let table talk replace action forever.
+
+In combat or other strict procedure, OSE initiative/turn procedure overrides this free table flow.
+
+## Narrative accumulation
+
+The stream is the play. The Referee may also produce compact narrative stitching after accumulation, but that narrative must summarize and resolve actual accumulated table events, not replace them.
+
+Good shape:
+
+```txt
+short player events -> short referee prompts -> locked actions -> compact ruling/narrative -> state commit
+```
+
+Bad shape:
+
+```txt
+players write long monologues -> referee writes a chapter -> state maybe changes
+```
+
+## Decision: thoughts and feelings are audience-visible
+
+Thoughts, feelings, worries, tactical reads, and Referee weighing are part of the product experience, not merely dev instrumentation.
+
+This project is not protecting the emotional privacy of human players. These are AI PlayerAgents performing an interesting table for an audience/operator. The feed should show what is going through their heads so the system feels alive.
+
+Use **audience thought bubbles** by default:
+
+- `thought_bubble` for PlayerAgent inner state, worries, reads, and plans.
+- `referee_thought` for Referee weighing, pressure management, and adjudication posture.
+
+Do not label these as hidden chain-of-thought. They are explicit app-level outputs requested by the prompt/tool schema. They should be concise, performative, and safe to show.
+
+Still preserve actual fog-of-war:
+
+- Player thought bubbles must not reveal hidden Referee graph facts the player could not know.
+- Referee thoughts may mention that something is being withheld or weighed, but public mode must not reveal hidden module secrets unless the Referee intentionally reveals them through play.
+- Dev-only/private notes are only for implementation receipts, raw errors, and audit details.
+
+## First implementation slice
+
+Build a new always-running table stream, not another control-heavy monitor.
+
+Acceptance:
+
+1. Route `/prototype/town-module-table?dev=1` loads immediately and attaches to Referee Agent socket.
+2. Server fiber starts/resumes automatically and hard-stops internally after a configured cap.
+3. Fiber reads Fenwater Drainage from Artifacts repo/commit, not by regenerating town and not from a code fixture.
+4. Referee initializes compact table state from the artifact module.
+5. Stream emits table events only: frame, thought bubbles, table talk, tentative/locked actions, Referee thoughts, rulings, commits, honest errors.
+6. PlayerAgents use fast model config; Referee classifier/ruling can use separate model config.
+7. UI newest-first feed has no Run/Pause/Reset prominence in the first slice.
+8. If anything fails, the stream shows an honest table/error event with receipts.
+
+## Open questions
+
+1. How many chatter/refinement events can happen before the Referee must prompt/resolve?
+2. What exact Artifacts read API is available in Workers local dev for `agent-dungeon-town-forges`?

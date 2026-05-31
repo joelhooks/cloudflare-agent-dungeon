@@ -34,7 +34,13 @@
     }
   ],
   "vars": {
-    "ARTIFACTS_ACCOUNT_ID": "baac0d692a7fb14f11b159b48b13055e"
+    "ARTIFACTS_ACCOUNT_ID": "baac0d692a7fb14f11b159b48b13055e",
+    "AI_GATEWAY_ID": "agent-dungeon",
+    "PROTOTYPE_MODEL": "@cf/moonshotai/kimi-k2.6",
+    "PLAYER_MODEL": "@cf/moonshotai/kimi-k2.6",
+    "REFEREE_CLASSIFIER_MODEL": "@cf/moonshotai/kimi-k2.6",
+    "REFEREE_RULING_MODEL": "@cf/moonshotai/kimi-k2.6",
+    "REFEREE_MAINTENANCE_MODEL": "@cf/moonshotai/kimi-k2.6"
   },
   "artifacts": [
     {

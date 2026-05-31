@@ -1,0 +1,45 @@
+---
+title: Think Live Monitor Best Practices
+status: active
+privacy: public-safe
+source: .agent-sources/cloudflare-agents
+updated: 2026-05-28
+---
+
+# Think Live Monitor Best Practices
+
+Source mirror: `.agent-sources/cloudflare-agents` at commit `8ad724b` from `https://github.com/cloudflare/agents`.
+
+Files read:
+
+- `.agent-sources/cloudflare-agents/docs/think/index.md`
+- `.agent-sources/cloudflare-agents/docs/think/sub-agents.md`
+- `.agent-sources/cloudflare-agents/docs/think/programmatic-submissions.md`
+- `.agent-sources/cloudflare-agents/docs/think/lifecycle-hooks.md`
+- `.agent-sources/cloudflare-agents/docs/think/tools.md`
+
+## Findings for Agent Dungeon
+
+- Use `subAgent(...).chat()` when the parent Referee needs live stream forwarding from child Think agents. It exposes `onStart`, `onEvent`, `onDone`, and `onError`, which fits the live monitor better than waiting on `saveMessages()`.
+- Use `submitMessages()` when a caller needs fast durable acceptance, idempotency, and later status inspection. This fits operator-triggered work where request timeouts would make retry state ambiguous.
+- Use `startFiber()` for the app-owned run supervisor around the turns, not as a replacement for Think's own durable turn ledger.
+- Use `beforeTurn()` to control the tavern-turn shape: active tools, max steps, `sendReasoning`, timeouts, and model override.
+- Use custom tools for intentional process reporting (`report_player_process`, `report_referee_process`), but do not force the final submit tool too early or the model cannot report WIP.
+- Use `onChunk()` and `sendReasoning: true` for live monitor streams when provider/model emits chunks.
+- For browser/live monitor UX, persist process events in Referee state and replay them on reconnect. Socket-only events are not enough.
+
+## Current mismatch to fix next
+
+The prototype still mixes `saveMessages()` and global event forwarding for retained child agents. Better shape:
+
+1. Referee run supervisor owns the beat fiber.
+2. Parent calls each child via `child.chat(prompt, callback)` for player and Referee Think turns.
+3. Callback `onEvent(json)` forwards real child chunks to the Referee monitor socket and persists compact process events.
+4. Use `onStart` request ids for cancellation and pause/reset.
+5. Keep direct structured model calls as fallback only when Think/tool streaming fails.
+
+## Package compatibility note
+
+Tried updating `@cloudflare/think` from `^0.7.2` to `0.7.3` after checking upstream package version, but reverted because `@cloudflare/think@0.7.3` imports newer `agents/chat` exports (`createChatFiberSnapshot`, `unwrapChatFiberSnapshot`, `wrapChatFiberSnapshot`) that are not exported by the currently installed `agents@0.13.2`.
+
+Keep `@cloudflare/think` on `0.7.2` unless `agents` is upgraded to a compatible version too.

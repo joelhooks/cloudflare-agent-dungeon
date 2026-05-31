@@ -1,0 +1,314 @@
+---
+title: "TableRun Session Zero and Opening Seed PRD"
+type: "project"
+status: "active"
+created_at: "2026-05-30"
+tags:
+  - prd
+  - agent-dungeon
+  - town-module-table
+  - session-zero
+  - opening-seed
+---
+
+# TableRun Session Zero and Opening Seed PRD
+
+## Problem statement
+
+Town Module Table runs still feel too same-same at the opening. Even after Fenwater was expanded enough to support a 100-beat run, the run setup still has strong gravity toward a fixed starting frame, fixed-ish party shape, and Mort's bar as the default center.
+
+Joel wants the opening to feel like the Referee is actually starting a fresh adventure for **this gang**, not replaying a canned demo:
+
+- real Session Zero first;
+- actually rolled / newly created characters every run;
+- model-added character flavor after the dice receipts exist;
+- then a model-generated **TableRun opening seed**;
+- the seed may start somewhere other than Mort's bar;
+- one shared party-wide starting situation;
+- event log is canonical truth.
+
+This is not the broad campaign persistence project yet. It is the smallest useful slice that makes each TableRun start less same-same without building a generic VTT or a whole campaign database.
+
+## Desired outcome
+
+Starting or resetting the Town Module Table creates a fresh, auditable TableRun opening:
+
+1. Session Zero rolls/mechanics happen first.
+2. The model adds names, quirks, bonds, personality, and why the newly rolled gang is together.
+3. The Referee generates one bounded opening seed from generic AdventureModule material and the newly created party. Fenwater is the first concrete module, not the interface.
+4. The Referee validates the seed against known module component IDs and projection boundaries.
+5. The Referee commits a typed `opening_committed` event.
+6. Normal PlayerAgent turns begin from the committed player-safe opening projection.
+7. Agent Dungeon's x-ray view shows the whole process, including drafts, receipts, hidden notes, and validation details.
+8. PlayerAgents cannot read hidden Referee state or x-ray-only process data.
+
+The feel: every run starts with real dice receipts and a specific situation for a specific party, not a switch-statement party standing in the same bar again.
+
+## Non-goals
+
+- Do not build campaign persistence first.
+- Do not build a generic VTT.
+- Do not implement split-party opening scenes in this slice.
+- Do not replace dice/domain character mechanics with model invention.
+- Do not use fixed named characters, switch-statement party templates, or canned runtime party data as the production path.
+- Do not silently fall back to fake demo openings when model generation or validation fails.
+- Do not over-sanitize Agent Dungeon's x-ray view. The firewall is PlayerAgent capability access, not human/audience observability.
+- Do not introduce unbounded autonomous model spending.
+
+## Source receipts
+
+- `AGENTS.md`
+  - Real software, Cloudflare-first runtime, Think-first agent loop, Referee owns truth, PlayerAgents only get projections, no generic VTT first.
+- `BRAIN.md`
+  - `.brain/projects/` is the canonical durable project planning surface.
+- `.brain/projects/adventure-opening-and-campaign-persistence-handoff.svx`
+  - Grill-derived decisions for TableRun opening seed, Session Zero, Agent Dungeon x-ray view, event-log truth.
+- `.brain/projects/fenwater-long-run-adventure-module-prd.svx`
+  - Fenwater can now sustain 100-beat traversal; remaining work is quality deepening.
+- `.brain/projects/town-module-table-100-beat-improvement-plan.svx`
+  - Core runtime lesson: fix scene progression and content traversal, not more prose soup.
+- `.brain/projects/town-module-table-projection-separation-handoff.svx`
+  - Corrected visibility model: Agent Dungeon/x-ray observability is not PlayerAgent capability projection.
+- `packages/domain/src/index.ts`
+  - Existing real character creation path: `rollCharacterCreationDraft(...)` rolls 3d6 down the line, starting gold, HP, dice ledger, and session-zero events.
+- `apps/worker/src/index.ts`
+  - Current Town Module Table setup has fixed player IDs and a name-pool helper, initializes the run from artifacts, builds party state, starts at the module starting location, and appends beat-0 setup events.
+- `packages/domain/src/table-run.ts`
+  - Current `TableRunPhaseSchema` only includes `exploration | encounter | combat | aftermath`; event kinds do not yet include `session_zero` or `opening_committed`.
+
+## User/operator workflows
+
+### Start a fresh run
+
+As Joel/operator, I can open Agent Dungeon and start/reset a Town Module Table run.
+
+Acceptance:
+
+- the run creates a new party from real Session Zero receipts;
+- character names/flavor differ run-to-run because the model participates after rolls;
+- Agent Dungeon shows dice/mechanical receipts and model flavor decisions;
+- no fixed Gorunn/Lysa/Wren/Corra-style runtime party template is required.
+
+### See the Referee choose an opening for this gang
+
+As Joel/operator/audience, I can watch the Referee generate the opening seed for the newly created party.
+
+Acceptance:
+
+- x-ray view can show raw/referee/private process details;
+- generated seed includes a known AdventureModule starting location ID, pressure/fronts, shared party reason, visible hook, affordances, and hidden/referee notes;
+- seed can start away from Mort's bar;
+- seed keeps party together in one shared starting situation.
+
+### PlayerAgents begin with only their allowed projection
+
+As the runtime, PlayerAgents begin play from the committed opening projection.
+
+Acceptance:
+
+- PlayerAgents do not read x-ray data, rejected drafts, hidden Referee notes, or private module payloads;
+- PlayerAgent context includes only the committed player-safe opening and their own character/persona artifacts;
+- Player outputs remain proposals that the Referee validates.
+
+### Audit/replay the opening
+
+As an implementer/debugger, I can recover what happened from the event log.
+
+Acceptance:
+
+- Session Zero receipts and `opening_committed` are events;
+- current state may cache the opening seed for UI convenience, but the event log is the source of truth;
+- replay/audit can reconstruct the committed opening from the event log.
+
+## Implementation shape
+
+### Domain additions
+
+Add typed domain concepts in `packages/domain/src/table-run.ts` or a nearby domain module:
+
+- extend lifecycle to represent pre-play setup, likely separate from `TableRunPhaseSchema` if phase remains in-fiction table phase;
+- add event kinds such as:
+  - `session_zero_roll`
+  - `session_zero_character_committed`
+  - `opening_seed_draft`
+  - `opening_committed`
+- add a schema such as `TableRunOpeningSeedSchema`;
+- add module-generic validation helpers so opening seed generation works across AdventureModules, not only Fenwater.
+
+Candidate shape:
+
+```ts
+type TableRunOpeningSeed = {
+  id: `opening-${string}`;
+  title: string;
+  startingLocationId: string;
+  visibleSituation: string;
+  immediatePressure: string;
+  whyPartyIsTogether: string;
+  initialAffordances: string[];
+  activeFrontIds: string[];
+  publicClocks: TableClock[];
+  refereeNotes: string[];
+  sourceRefs: string[];
+};
+```
+
+Names can shift. The invariant matters more than the spelling:
+
+- committed event is canonical;
+- state cache is convenience only;
+- player-safe projection is separate from x-ray process visibility.
+
+### Worker/runtime changes
+
+In `apps/worker/src/index.ts`:
+
+1. Inspect and replace any Town Module Table fixed-party setup path.
+2. Reuse/bridge real domain character creation from `packages/domain/src/index.ts` where possible.
+3. Make run initialization perform:
+   - Session Zero mechanical rolls;
+   - model character flavor pass;
+   - opening seed generation pass;
+   - seed validation;
+   - event commits;
+   - then normal `runTownModuleTableMoment()` loop.
+4. Stop treating `projection.startingLocationId` / module starting location as the only opening start.
+5. Validate model-generated IDs against the current generic `AdventureModule` components. Fenwater-specific helpers may enrich the first adapter, but the generator interface must not require Fenwater/TownGraph types.
+6. Show Session Zero and opening seed process in Agent Dungeon x-ray view.
+7. Ensure PlayerAgent prompt/context is built from the committed player-safe projection only.
+
+### Model generation boundaries
+
+Model can create:
+
+- character names;
+- quirks/personality;
+- bonds and why the gang is together;
+- opening seed prose;
+- pressure/hook framing using known AdventureModule ingredients.
+
+Model cannot create without validation:
+
+- ability scores;
+- HP;
+- starting gold;
+- class/mechanical stats, unless chosen through an approved plan after rolled receipts;
+- unknown location/front IDs;
+- fake fallback module content;
+- PlayerAgent-readable hidden/referee material.
+
+### Agent Dungeon x-ray view
+
+Canonical naming:
+
+- product/site surface: **Agent Dungeon**;
+- observability descriptor: **x-ray view/monitor**.
+
+The x-ray view can show everything useful for human/operator/audience understanding:
+
+- dice receipts;
+- model prompts/results where safe for secrets policy;
+- Referee drafts and rejected bits;
+- validation failures;
+- hidden notes and source refs;
+- committed opening seed.
+
+Do not reintroduce “public monitor must be player-safe” thinking. That is the old bullshit bug.
+
+## Decisions already made
+
+- Scope is **TableRun first**, not campaign bootstrap.
+- Opening seed is **model-generated**, not just selected from an authored menu.
+- Opening seed happens **after real Session Zero**.
+- Session Zero must create **new unique characters every run**.
+- Dice/domain mechanics create receipts first; model flavor happens after.
+- Opening may start **away from Mort's bar** in the Fenwater module, and more generally away from any module default start, using known AdventureModule location components.
+- Opening keeps the party in **one shared starting situation**.
+- The **event log is canonical truth**.
+- Agent Dungeon x-ray view may show hidden/referee/process data.
+- PlayerAgent capability projection remains strict.
+
+## Open questions
+
+### How much OSE character creation must be complete in this slice?
+
+Recommendation: keep the first slice to the already-present prototype mechanics unless changing OSE procedure details. If adding new OSE character creation procedure behavior, use the `ose-rules-access` skill and cite JoelClaw/OSE doc/chunk IDs.
+
+### Where should campaign persistence land later?
+
+Recommendation: defer. Preserve the naming seam now:
+
+- `AdventureModule` = authored/source material;
+- `TableRun` = current session/run event log and state;
+- future `CampaignLedger` / `CampaignMemory` = cross-run durable consequences.
+
+Do not build `CampaignLedger` in this slice.
+
+### Should names/classes be fully freeform model output?
+
+Recommendation: no. Use rolls/domain constraints first. Let the model propose flavor within validated schema. If class choice remains model-assisted, it must be attached to the Session Zero receipt and validated against allowed OSE/prototype classes.
+
+## Validation plan
+
+### Unit/domain tests
+
+Add tests covering:
+
+- Session Zero creates new rolled characters rather than fixed runtime templates;
+- character creation dice/receipts appear in event log or equivalent ledger;
+- model-added names/flavor happen after rolls and cannot replace mechanical receipts;
+- `TableRunOpeningSeed` parses;
+- generated `startingLocationId` and `activeFrontIds` must refer to known AdventureModule components;
+- opening seed generator/validator is module-generic and does not require Fenwater/TownGraph-specific types;
+- non-Mort's-bar starting locations are allowed;
+- opening keeps the party together;
+- event log replay can recover the committed opening seed;
+- failure produces honest error state, not fallback fake content.
+
+### Projection tests
+
+Add tests covering:
+
+- Agent Dungeon x-ray payload may include hidden/referee/process material;
+- PlayerAgent/table-safe projection excludes hidden/referee-only opening fields;
+- PlayerAgent prompts are built from committed opening projection, not draft x-ray data.
+
+### Runtime smoke
+
+Run locally or bounded production smoke:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/worker test
+pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts
+```
+
+Then verify with browser automation, not only curl:
+
+```bash
+agent_browser open https://agentdungeon.ai/prototype/town-module-table?prod=opening-seed
+agent_browser snapshot -i -c -d 4
+```
+
+Acceptance for prod smoke:
+
+- page leaves loading state;
+- Agent Dungeon shows Session Zero receipts;
+- Agent Dungeon shows opening seed generation and committed seed;
+- first player turn starts from committed opening;
+- at least one sampled fresh run can start away from Mort's bar;
+- controls still respect bounded run/cost guardrails.
+
+## Tracker mirror plan
+
+Brain is canonical. If creating tracker issues later, mirror from this PRD and link back to:
+
+- `.brain/projects/table-run-session-zero-opening-seed-prd.svx`
+
+Suggested issue slices:
+
+1. Domain schemas/events for Session Zero and opening seed.
+2. Replace fixed Town Module Table party setup with real Session Zero receipts.
+3. Add model character flavor pass after rolls.
+4. Add model-generated opening seed + validation.
+5. Wire x-ray and PlayerAgent projections separately.
+6. Tests + bounded production smoke.

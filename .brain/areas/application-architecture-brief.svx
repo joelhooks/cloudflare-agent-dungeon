@@ -1,0 +1,53 @@
+---
+title: Application Architecture Brief
+kind: area
+status: active
+created: 2026-05-30
+tags:
+  - architecture
+  - domain
+  - worker
+---
+
+# Application Architecture Brief
+
+Cloudflare Agent Dungeon is a Turborepo app with a small shared domain core and a Cloudflare Worker runtime.
+
+```mermaid
+flowchart LR
+  Domain["packages/domain
+Schemas + pure rules
+AdventureModule / TableRun / Campaign"]
+  Worker["apps/worker
+Cloudflare Agent body
+routes + monitor UI
+town forge + run loop"]
+  Minds["Think minds
+RefereeAgent + PlayerAgents
+typed proposals, not truth"]
+  Store["Storage / artifacts
+R2 skill/artifact files
+event logs + receipts"]
+
+  Domain -->|types + rules| Worker
+  Worker -->|prompts + tools| Minds
+  Minds -->|typed proposals| Worker
+  Worker -->|persist| Store
+  Worker -->|validated state| Domain
+```
+
+
+## In one breath
+
+- `packages/domain` is the durable game model: Zod schemas, table-run state, adventure modules, campaign events, dice, clocks, treasure/XP hooks, and projection helpers.
+- `apps/worker` is the Cloudflare runtime: HTTP routes, Agent/Think integration, AI calls, the town/module forge, live monitor pages, and persistence wiring.
+- The Referee owns canonical truth. Player minds see projections and return typed proposals; they do not mutate hidden state directly.
+- Runtime artifacts live outside the public monitor boundary. Public UI gets sanitized projections, not private Referee notes or raw rules corpus.
+
+## Source receipts
+
+- `package.json` — Turborepo scripts and workspace shape.
+- `packages/domain/src/index.ts` — core campaign types, events, projections, and rule helpers.
+- `packages/domain/src/adventure-module.ts` — generic `AdventureModule` and visibility projection boundary.
+- `packages/domain/src/table-run.ts` — table-run lifecycle, events, phases, combat/encounter helpers, summaries.
+- `apps/worker/src/index.ts` — Cloudflare Agent/Think imports, Worker routes, AI/object generation, R2 skill/artifact integration.

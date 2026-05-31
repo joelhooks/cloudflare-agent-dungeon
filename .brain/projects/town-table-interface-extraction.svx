@@ -1,0 +1,271 @@
+---
+title: Town Table Interface Extraction
+type: project
+status: active
+created_at: 2026-05-29
+updated_at: 2026-05-29
+tags:
+  - architecture
+  - town-module
+  - interfaces
+  - referee
+  - player-agents
+---
+
+# Town Table Interface Extraction
+
+## Decision
+
+Before expanding Fenwater or adding more adventure content, extract the proven `/prototype/town-module-table` loop behind explicit interfaces.
+
+The prototype proved enough behavior to name the seams:
+
+- Artifacts-backed Adventure Module loading.
+- Public/private projections.
+- Table event stream.
+- Compact table state read model.
+- Player action proposals.
+- Referee ruling/commit flow.
+- Locality/procedure validation.
+- Combat objectives.
+- Run harness and receipts.
+
+Do **not** add more Fenwater rooms, factions, or encounter content until the table loop can run against importable interfaces instead of more hard-coded inline proof-of-concept code in `apps/worker/src/index.ts`.
+
+## Why now
+
+The current route is valuable because it works, but the implementation has become a blob:
+
+- prototype route/endpoints;
+- town-module Artifact loading;
+- table event/state schemas;
+- player generation;
+- locality validator;
+- OSE-ish procedure rows;
+- combat/objective rules;
+- Referee/player prompts;
+- Think memory sync;
+- run harness;
+- browser UI.
+
+Expanding the adventure before carving these seams would harden prototype shortcuts into the system architecture.
+
+## Phase boundary
+
+Phase name:
+
+```txt
+Town Table Interface Extraction
+```
+
+Non-goal:
+
+```txt
+No new Fenwater content expansion until the table loop has importable interfaces and validation receipts.
+```
+
+## Candidate interfaces to settle
+
+- `AdventureModuleSource`
+  - loads canonical module data from Artifacts, with R2 as runtime cache only.
+  - Fenwater Drainage is one concrete town-shaped Adventure Module implementation, not the interface itself.
+  - OSE source language gives us `Adventure Scenarios`; project code can use `AdventureModule` as the durable packaging noun while documenting the OSE alias.
+- `AdventureModuleProjection`
+  - player-safe public projection and Referee-private projection.
+- `TableEventLog`
+  - append-only product/audit transcript.
+- `TableStateReadModel`
+  - compact current state for runtime decisions.
+- `PlayerActionProposal`
+  - typed player output; never direct mutation.
+- `RefereeRuling`
+  - validated consequence + state patch + public narration.
+- `ProcedureValidator`
+  - locality, clock, search, door, social pressure, encounter checks.
+- `CombatObjective`
+  - goals beyond HP attrition.
+- `RunHarness`
+  - bounded local/dev/production playtest runs and summary receipts.
+
+## Invariants
+
+- Use **Referee**, not DM/GM, in durable code/docs.
+- Referee owns canonical hidden state.
+- PlayerAgents receive projections and private memory only.
+- Player outputs are proposals, not mutations.
+- Public stream shows safe explicit table events, not hidden chain-of-thought.
+- Fenwater source of truth remains Artifacts.
+- R2 may cache runtime blobs but is not canonical module truth.
+- Keep `/prototype/town-module-table` as the proving route while extracting interfaces.
+- Keep pace; do not reintroduce slow full Think turns into every micro-beat.
+- Do not build a generic VTT.
+
+## Naming correction
+
+Do not make `TownModule` the durable interface name. Fenwater Drainage is town-shaped, but the extracted boundary should support any OSE-ish adventure module shape: town, dungeon, wilderness, lair, route, or mixed site.
+
+Canonical project term: `AdventureModule`.
+
+OSE/source alias: `AdventureScenario`.
+
+`VentureModule` remains a possible branded/product phrase later, but do not use it as the durable domain/code noun unless we intentionally decide to brand the system away from OSE terminology.
+
+Source note: JoelClaw search for `Old School Essentials adventure module` returned OSE Basic docs using general “adventure” language (`old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s8:n0`). A narrower search for `Adventure Scenarios Designing a Dungeon Designing a Wilderness OSE` found the Classic Fantasy Rules Tome table of contents under `Running Adventures`, with `Adventure Scenarios`, `Designing a Dungeon`, and `Designing a Wilderness` (`old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s10:n0`). That is stronger evidence than “module” for naming the source/playable interface.
+
+Working distinction:
+
+```txt
+AdventureModule = project/code interface for playable source material
+AdventureScenario = OSE/source alias for the same concept
+ScenarioComponent = reusable pieces inside a module/scenario: settlement/town, dungeon, wilderness, route, faction, location, clock, encounter pressure, treasure, NPC, clue, locality anchor
+Fenwater Drainage = one concrete AdventureModule composed heavily from settlement/drainage/social-pressure components
+TableRun = active runtime play instance through an AdventureModule
+```
+
+## First extraction boundary
+
+Accepted first boundary: source shape first, thin.
+
+Start by extracting enough `AdventureModule` source contracts to answer:
+
+```txt
+What is Fenwater, as authored/source material, without knowing anything about this specific table run?
+```
+
+Initial interface set:
+
+```ts
+type AdventureModuleManifest = {
+  schema: "AdventureModuleManifest.v1";
+  moduleId: string;
+  title: string;
+  source: {
+    kind: "artifacts" | "r2" | "local";
+    repo?: string;
+    commit?: string;
+    paths?: string[];
+  };
+  components: AdventureModuleComponentRef[];
+};
+
+type AdventureModuleComponentRef = {
+  id: string;
+  kind: "settlement" | "dungeon" | "wilderness" | "route" | "faction" | "location" | "npc" | "clock" | "encounterPressure" | "treasure" | "clue" | "localityAnchor";
+  title: string;
+  visibility: "public" | "referee" | "private";
+};
+
+type AdventureModuleProjection = {
+  moduleId: string;
+  audience: "public" | "player" | "referee";
+  components: AdventureModuleComponentRef[];
+};
+```
+
+This is intentionally thinner than a complete adventure authoring schema. Do not design a VTT or full module compiler yet.
+
+Component payload decision:
+
+Use a tagged component with loose payload first, then validate at adapter/procedure boundaries.
+
+```ts
+type AdventureModuleComponent = {
+  id: string;
+  kind: AdventureModuleComponentKind;
+  title: string;
+  visibility: "public" | "referee" | "private";
+  payload: unknown;
+};
+```
+
+Rationale:
+
+- Fenwater's current Artifact graph will not cleanly match a perfect discriminated union yet.
+- A full union now risks designing an adventure authoring DSL too early.
+- Stable refs/indexes matter first; kind-specific payload validation can harden as procedures need it.
+- Zod is already in the worker and is good enough for the first extraction. Valibot or another schema library can be considered later if bundle/perf/ergonomics become a real problem. Do not switch schema libraries as part of this extraction unless there is evidence.
+
+## First migration shape
+
+This is domain modeling, so the first code slice may live in `packages/domain` rather than a worker-local folder, as long as it stays thin and does not drag Cloudflare runtime bindings into the package.
+
+Suggested first files:
+
+```txt
+packages/domain/src/adventure-module.ts
+packages/domain/src/table-run.ts
+```
+
+Rules:
+
+- We love schemas: domain contracts should export runtime schemas and inferred TypeScript types together.
+- `packages/domain` contains pure types, schemas, and deterministic reducers/validators only.
+- No Artifacts/R2/Durable Object/Think imports in domain code.
+- Cloudflare-specific loading stays in worker adapters.
+- `apps/worker/src/index.ts` should become orchestration/adapter code that imports domain contracts.
+
+Schema shape:
+
+```ts
+export const AdventureModuleManifestSchema = z.object(...);
+export type AdventureModuleManifest = z.infer<typeof AdventureModuleManifestSchema>;
+```
+
+Adapters parse untrusted/generated source through domain schemas; they do not duplicate validation logic.
+
+Migration order:
+
+1. Extract pure schemas/types first into `packages/domain`.
+2. Move deterministic game mechanics next: locality validation, starter gear, combat objective progress, run summaries.
+3. Move runtime ports/adapters after contracts are stable.
+4. Keep `apps/worker/src/index.ts` as orchestration and Cloudflare adapter code.
+5. Validate every extraction by keeping `/prototype/town-module-table` behavior working.
+
+## Implementation receipts
+
+First interface extraction slice completed on 2026-05-29:
+
+- `packages/domain/src/adventure-module.ts`
+  - `AdventureModuleManifestSchema`
+  - `AdventureModuleComponentSchema`
+  - `AdventureModuleProjectionSchema`
+  - `projectAdventureModule()`
+- `packages/domain/src/table-run.ts`
+  - `TableEventSchema`
+  - `TableRunCoreStateSchema`
+  - `TableRunSummarySchema`
+  - `CombatObjectiveSchema`
+  - `PlayerActionProposalSchema`
+  - `RefereeRulingSchema`
+  - `requiredLocalityForAction()`
+  - `starterGearForClass()`
+  - `advanceCombatObjective()`
+  - `summarizeTableRun()`
+  - `parseLabeledActionProposal()`
+  - `parseRefereeRulingText()`
+- `apps/worker/src/adventure-module/fenwater.ts`
+  - `adventureModuleFromFenwaterTownGraph()` adapts the Town Forge graph into `AdventureModule` components.
+- `apps/worker/src/index.ts`
+  - uses domain schemas/helpers for table run state pieces, locality, starter gear, objective progress, run summaries, player action parsing, and Referee ruling parsing.
+
+Validation receipts:
+
+- `pnpm --filter @cloudflare-agent-dungeon/domain check` passed.
+- `pnpm --filter @cloudflare-agent-dungeon/domain test` passed: 3 files, 18 tests.
+- `pnpm --filter @cloudflare-agent-dungeon/worker check` passed.
+- Browser smoke opened `/prototype/town-module-table?dev=1&interfaces=1` and verified the page rendered Fenwater, party gear, clocks, table events, and the sample stop receipt.
+- Summary API smoke for `difficulty=5&maxBeats=4&sampleSeconds=45` stopped cleanly with `mode=stopped`, `stoppedReason="sampleSeconds 45s reached"`, and no error.
+
+## Remaining extraction seams
+
+- `TownModuleTableEventSchema` and `TownModuleTableStateSchema` still exist in the worker as compatibility wrappers. Next extraction should either rename/adapt them to `TableEvent`/`TableRunState` at the route boundary or keep them explicitly marked as prototype compatibility.
+- `apps/worker/src/index.ts` still owns too much orchestration: player generation, prompts, readiness, memory sync, and UI.
+- Artifact loading is still in worker code, correctly, but should become an adapter/service boundary rather than a method on `Referee`.
+- The browser UI is still inline HTML in `index.ts`; leave it until runtime contracts settle.
+
+## Validation receipts required for future slices
+
+- `pnpm --filter @cloudflare-agent-dungeon/worker check`
+- focused unit tests for pure validators/procedures where practical
+- one browser/API smoke run through `/prototype/town-module-table`
+- summary endpoint receipt showing events, locality corrections, objective progress, and stop reason

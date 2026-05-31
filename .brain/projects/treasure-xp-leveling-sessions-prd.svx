@@ -1,0 +1,435 @@
+---
+title: "Treasure XP and Leveling Sessions PRD"
+type: "project"
+status: "active"
+created_at: "2026-05-30"
+tags:
+  - prd
+  - agent-dungeon
+  - ose
+  - treasure
+  - xp
+  - leveling
+---
+
+# Treasure XP and Leveling Sessions PRD
+
+## Problem statement
+
+Agent Dungeon can now run longer Fenwater TableRuns, but it does not yet have enough **OSE-style reward surface** for characters to get meaningfully stronger over time.
+
+Fenwater has locations, fronts, clocks, rest spots, and a few leverage/treasure-ish artifacts, but not a real treasure economy. Without treasure parcels, extraction, an XP ledger, and level-up sessions, advancement would become fake milestone sludge instead of old-school play.
+
+## Desired outcome
+
+Add the smallest real advancement loop, designed against domain interfaces rather than Fenwater-specific code:
+
+1. A source-backed OSE character/advancement catalog represents classes, character creation options, XP thresholds, and level-up procedures.
+2. AdventureModules define **treasure parcel templates** as source-safe components, without module-specific catalog logic.
+3. Campaign state tracks parcel instance lifecycle: reveal, claim, carry, cache, lose, or extract treasure.
+4. XP is awarded when treasure is recovered to safety, not merely spotted.
+5. A canonical campaign-scoped **XP ledger** records awards, shares, participants, receipts, and source refs, with TableRun events linked as receipts.
+6. When characters cross class thresholds, the Referee runs a bounded **leveling session** through the OSE catalog/procedure interfaces.
+7. Level changes update canonical character records and emit audit/public events.
+
+## Source receipts
+
+- `AGENTS.md` — Referee owns truth; PlayerAgents only receive projections; OSE rules/docs come from JoelClaw docs/PDF Brain first.
+- `.brain/projects/fenwater-long-run-adventure-module-prd.svx` — Fenwater can sustain a 100-beat run but is not yet a finished 1000-beat campaign engine.
+- `.brain/projects/table-run-session-zero-opening-seed-prd.svx` — TableRun event log is canonical truth; model can add flavor after mechanical receipts.
+- `packages/domain/src/index.ts` — existing prototype `awardRecoveredTreasureXp(...)` hook awards XP for recovered treasure.
+- JoelClaw OSE search receipts:
+  - `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s700` — OSE has a Base Town setup concept.
+  - `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s705` — Base Town services include adventurer services such as selling treasure / black market contacts.
+  - `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s709` — XP is gained from treasure recovered and monsters defeated.
+  - `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s710` — recovered non-magical treasure grants XP, including 1 XP per 1 gp value.
+  - `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s165` and `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s102` — levelling up after enough XP points to class advancement procedure.
+- JoelClaw design receipts:
+  - `domain-driven-design-eric-evans-e33b32520524:s522` — domain model / bounded context / model-driven design glossary receipts for keeping core concepts explicit.
+  - `domain-driven-design-eric-evans-e33b32520524:s90` — Smart UI anti-pattern receipt: do not bury business rules in UI/Worker flows.
+  - `domain-driven-design-eric-evans-e33b32520524:s159` — repository/data-store encapsulation receipt for loadable artifacts/catalogs.
+  - `philosophy-of-software-design-48cee0a4a0df:s144` and `:s154` — information hiding / information leakage receipts for keeping interfaces clean.
+  - `designing-dataintensive-applications-39cc0d1842a5:s95` — logs as durable record/data-system principle, relevant to event/ledger truth.
+
+## Decisions already made
+
+- Use **actual recovered treasure** as the first advancement driver, not milestone/session XP.
+- Add treasure parcels, extraction/return-to-safety, XP ledger, and level-up sessions.
+- Support the **full OSE rule set to the extent possible**, including character creation options and class advancement, rather than limiting the domain to the current prototype-generated classes.
+- Anything available in the OSE corpus is open for addition here when source-backed and projected through the Referee capability firewall.
+- The Referee can access the full OSE books/corpus as needed during play and design.
+- Evolve **Fenwater** into the first robust OSE-backed campaign scenario. Do not start a clean replacement module just to dodge integration complexity.
+- The AdventureModule/campaign scenario should deliberately use the OSE corpus in its design: classes, spells, monsters, magic items, treasure, retainers, domain play, procedures, and whatever else is useful for the players and table.
+- The base rules catalog is global/shared. Modules may add local supplements for treasure, rulings, house rules, and campaign-world needs.
+- Referee/campaign rule overrides are allowed when they make play better for the players, but must declare scope, reason, overridden rule id/source, and audit visibility.
+- Support both temporary Referee rulings and lasting campaign rules, typed differently and committed with different audit weight.
+- Keep the event log / ledger as canonical truth.
+- Do not fake leveling by just incrementing a field when beat count is high.
+- When implementing exact OSE class thresholds/procedures/options, use `ose-rules-access` and capture doc/chunk receipts.
+
+## Non-goals
+
+- Do not implement a full VTT inventory/economy first.
+- Do not add milestone XP as the main loop.
+- Do not expose raw OSE rules corpus text in Agent Dungeon output.
+- Do not make PlayerAgents read Referee-only treasure placement or hidden module payloads.
+- Do not require broad campaign persistence before treasure parcel tracking works, but XP totals/level-up eligibility must be campaign-scoped rather than trapped in a single TableRun.
+- Do not narrow durable schemas to only the current prototype classes if OSE supports broader character creation/advancement options.
+
+## Implementation shape
+
+### Rule supplement and override scope
+
+Rule supplements should distinguish at least:
+
+- `temporary_ruling` — scoped to a scene, encounter, session, or specific adjudication; expires or can be superseded.
+- `campaign_rule` — lasting campaign truth until explicitly retired; affects future procedures and should be visible in campaign audit/Referee memory.
+- `module_rule` — module-local procedure or house rule bundled with an AdventureModule supplement.
+
+Every override/supplement should record:
+
+- affected base rule id or source ref when applicable;
+- scope and expiry semantics;
+- Referee reason;
+- whether PlayerAgents receive a player-safe summary;
+- event/ledger id where it became campaign truth.
+
+PlayerAgents should receive active house rules/rulings only when they are choice-relevant. The Referee/x-ray/audit can hold full rule state, but player-facing artifacts should be compact table guidance for the decision at hand, not a rules admin dump. Here too, distinguish player-public from audience-visible x-ray observability.
+
+### Domain interfaces first
+
+Avoid implementing this as `FenwaterTreasureThing` or a one-off Worker switch statement. The durable abstractions should be module-agnostic:
+
+- `Campaign` — owns durable character state, CampaignFacts, campaign treasure parcel instances, SafeHaven instances, XP ledger, rule supplements, and level-up eligibility.
+- `CampaignFact` — first-class derived/committed campaign reality with visibility, source event refs, lifecycle, and projection rules.
+- `TableRun` — owns one active expedition/run: event receipts, current situation, local projections, dice/ruling receipts, and links back to campaign records.
+- `AdventureModule` — owns static templates: locations, fronts, treasure parcel templates, SafeHaven templates, and module-local supplements.
+- `OseRulesCatalog` / `CharacterAdvancementCatalog` — source-backed lookup artifact for basic class options, XP thresholds, creation/level-up procedures, and source refs; stored as a dedicated Referee-loadable artifact rather than hardcoded Worker state.
+- `TreasureParcel` — module-authored reward template with gp value / extraction risk / source refs.
+- `CampaignTreasureParcelState` — campaign-scoped lifecycle state for discovered/claimed/carried/cached/lost/recovered parcel instances.
+- `SafeHaven` — domain abstraction for OSE Base Town / functional base capabilities; backed by location/module data but not hardcoded to tavern/town.
+- `RecoveryBoundary` — the table/world condition where recovered treasure counts for XP.
+- `XpLedger` — campaign-scoped canonical XP award records with TableRun event references.
+- `LevelingSession` — bounded procedure for applying level-up once threshold and downtime/safety requirements are met.
+
+Fenwater should only contribute concrete `AdventureModule` components that satisfy these interfaces. It should not define the catalog or advancement rules.
+
+Module/scenario design should actively draw from the full OSE corpus when useful. If Fenwater needs monsters, spells, magic items, retainers, domain hooks, treasure types, or special procedures, add them as source-backed module/campaign components with safe player projections and source refs. Do not invent generic fantasy substitutes when the OSE corpus has the relevant material.
+
+### AdventureModule treasure parcel templates + campaign parcel state
+
+Add a typed treasure parcel template shape, probably carried in `AdventureModuleComponent.payload` first, then promoted to domain when stable:
+
+```ts
+type TreasureParcelTemplate = {
+  id: string;
+  title: string;
+  gpValue: number;
+  bulk?: string;
+  visibleClue: string;
+  hiddenPlacement?: string;
+  extractionRisk: string;
+  sourceRefs: string[];
+};
+```
+
+For Fenwater, convert current leverage artifacts into XP-aware parcels where appropriate and add more. The goal is to make Fenwater a deeper, more realistic OSE-backed campaign scenario, not a generic demo swamp.
+
+Add source-backed, module-fitting reward/loot texture:
+
+- coin/jewelry/silver parcels;
+- salvage rights with gp value only after secured;
+- records/ledger pages that unlock treasure, not necessarily treasure themselves;
+- bulky wet goods that require extraction choices;
+- magic items or weird treasures from the OSE corpus when they fit Fenwater;
+- treasure maps, faction claims, appraisals, black-market exits, and domain hooks where useful.
+
+### Extraction / return-to-safety
+
+Treasure XP should require getting value to safety.
+
+Treasure parcel lifecycle is campaign-scoped. The module defines the parcel template; the campaign records what happened to the parcel instance across TableRuns/sessions.
+
+Minimum states:
+
+- `undiscovered`
+- `discovered`
+- `claimed`
+- `carried`
+- `cached`
+- `lost`
+- `recovered_to_safety`
+
+The Referee decides when safety is reached: rest site, town contact, secured cache, or end-of-expedition return. Capture that decision in the event log and campaign treasure state.
+
+Recovered treasure **must not** become XP immediately on the same danger beat. Canonical lifecycle is two distinct procedures: `RecoveryBoundary` moves a carried parcel to `recovered_to_safety`, then a bounded **settlement/accounting procedure** converts recovered treasure into `XpLedgerEntry` records. Keep the old-school "get home and count the haul" feel: return to base, sort loot, appraise/sell/barter where needed, award XP, check level eligibility, and decide town actions.
+
+### SafeHaven / Base Town abstraction
+
+Canonical domain term: `SafeHaven`.
+
+OSE source language includes **Base Town**, but Agent Dungeon should model the capability more generally. A SafeHaven may be a town, tavern, inn, reed boat, dry camp, patron house, shrine, guild hall, or other campaign-defined safe-enough place.
+
+A SafeHaven should expose services/capabilities rather than imply one hardcoded town flow:
+
+```ts
+type SafeHaven = {
+  id: string;
+  locationRef: string;
+  services: Array<"rest" | "buy_gear" | "sell_treasure" | "appraise" | "barter" | "hire_retainers" | "level_up" | "rumors" | "bank_or_cache">;
+  recoveryCapabilities: string[];
+  marketCapabilities: string[];
+  riskProfile?: string;
+  sourceRefs: string[];
+};
+```
+
+`base_town` can be a subtype/tag/source alias. Do not hardcode tavern as the only safe return/leveling place.
+
+Settlement XP requires a SafeHaven with `settle_treasure`. A RecoveryBoundary without that capability may cache or protect a parcel, but it leaves the parcel `cached` / not-yet-settled until the party reaches a settlement-capable SafeHaven.
+
+Level-up commitment requires a separate SafeHaven capability: `train_level_up`. A `settle_treasure` SafeHaven may create XP ledger entries and mark characters eligible, but it should not automatically apply a level unless that SafeHaven also supports training or the campaign has an explicit source-backed exception/ruling.
+
+Fenwater should deliberately include at least one settlement-capable SafeHaven that is not training-capable, plus one training-capable SafeHaven/contact that must be earned, revealed, or reached. The intended arc is: recover haul → settle XP at a SafeHaven → mark LevelingSession eligible → pursue trainer/contact/location → commit level-up.
+
+A 150–300 beat level-up is an observational smell-test, not a scripted guarantee. If level-up does not emerge by that range, run longer samples as needed (400+ beats is valid) and diagnose the campaign ecology before changing rules or forcing treasure. Tune for interesting OSE play: meaningful expeditions, danger, extraction, downtime, trainer access, and narrative structure. Do not cheat thresholds, inject milestone XP, or reveal rewards just because a beat counter says it is time.
+
+The unit of tuning is the **CampaignArc**, composed of expeditions, not a raw beat counter. A healthy arc looks like: leave SafeHaven with intent → explore/contact/procedure → claim treasure/information/leverage → choose push-on or return → recover/settle/downtime → train/hire/follow a new lead → launch the next expedition. TableRun beats are the execution log; CampaignArc is the shape being tuned.
+
+Promote `CampaignArc` into a lightweight domain schema now instead of leaving it as Worker prose. Initial shape should be small and observable: `id`, `campaignId`, `status` (`opening | expedition | returning | settlement | downtime | training | closed`), `expeditionIds`, `activeLeadFactIds`, `treasureParcelIds`, `xpLedgerEntryIds`, `levelingSessionIds`, `summary`, and `updatedAt`. It should help the monitor and Referee describe campaign structure without scripting chapters. Put the first schema in `packages/domain/src/advancement.ts` and export it from `packages/domain/src/index.ts`; split to a dedicated campaign-arc module later only if it grows beyond the advancement/ecology seam. The monitor should display `CampaignArc.status` as the primary story state above raw TableRun `phase`, because `phase=exploration` is too low-level to explain whether the campaign is launching, delving, returning, settling, or pursuing training.
+
+Autonomous play should optimize **arc momentum**, with survival and treasure extraction as constraints. The Referee should keep the table playing the game: make a meaningful expedition choice, take a risk, resolve the consequence, bring something back or lose something, change campaign state, and choose the next pressure. Do not optimize purely for survival/turtling or treasure/suicide-running.
+
+PlayerAgents should receive a compact player-safe `CampaignArcBrief` when choice-relevant. It should tell them where they are in the arc, what they are trying to do, why it matters, known risks, and plausible next moves. It must orient and motivate without railroading: present the current aim and stakes, but keep multiple viable choices open and never reveal hidden treasure placement, Referee-only facts, or forced outcomes.
+
+`CampaignArcBrief` should be derived from committed player-visible campaign state: `CampaignArc.status`, player-visible `CampaignFact`s, known SafeHavens, party-visible carried/recovered treasure, open expedition aim, and public clocks/threats. It may include Referee-authored player-safe stakes only when those stakes have been committed as an event/fact. It must not include hidden planning hints or uncommitted Referee intent.
+
+### Player-facing advancement/town skills
+
+PlayerAgents should understand the loop enough to make strategic choices. They should not read hidden treasure placement or rules corpus, but they should have player-safe skills/artifacts for:
+
+- when and why to return to base;
+- what risks/penalties exist for pressing on while loaded, wounded, low on supplies, or chased;
+- how treasure becomes XP through recovery/settlement;
+- how leveling/resting works once safe;
+- what town actions are available: buy gear, sell/appraise loot, negotiate, barter, hire help, rest, recover, follow rumors, bank/cache valuables.
+
+This should be exposed as PlayerAgent skills/table artifacts when choice-relevant, not as a raw rules dump.
+
+### Town/base settlement procedure
+
+Add a procedure for town/base downtime. It should support at least:
+
+- return-to-safety declaration and Referee validation;
+- loot sorting and appraisal;
+- selling treasure or converting salvage rights into gp value;
+- barter/negotiation where the module/town supports it;
+- buying equipment/supplies;
+- rest/recovery;
+- XP accounting;
+- level-up eligibility and leveling session;
+- optional hooks for retainers/hirelings and rumors.
+
+The base may be a tavern, inn, camp, patron house, guild hall, or other campaign-defined safe-enough place. Do not hardcode "tavern" as the only leveling location.
+
+### XP ledger
+
+Add a canonical XP ledger entry shape:
+
+```ts
+type XpLedgerEntry = {
+  id: string;
+  at: string;
+  reason: string;
+  source: "treasure" | "monster" | "adjustment";
+  treasureParcelIds?: string[];
+  totalXp: number;
+  participants: Array<{ characterId: string; xp: number }>;
+  sourceRefs: string[];
+  refereeNotes?: string[];
+};
+```
+
+The XP ledger is campaign-scoped immediately. TableRun state may cache current XP totals or emit award/recovery events, but parcel lifecycle, cumulative XP, and level-up eligibility belong to campaign state/ledger. TableRun events link into the ledger as receipts.
+
+XP awards should usually be created during settlement/accounting after treasure is returned to safety and value is established.
+
+### OSE character and advancement catalog artifact
+
+Keep this in the same work session/PRD, but model it as a catalog interface rather than a prototype class table. The catalog should be a dedicated artifact the Referee can pull as needed, similar to memory but with a specific rules-catalog contract and provenance expectations.
+
+Minimum catalog responsibilities:
+
+- supported OSE class ids and labels;
+- character creation options exposed by source-backed rules;
+- XP thresholds by class/level;
+- level-up changes/procedure pointers;
+- hit dice / HP advancement procedure pointers;
+- source refs/doc chunk IDs for every rule-backed entry.
+
+Lookup tables are acceptable and expected when source-backed. Store machine-readable values, short safe summaries, and pointers back to JoelClaw/OSE source material so the full source can be looked up at runtime as needed. Do **not** cache large raw rules excerpts in the catalog.
+
+Storage direction: define schemas/interfaces in `packages/domain`, but publish the catalog data as a versioned global artifact that the Referee loads on demand. This keeps the rules catalog separate from campaign memory, module content, and Worker implementation while preserving a stable typed contract.
+
+Scope direction: the base OSE ruleset/catalog/artifact is global and shared across campaigns/modules. AdventureModules may add treasure parcels, local rulings, house rules, and campaign-world-specific procedures as module/campaign supplements. Referee/campaign supplements may explicitly override base rules when useful for the table, but overrides must be loud and auditable rather than silently mutating the global base rules.
+
+The catalog may start sparse, but it must be shaped for the full OSE rule set to the extent possible. Missing entries should be `unsupported_yet` / `needs_source`, not fake generic mechanics.
+
+The Referee should have full access to the OSE corpus via JoelClaw / rules lookup whenever possible. This can be a normal Referee tool call during play, not a special ritualized event type every time. The catalog artifact is not a replacement for the source corpus; it is a fast, typed lookup for the basics the runtime needs often, with pointers back to full source docs/chunks for deeper adjudication.
+
+When a lookup materially affects durable state or player-facing consequences, capture source refs in the resulting ruling/ledger/event receipt. Do not force every rules lookup to become its own event.
+
+### Leveling sessions
+
+When a character crosses a class threshold:
+
+1. Referee marks `level_up_available`.
+2. Finish current danger beat / require safe-enough downtime.
+3. Run a bounded leveling session:
+   - consult OSE threshold/procedure receipts;
+   - support the relevant OSE class/option if it is in the corpus and source-backed;
+   - update level, HP, and any class-relevant changes;
+   - emit public summary + x-ray receipts;
+   - keep PlayerAgent context synced.
+
+Do not invent detailed class mechanics without source receipts. Prefer a broad OSE-capable schema with source-backed incremental implementation over a prototype-only class schema that will need ripping out later.
+
+## Validation plan
+
+- Tests parse treasure parcel components.
+- Tests prove XP is not awarded until extraction/return-to-safety.
+- Tests prove XP ledger entries split recovered treasure among eligible/living participants.
+- Tests prove level-up is gated by thresholds and safe-enough downtime.
+- Tests prove character creation/leveling schemas can represent OSE-supported options beyond the current prototype class set.
+- Projection tests prove PlayerAgents cannot see hidden treasure placement before reveal.
+- Tests prove PlayerAgents receive player-safe advancement/return-to-base guidance when it affects choices.
+- Tests prove settlement supports loot sorting, sale/appraisal/barter, gear buying, rest/recovery, XP accounting, and level-up availability through interfaces rather than a hardcoded tavern.
+- Production smoke: run a bounded sample where the party discovers/recovers at least one parcel, returns to a base, settles loot, and the XP ledger updates.
+
+## Open questions
+
+### Full-corpus Fenwater design direction
+
+Fenwater is the proving ground. Evolve it into a more robust, realistic, source-backed OSE campaign scenario. Do not replace it with a clean-room module.
+
+The module should not merely have a rules lookup bolted onto it. The actual Fenwater AdventureModule/campaign scenario should be designed with OSE material available:
+
+- monsters and encounter tables when useful;
+- magic items and treasure parcels;
+- spells and magical procedures when relevant;
+- retainers/hirelings and town services;
+- domain/faction hooks where they enrich long play;
+- source-backed procedures for exploration, recovery, XP, leveling, morale/reaction, and equipment.
+
+Referee access to full books remains live. The catalog/artifacts provide fast typed basics and module-specific curated ingredients, not a replacement for full source access.
+
+Fenwater expansion should happen as a balanced ecology pass, not isolated feature sprinkles. Treasure, SafeHavens, encounters/monsters, retainers, factions, magic, supplies, and procedures should reinforce each other so the risk/reward loop has actual pressure and payoff.
+
+Balance here means **authored bones plus dynamic adaptation**. The module provides enough stable, source-backed structure to avoid mush: locations, factions, treasure, monsters, services, pressures, procedures, and source refs. The Referee dynamically adapts those ingredients to player decisions, consequences, and table tone. Do not push the party through a preconceived plot; use the module as a living situation that responds.
+
+Fenwater expansion should abstract OSE material into scenario components with source refs and player-safe projections. Example component families:
+
+- `MonsterIngredient` / encounter candidates;
+- `TreasureParcelTemplate` / magic item placement;
+- `SafeHavenTemplate` / Base Town service capabilities;
+- `RetainerOpportunity`;
+- `FactionDomainHook`;
+- `SpellOrMagicProcedureHook`;
+- `ExplorationProcedureProfile` for light, supplies, travel, rest, morale/reaction, pursuit, and recovery.
+
+Do not paste raw rules text into public module output. Preserve source refs and safe summaries; Referee can consult the full books when adjudicating.
+
+Tabletop roleplaying is collaborative story creation between PlayerAgents and Referee. PlayerAgents need real autonomy, not prewritten scene rails. The Referee should use OSE procedures, campaign truth, and module ingredients to create interesting consequences and questions, not to force a planned story.
+
+When the Referee creates new facts during dynamic adaptation, those facts must be committed back into the campaign corpus as typed events/components/artifacts. Improvised facts cannot evaporate after narration. They become part of gameplay reality, affect future state/projections, and remain available for replay, contradiction checks, and future consequences.
+
+Canonical term: `CampaignFact`. It is a first-class domain schema, not just a conceptual label. At the end of the day, the campaign corpus is an event stream plus derived artifacts. CampaignFacts are durable facts derived from committed events and made available through projection rules. Some CampaignFacts are player-accessible because the players learned them; others remain Referee-only until revealed.
+
+Minimum `CampaignFact` shape:
+
+```ts
+type CampaignFact = {
+  id: string;
+  kind: "world" | "npc" | "location" | "faction" | "treasure" | "rule" | "relationship" | "threat" | "resource";
+  statement: string;
+  visibility: "referee_private" | "party_known" | "player_private" | "player_public" | "audience_xray";
+  knownBy?: string[];
+  sourceEventIds: string[];
+  sourceRefs?: string[];
+  status: "active" | "superseded" | "resolved" | "false_belief" | "rumor";
+  truthState?: "verified" | "uncertain" | "false" | "referee_secret";
+  publicClaim?: string;
+  linkedPrivateFactIds?: string[];
+  supersedesFactIds?: string[];
+  tags?: string[];
+};
+```
+
+CampaignFacts should support rumors and false beliefs as first-class gameplay reality. A false belief can be real in the players' experienced world while still being false in Referee truth. Use linked facts rather than putting player claim and hidden truth on one leak-prone object:
+
+- player-known rumor/belief fact: visible to the relevant party/player projection;
+- linked Referee-private fact: hidden cause, contradiction, or unrevealed reality.
+
+Do not reveal the private truth through player projections until play reveals it. The fun dies if the fact model collapses rumor and truth into one visible blob.
+
+Visibility enum should be robust and explicit. Avoid bare `public`; it is too ambiguous. Prefer:
+
+- `referee_private` — hidden truth / unrevealed facts / private rulings.
+- `party_known` — known by the whole party/table.
+- `player_private` — known only by one PlayerAgent/private sandbox.
+- `player_public` — safe to expose to PlayerAgents generally.
+- `audience_xray` — visible to Joel/operator/audience monitor but not to PlayerAgents.
+
+The x-ray monitor/audience view for Joel may show Referee-private facts, drafts, hidden causes, and receipts. PlayerAgent capability access must not. Treat player projection security as the hard boundary; monitor visibility is an observability product choice.
+
+Do not let CampaignFacts become an untyped string bin. They drive projections, contradiction checks, PlayerAgent knowledge, Referee memory, and future consequences.
+
+This aligns with `.brain/decisions/open-world-player-driven-adventure.svx`: run beats, not chapters; use generative play inside typed rails.
+
+First Fenwater ecology pass should include all mutually reinforcing essentials:
+
+- treasure/reward parcels with extraction pressure;
+- SafeHavens/Base Town services for rest, trade, selling, appraising, buying, rumors, and leveling;
+- encounter/monster ecology with OSE-backed candidates and noncombat outs;
+- retainers/hirelings and faction contacts;
+- magic items/weird treasure where source-backed and module-fitting;
+- supplies/light/time/recovery pressures;
+- domain/faction hooks that make long play feel like a living place.
+
+### Encounter opportunity / OSE procedure correction
+
+A production run reached beat 69 with heavy danger but no `encounter_start`, `combat_round`, or initiative events in the retained window. The run had many cutter/threat/damage references, but the runtime converted danger into repeated hard-choice prose instead of entering OSE encounter procedure.
+
+Corrected invariant: PlayerAgents choose **how** to engage; the Referee mitigates/adjudicates with OSE-ish procedure and rolls. The Referee should not force combat, but hostile/uncertain contact should become an `EncounterOpportunity` where players choose approach:
+
+- parley/negotiate → reaction roll / morale posture;
+- hide/ambush/scout → surprise and encounter distance;
+- fight/hold/block → initiative and combat round/objective procedure;
+- flee/evade/chase → evasion/pursuit procedure;
+- rescue/secure treasure under pressure → objective clock + checks with consequences.
+
+OSE receipts for this correction:
+
+- `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s243` — adventuring turn sequence routes encounters to Encounters procedure.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s541/s557/s572` — dungeon/wilderness/waterborne sequence references Encounter procedure.
+- `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s259` and `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s585/s1298` — Encounter Sequence includes surprise, distance, initiative, actions.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s664` — maintaining challenge means presenting meaningful choices.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s665` — Referee describes effects/unknowns without revealing hidden truth.
+
+Next runtime seam: introduce a generic `EncounterOpportunity`/`EncounterApproach` domain shape and detection path so hostile actors, maxed threat clocks, immediate violence, or physical danger trigger procedure choice instead of cinematic death spiral loops.
+
+### Implementation order inside one work session
+
+The durable direction is full OSE support to the extent possible. The sequencing should still protect the interfaces:
+
+1. Define the Campaign/TableRun/AdventureModule/OSE catalog aggregate boundaries in code comments/tests.
+2. Define the catalog/treasure/XP/leveling interfaces.
+3. Define the catalog artifact format and Referee loading path, while preserving Referee access to the full JoelClaw/OSE corpus.
+4. Populate a small source-backed subset needed for the tracer bullet as a versioned artifact.
+5. Add Fenwater treasure parcels as data against the generic interfaces.
+6. Wire recovery-to-safety → XP ledger → level-up availability → leveling session.
+7. Add dynamic Referee adaptation hooks that consume authored module ingredients and player intent without turning those ingredients into a fixed plot sequence.
+8. Add a commitment path for newly created CampaignFacts: typed event → campaign component/artifact/state update → projection availability.
+9. Connect CampaignFacts to the Brain/artifact organization the Referee can access, while preserving player-safe projections for facts the players actually know.
+
+Do not hardcode a tiny prototype threshold table and call it the domain model. Do not put module-specific treasure or advancement assumptions into the catalog. Do not mistake authored content for rails; authored content is the world substrate that player/referee collaboration acts on. Do not let improvised facts remain disposable narration if they affect the fiction or mechanics.
