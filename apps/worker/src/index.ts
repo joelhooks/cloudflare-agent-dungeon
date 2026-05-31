@@ -2958,8 +2958,8 @@ export class Referee extends Agent<Env, RefereeState> {
     return DomainCampaignArcBriefSchema.parse({
       schema: "CampaignArcBrief.v1",
       status: arc.status,
-      aim: arc.status === "returning" && carried.length ? "Get the visible haul or wounded ally back to a SafeHaven without losing the thread." : state.activeQuestion,
-      whyItMatters: arc.summary,
+      aim: compactText(arc.status === "returning" && carried.length ? "Get the visible haul or wounded ally back to a SafeHaven without losing the thread." : state.activeQuestion, 280),
+      whyItMatters: compactText(arc.summary, 360),
       knownRisks,
       visibleChoices,
       sourceFactIds: visibleFacts.map((fact) => fact.id)
