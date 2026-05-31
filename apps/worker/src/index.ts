@@ -61,7 +61,26 @@ import {
   TableRunOpeningSeedSchema as DomainTableRunOpeningSeedSchema,
   TableRunLimitsSchema as DomainTableRunLimitsSchema,
   TableRunSummaryCountersSchema as DomainTableRunSummaryCountersSchema,
+  EncounterOpportunitySchema as DomainEncounterOpportunitySchema,
+  CampaignFactSchema as DomainCampaignFactSchema,
+  CampaignSafeHavenStateSchema as DomainCampaignSafeHavenStateSchema,
+  CampaignTreasureParcelStateSchema as DomainCampaignTreasureParcelStateSchema,
+  CampaignArcSchema as DomainCampaignArcSchema,
+  CampaignArcBriefSchema as DomainCampaignArcBriefSchema,
+  DowntimeActionSchema as DomainDowntimeActionSchema,
+  ExpeditionSessionSchema as DomainExpeditionSessionSchema,
+  MemoryCompactionReceiptSchema as DomainMemoryCompactionReceiptSchema,
+  LevelingSessionSchema as DomainLevelingSessionSchema,
+  TableRunAppendLogEntrySchema as DomainTableRunAppendLogEntrySchema,
+  TreasureParcelTemplateSchema as DomainTreasureParcelTemplateSchema,
+  SafeHavenTemplateSchema as DomainSafeHavenTemplateSchema,
+  XpLedgerEntrySchema as DomainXpLedgerEntrySchema,
+  settleRecoveredTreasure,
+  treasureParcelXpValue,
+  toPlayerCampaignFactProjection,
   advanceCombatObjective as advanceDomainCombatObjective,
+  classifyEncounterApproach,
+  detectEncounterOpportunity,
   tableRunOpeningSeedComponentIds,
   validateTableRunOpeningSeedForModule,
   normalizeTableRunPatch,
@@ -81,10 +100,22 @@ import {
   type CharacterCreationPlan,
   type DiceRoll,
   type TableRunOpeningSeed,
+  type EncounterOpportunity,
   type HookId,
   type PlayerId,
   type RefereeOutcome,
   type TableRunCoreState,
+  type CampaignFact,
+  type CampaignSafeHavenState,
+  type CampaignTreasureParcelState,
+  type CampaignArc,
+  type CampaignArcBrief,
+  type DowntimeAction,
+  type ExpeditionSession,
+  type MemoryCompactionReceipt,
+  type LevelingSession,
+  type TableRunAppendLogEntry,
+  type XpLedgerEntry,
   type Store,
   type StoreId
 } from "@cloudflare-agent-dungeon/domain";
@@ -1959,7 +1990,7 @@ async function runPrototypeModelText(env: Env, prompt: string, maxTokens = 500):
   };
   const options = config.gatewayId && !config.isWorkersAi ? { gateway: { id: config.gatewayId } } : undefined;
   let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const result = await withPrototypeTimeout(options ? env.AI.run(config.model, request, options as never) : env.AI.run(config.model, request), "prototype text model call");
       const text = extractChatText(result).trim();
@@ -2000,7 +2031,7 @@ async function runPrototypeModelJson(env: Env, prompt: string, maxTokens = 1200)
       temperature: attempt === 0 ? 0.7 : 0.1,
       ...(config.isWorkersAi ? { chat_template_kwargs: { thinking: false, enable_thinking: false }, reasoning_effort: null } : {})
     };
-    const result = options ? await env.AI.run(config.model, request, options as never) : await env.AI.run(config.model, request);
+    const result = await withPrototypeTimeout(options ? env.AI.run(config.model, request, options as never) : env.AI.run(config.model, request), "prototype JSON model call", 60_000);
     lastText = extractChatText(result);
     try {
       return parseJsonObject(lastText);
@@ -2055,13 +2086,20 @@ function trimPlanToBudget(plan: CharacterCreationPlan, stores: Record<StoreId, S
   return { ...plan, purchases, planSource: plan.planSource === "kimi" ? "repaired_kimi" : (plan.planSource ?? "unknown") };
 }
 
-function assertDistinctCharacterName(plan: CharacterCreationPlan, playerName: string): CharacterCreationPlan {
+function assertDistinctCharacterName(plan: CharacterCreationPlan, playerName: string, existingNames: Iterable<string> = []): CharacterCreationPlan {
   const characterName = plan.name.trim().toLowerCase();
   const normalizedPlayer = playerName.trim().toLowerCase();
   if (characterName === normalizedPlayer || characterName.startsWith(`${normalizedPlayer} `) || characterName.startsWith(`${normalizedPlayer}-`)) {
     throw new Error(`Generated character name "${plan.name}" reuses player name "${playerName}"; no canned replacement names are allowed.`);
   }
-  return plan;
+  const existing = new Set([...existingNames].map((name) => name.trim().toLowerCase()).filter(Boolean));
+  if (!existing.has(characterName)) return plan;
+  const byname = `${plan.name.trim()} of ${playerName.trim() || "the table"}`;
+  return { ...plan, name: byname };
+}
+
+function subjectVerb(subject: string, singular: string, plural: string): string {
+  return /\b(cutters|guards|bandits|collectors|watchers|sleepers|debtors|things|floods)\b/i.test(subject) ? plural : singular;
 }
 
 function normalizeItemId(itemId: string): string {
@@ -2131,9 +2169,9 @@ const TownModuleTableOpeningSeedSchema = DomainTableRunOpeningSeedSchema;
 type TownModuleTableOpeningSeed = z.infer<typeof TownModuleTableOpeningSeedSchema>;
 
 const LooseStringArraySchema = z.preprocess((value) => {
-  if (Array.isArray(value)) return value.map((item) => compactText(typeof item === "string" ? item : JSON.stringify(item), 480));
-  if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).map((item) => compactText(typeof item === "string" ? item : JSON.stringify(item), 480));
-  if (typeof value === "string" && value.trim()) return [compactText(value.trim(), 480)];
+  if (Array.isArray(value)) return value.map((item) => compactText(typeof item === "string" ? item : JSON.stringify(item), 220));
+  if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).map((item) => compactText(typeof item === "string" ? item : JSON.stringify(item), 220));
+  if (typeof value === "string" && value.trim()) return [compactText(value.trim(), 220)];
   return [];
 }, z.array(z.string()));
 
@@ -2145,6 +2183,7 @@ const TownModuleTableStateSchema = z.object({
   lifecycle: z.enum(["idle", "session_zero", "opening_selection", "running", "stopped", "failed"]).default("idle"),
   runId: z.string().optional(),
   runningFiberId: z.string().optional(),
+  waitStatus: z.object({ phase: z.string(), detail: z.string().optional(), startedAt: z.string() }).optional(),
   townId: z.string(),
   townName: z.string(),
   artifactRepo: z.string(),
@@ -2167,12 +2206,25 @@ const TownModuleTableStateSchema = z.object({
   clocks: z.array(DomainTableClockSchema).default([]),
   party: z.array(DomainTablePartyMemberSchema),
   combat: DomainCombatStateSchema.optional(),
+  encounterOpportunity: DomainEncounterOpportunitySchema.optional(),
   lastEncounter: DomainLastEncounterSchema.optional(),
   difficulty: z.number().int().min(1).max(8).default(1),
   runLimits: DomainTableRunLimitsSchema.optional(),
   playerArtifacts: z.record(z.string(), z.object({ soulMd: z.string(), identityMd: z.string() })).default({}),
   partyMemory: z.record(z.string(), z.object({ knows: z.array(z.string()).default([]), suspects: z.array(z.string()).default([]), goals: z.array(z.string()).default([]), losses: z.array(z.string()).default([]), tactics: z.array(z.string()).default([]), relationships: z.array(z.string()).default([]) })).default({}),
   refereeMemory: z.object({ revealedFacts: z.array(z.string()).default([]), unresolvedThreads: z.array(z.string()).default([]), npcState: z.array(z.string()).default([]), clocksExplained: z.array(z.string()).default([]), hiddenStillPrivate: z.array(z.string()).default([]) }).default({ revealedFacts: [], unresolvedThreads: [], npcState: [], clocksExplained: [], hiddenStillPrivate: [] }),
+  campaignFacts: z.record(z.string(), DomainCampaignFactSchema).default({}),
+  safeHavens: z.record(z.string(), DomainCampaignSafeHavenStateSchema).default({}),
+  treasureParcels: z.record(z.string(), DomainCampaignTreasureParcelStateSchema).default({}),
+  xpLedger: z.array(DomainXpLedgerEntrySchema).default([]),
+  campaignArc: DomainCampaignArcSchema.optional(),
+  campaignArcBrief: DomainCampaignArcBriefSchema.optional(),
+  expedition: DomainExpeditionSessionSchema.optional(),
+  downtimeActions: z.array(DomainDowntimeActionSchema).default([]),
+  memoryCompactions: z.array(DomainMemoryCompactionReceiptSchema).default([]),
+  levelingSessions: z.array(DomainLevelingSessionSchema).default([]),
+  fullEventLog: z.array(DomainTableRunAppendLogEntrySchema).default([]),
+  fullEventLogTrimmed: z.number().int().nonnegative().default(0),
   stall: z.object({ questionKey: z.string(), count: z.number().int().nonnegative() }).optional(),
   events: z.array(TownModuleTableEventSchema),
   committedBeatIds: z.array(z.number().int().nonnegative()).default([]),
@@ -2184,6 +2236,9 @@ const TownModuleTableStateSchema = z.object({
   error: z.string().optional()
 });
 
+const TOWN_TABLE_BEAT_TIMEOUT_MS = 2 * 60 * 1000;
+const TOWN_TABLE_STALE_WAIT_MS = 4 * 60 * 1000;
+
 type TownModuleTableState = z.infer<typeof TownModuleTableStateSchema>;
 
 function tableSafeTownModuleTableState(state: TownModuleTableState): TownModuleTableState {
@@ -2192,6 +2247,10 @@ function tableSafeTownModuleTableState(state: TownModuleTableState): TownModuleT
     ...(state.openingSeed ? { openingSeed: { ...state.openingSeed, refereeNotes: [] } } : {}),
     playerArtifacts: {},
     partyMemory: {},
+    campaignFacts: Object.fromEntries(Object.entries(state.campaignFacts).map(([id, fact]) => [id, toPlayerCampaignFactProjection(fact)]).filter((entry): entry is [string, NonNullable<ReturnType<typeof toPlayerCampaignFactProjection>>] => Boolean(entry[1]))),
+    fullEventLog: state.fullEventLog.filter((entry) => entry.visibility === "public"),
+    safeHavens: Object.fromEntries(Object.entries(state.safeHavens).filter(([, haven]) => haven.knownToParty)),
+    treasureParcels: Object.fromEntries(Object.entries(state.treasureParcels).filter(([, parcel]) => parcel.state !== "undiscovered")),
     refereeMemory: {
       revealedFacts: state.refereeMemory.revealedFacts,
       unresolvedThreads: state.refereeMemory.unresolvedThreads,
@@ -2562,7 +2621,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const prototypeDev = kind === "tavern-town" || kind === "town-table" ? isPrototypeBrainDevRequest(ctx.request, this.env) : false;
     const requestUrl = new URL(ctx.request.url);
     const requestedTownTableView = requestUrl.searchParams.get("view");
-    const townTableView = kind === "town-table" ? (requestedTownTableView === "table" ? "table" : requestedTownTableView === "split" ? "split" : "xray") : undefined;
+    const townTableView = kind === "town-table" ? (requestedTownTableView === "xray" && prototypeDev ? "xray" : requestedTownTableView === "split" && prototypeDev ? "split" : "table") : undefined;
     if (townForgeRaw) this.rawTownForgeConnectionIds.add(connection.id);
     connection.setState({
       ...(connection.state as PrototypeSocketConnectionState | undefined),
@@ -2686,7 +2745,7 @@ export class Referee extends Agent<Env, RefereeState> {
   private emitTownTableSocketEvent(event: TownModuleTableSocketEvent): void {
     for (const connection of this.getConnections("town-table-monitor")) {
       const connectionState = connection.state as PrototypeSocketConnectionState | undefined;
-      const isXray = connectionState?.townTableView !== "table";
+      const isXray = connectionState?.townTableView === "xray" || connectionState?.townTableView === "split";
       if (event.type === "town_table.event" && !isXray && event.event.visibility !== "public") continue;
       const safeEvent = event.type === "town_table.event" && !isXray
         ? { ...event, event: (({ devText: _devText, ...publicEvent }) => publicEvent)(event.event) }
@@ -2701,7 +2760,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const state = this.getTownModuleTableState();
     this.sendTownTableSocketEvent(connection, {
       type: "town_table.state",
-      state: monitorTownModuleTableState(state, { xray: (connection.state as PrototypeSocketConnectionState | undefined)?.townTableView !== "table" }),
+      state: monitorTownModuleTableState(state, { xray: ((connection.state as PrototypeSocketConnectionState | undefined)?.townTableView === "xray" || (connection.state as PrototypeSocketConnectionState | undefined)?.townTableView === "split") }),
       reason,
       at: new Date().toISOString(),
       campaignId: this.name
@@ -2766,6 +2825,301 @@ export class Referee extends Agent<Env, RefereeState> {
     });
   }
 
+  private seedTownTableAdvancementState(module: AdventureModule, campaignId: string): Pick<TownModuleTableState, "safeHavens" | "treasureParcels" | "xpLedger"> {
+    const safeHavens: Record<string, CampaignSafeHavenState> = {};
+    const treasureParcels: Record<string, CampaignTreasureParcelState> = {};
+    for (const component of module.components) {
+      if (component.kind === "safeHaven") {
+        const template = DomainSafeHavenTemplateSchema.parse(component.payload);
+        safeHavens[template.id] = DomainCampaignSafeHavenStateSchema.parse({
+          safeHavenId: template.id,
+          templateId: template.id,
+          knownToParty: false,
+          availableCapabilities: template.capabilities,
+          standing: "tenuous"
+        });
+      }
+      if (component.kind === "treasure") {
+        const template = DomainTreasureParcelTemplateSchema.parse(component.payload);
+        treasureParcels[`parcel-${template.id}`] = DomainCampaignTreasureParcelStateSchema.parse({
+          parcelId: `parcel-${template.id}`,
+          templateId: template.id,
+          campaignId,
+          state: "undiscovered",
+          currentHolder: { kind: "unknown" },
+          xpValueGp: treasureParcelXpValue(template)
+        });
+      }
+    }
+    return { safeHavens, treasureParcels, xpLedger: [] };
+  }
+
+  private oseLevelTwoThreshold(className?: string): { xp: number; sourceRef: string } {
+    const key = (className ?? "").toLowerCase();
+    if (key === "thief") return { xp: 1200, sourceRef: "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s129" };
+    if (key === "cleric") return { xp: 1500, sourceRef: "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s111" };
+    if (key === "fighter" || key === "halfling") return { xp: 2000, sourceRef: "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s118" };
+    if (key === "dwarf") return { xp: 2200, sourceRef: "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s134" };
+    if (key === "magic-user") return { xp: 2500, sourceRef: "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s151" };
+    if (key === "elf") return { xp: 4000, sourceRef: "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s130" };
+    return { xp: 2000, sourceRef: "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s118" };
+  }
+
+  private hitDieForTownTableClass(className?: string): number {
+    const key = (className ?? "").toLowerCase();
+    if (key === "fighter" || key === "dwarf") return 8;
+    if (key === "cleric" || key === "elf" || key === "halfling") return 6;
+    return 4;
+  }
+
+  private xpTotalsByCharacter(xpLedger: XpLedgerEntry[]): Record<string, number> {
+    const totals: Record<string, number> = {};
+    for (const entry of xpLedger) for (const participant of entry.participants) totals[participant.characterId] = (totals[participant.characterId] ?? 0) + participant.shareXp;
+    return totals;
+  }
+
+  private advanceTownTableTreasureAndDowntime(event: TownModuleTableEvent, state: TownModuleTableState, at: string): Pick<TownModuleTableState, "safeHavens" | "treasureParcels" | "xpLedger"> {
+    const treasureParcels = { ...state.treasureParcels };
+    const safeHavens = { ...state.safeHavens };
+    let xpLedger = state.xpLedger;
+    const text = event.text.toLowerCase();
+    const parcelMatchesText = (parcel: CampaignTreasureParcelState) => {
+      const haystack = `${parcel.templateId} ${parcel.parcelId}`.toLowerCase();
+      if (/ledger/.test(text)) return /ledger/.test(haystack);
+      if (/bond|bailiff|wax|packet/.test(text)) return /bond|bailiff/.test(haystack);
+      if (/pump|salvage|valve|tool roll|tool/.test(text)) return /pump|salvage/.test(haystack) || /key|lockwheel/.test(haystack);
+      if (/strongbox|silver|writ/.test(text)) return /strongbox|silver/.test(haystack);
+      if (/key|lockwheel|valve/.test(text)) return /key|lockwheel/.test(haystack);
+      if (/token|shell/.test(text)) return /token|shell/.test(haystack);
+      return /evidence|treasure|silver|cache|coffer|haul/.test(text);
+    };
+    const explicitClaim = /claim|grab|take|secure|recover|carry|stow|stash|haul|pull .*free|lift .*out/.test(text);
+    const firstParcel = Object.values(treasureParcels).find((parcel) => parcel.state === "undiscovered" && event.kind === "ruling" && explicitClaim && parcelMatchesText(parcel));
+    if (firstParcel) {
+      treasureParcels[firstParcel.parcelId] = DomainCampaignTreasureParcelStateSchema.parse({ ...firstParcel, state: "claimed", currentHolder: { kind: "party" }, discoveredInRunId: state.runId, claimedInRunId: state.runId, receiptEventIds: takeUniqueStrings([event.id, ...firstParcel.receiptEventIds], 20) });
+    }
+    const returning = (event.kind === "commit" || event.kind === "ruling" || event.kind === "world_update") && /safe ?haven|stove boat|alder knoll|dry camp|settle treasure|stash treasure|recover(?:ed)? to safety/.test(text);
+    if (returning) {
+      const firstHaven = Object.values(safeHavens).find((haven) => text.includes(haven.safeHavenId.replace(/^fenwater-safehaven-/, "").replaceAll("-", " "))) ?? Object.values(safeHavens).find((haven) => /stove boat/.test(text) ? /stove-boat/.test(haven.safeHavenId) : /alder knoll|dry camp/.test(text) ? /alder-knoll/.test(haven.safeHavenId) : /pump/.test(text) ? /pump/.test(haven.safeHavenId) : false) ?? Object.values(safeHavens)[0];
+      if (firstHaven) safeHavens[firstHaven.safeHavenId] = DomainCampaignSafeHavenStateSchema.parse({ ...firstHaven, knownToParty: true, lastVisitedRunId: state.runId, standing: firstHaven.standing ?? "tenuous" });
+      const carried = Object.values(treasureParcels).find((parcel) => parcel.state === "claimed" || parcel.state === "carried");
+      if (carried) {
+        treasureParcels[carried.parcelId] = DomainCampaignTreasureParcelStateSchema.parse({ ...carried, state: "recovered_to_safety", currentHolder: firstHaven ? { kind: "safe_haven", safeHavenId: firstHaven.safeHavenId } : { kind: "party" }, recoveredInRunId: state.runId, safeHavenId: firstHaven?.safeHavenId, receiptEventIds: takeUniqueStrings([event.id, ...carried.receiptEventIds], 20) });
+      }
+    }
+    const recovered = Object.values(treasureParcels).filter((parcel) => parcel.state === "recovered_to_safety").filter((parcel) => !/lockwheel-key/.test(parcel.templateId)).filter((parcel) => !xpLedger.some((entry) => entry.sourceParcelIds?.includes(parcel.parcelId)));
+    const settlementHaven = Object.values(safeHavens).find((haven) => haven.availableCapabilities.includes("settle_treasure") && recovered.some((parcel) => parcel.safeHavenId === haven.safeHavenId));
+    if (settlementHaven && recovered.length) {
+      const award = settleRecoveredTreasure({ campaignId: this.name, ...(state.runId ? { runId: state.runId } : {}), eventId: event.id, safeHaven: settlementHaven, parcels: recovered, participantCharacterIds: state.party.map((member) => member.characterId ?? member.playerId), rulesReceiptIds: ["old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s664", "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s665"], createdAt: at });
+      if (award) {
+        xpLedger = [award.xpLedgerEntry, ...xpLedger];
+        for (const parcel of award.settledParcels) treasureParcels[parcel.parcelId] = parcel;
+      }
+    }
+    return { safeHavens, treasureParcels, xpLedger };
+  }
+
+  private campaignArcFromTownTableState(state: TownModuleTableState, at: string): CampaignArc {
+    const hasTraining = state.levelingSessions.some((session) => session.status === "available" || session.status === "pending_training");
+    const hasDowntimePrompt = /settle treasure|train if eligible|hire help|gather rumors|launch the next expedition/i.test(state.activeQuestion);
+    const hasRecovered = Object.values(state.treasureParcels).some((parcel) => parcel.state === "recovered_to_safety");
+    const hasCarried = Object.values(state.treasureParcels).some((parcel) => parcel.state === "claimed" || parcel.state === "carried");
+    const status = state.lifecycle === "opening_selection" ? "opening" : hasTraining ? "training" : hasDowntimePrompt ? "downtime" : hasRecovered ? "settlement" : hasCarried || state.expedition?.lifecycle === "returning" ? "returning" : state.lifecycle === "stopped" ? "closed" : "expedition";
+    return DomainCampaignArcSchema.parse({
+      schema: "CampaignArc.v1",
+      id: `arc-${state.runId ?? this.name}`,
+      campaignId: this.name,
+      status,
+      expeditionIds: state.expedition ? [state.expedition.id] : [],
+      activeLeadFactIds: Object.values(state.campaignFacts).filter((fact) => fact.visibility !== "referee_private" && fact.lifecycle !== "resolved").slice(0, 8).map((fact) => fact.id),
+      treasureParcelIds: Object.values(state.treasureParcels).filter((parcel) => parcel.state !== "undiscovered").map((parcel) => parcel.parcelId),
+      xpLedgerEntryIds: state.xpLedger.map((entry) => entry.id),
+      levelingSessionIds: state.levelingSessions.map((session) => session.id),
+      summary: this.townTableArcSummary(status, state),
+      updatedAt: at
+    });
+  }
+
+  private townTableArcSummary(status: CampaignArc["status"], state: TownModuleTableState): string {
+    if (status === "training") return "The party has enough XP pressure to look for training access without forcing an instant level-up.";
+    if (status === "downtime") return "The party is at a SafeHaven choosing settlement, recovery, training leads, help, rumors, or the next expedition.";
+    if (status === "settlement") return "Recovered treasure is safe enough to count, appraise, or settle if the SafeHaven has that capability.";
+    if (status === "returning") return "The party is trying to get a carried haul, wounded ally, or hard-won information back to safety.";
+    if (status === "closed") return state.stoppedReason ?? "The campaign arc sample is closed.";
+    if (status === "opening") return "Session Zero and opening pressure are becoming a playable first expedition.";
+    return "The party is pursuing leads through danger, procedure, treasure pressure, and consequences.";
+  }
+
+  private campaignArcBriefFromState(state: TownModuleTableState, arc: CampaignArc): CampaignArcBrief {
+    const visibleFacts = Object.values(state.campaignFacts).filter((fact) => fact.visibility === "party_known" || fact.visibility === "player_public").slice(0, 6);
+    const carried = Object.values(state.treasureParcels).filter((parcel) => parcel.state === "claimed" || parcel.state === "carried");
+    const knownRisks = [...state.clocks.map((clock) => `${clock.name}: ${clock.value}/${clock.max}`), ...visibleFacts.filter((fact) => fact.kind === "threat").map((fact) => fact.playerSafeClaim ?? fact.claim)].slice(0, 5);
+    const visibleChoices = arc.status === "downtime" ? ["settle treasure", "train if eligible", "hire help", "gather rumors", "launch the next expedition"] : arc.status === "returning" ? ["protect the haul", "choose a safe route", "abandon weight", "cover the wounded"] : state.affordances.slice(0, 5);
+    return DomainCampaignArcBriefSchema.parse({
+      schema: "CampaignArcBrief.v1",
+      status: arc.status,
+      aim: arc.status === "returning" && carried.length ? "Get the visible haul or wounded ally back to a SafeHaven without losing the thread." : state.activeQuestion,
+      whyItMatters: arc.summary,
+      knownRisks,
+      visibleChoices,
+      sourceFactIds: visibleFacts.map((fact) => fact.id)
+    });
+  }
+
+  private expeditionFromTownTableEvent(event: TownModuleTableEvent, state: TownModuleTableState, factIds: string[], at: string): ExpeditionSession {
+    const existing = state.expedition;
+    const downedIds = state.party.filter((member) => (member.status ?? "active") !== "active" || (member.hp ?? 1) <= 0).map((member) => member.characterId ?? member.playerId);
+    const returning = /withdraw|retreat|return|safe|stove boat|alder knoll|rest|recover|cannot take normal actions|rescue\/death aftermath/i.test(event.text);
+    const lifecycle = state.tablePhase === "combat" ? "encounter" : returning ? "returning" : state.beat === 0 ? "outbound" : "exploring";
+    return DomainExpeditionSessionSchema.parse({
+      schema: "ExpeditionSession.v1",
+      id: existing?.id ?? `expedition-${state.runId ?? this.name}`,
+      campaignId: this.name,
+      runId: state.runId,
+      lifecycle,
+      safeHavenId: returning ? existing?.safeHavenId ?? "fenwater-safehaven-reedwright-stove-boat" : existing?.safeHavenId,
+      currentLocationId: state.locationId,
+      carriedParcelIds: existing?.carriedParcelIds ?? [],
+      recoveredParcelIds: existing?.recoveredParcelIds ?? [],
+      injuredCharacterIds: takeUniqueStrings([...downedIds, ...(existing?.injuredCharacterIds ?? [])], 16),
+      supplyNotes: existing?.supplyNotes ?? [],
+      openThreadFactIds: takeUniqueStrings([...factIds, ...(existing?.openThreadFactIds ?? [])], 40),
+      sourceEventIds: takeUniqueStrings([event.id, ...(existing?.sourceEventIds ?? [])], 80),
+      updatedAt: at
+    });
+  }
+
+  private downtimeActionsForTownTableEvent(event: TownModuleTableEvent, state: TownModuleTableState, at: string): DowntimeAction[] {
+    if (!(event.kind === "commit" || event.kind === "ruling" || event.kind === "world_update" || event.kind === "downtime_action") || !/cannot take normal actions|rescue\/death aftermath|rest|recover|settle|stash|hire|supplies|rumor|level up/i.test(event.text)) return state.downtimeActions;
+    const downedIds = state.party.filter((member) => (member.status ?? "active") !== "active" || (member.hp ?? 1) <= 0).map((member) => member.characterId ?? member.playerId);
+    const action = DomainDowntimeActionSchema.parse({
+      schema: "DowntimeAction.v1",
+      id: `downtime-${event.id}`,
+      campaignId: this.name,
+      safeHavenId: state.expedition?.safeHavenId ?? "fenwater-safehaven-reedwright-stove-boat",
+      kind: downedIds.length ? "recover_hp" : /rumor/i.test(event.text) ? "gather_rumors" : /settle/i.test(event.text) ? "settle_treasure" : "rest",
+      actorCharacterIds: downedIds,
+      receiptEventIds: [event.id],
+      status: "available",
+      playerSafeSummary: downedIds.length ? "Get incapacitated party members to safety before the expedition can continue." : compactText(event.text, 320),
+      createdAt: at
+    });
+    return [action, ...state.downtimeActions.filter((item) => item.id !== action.id)].slice(0, 20);
+  }
+
+  private townTableAppendLogKey(state: TownModuleTableState, sequence: number): string {
+    return `campaign-runs/${this.name}/${state.runId ?? "no-run"}/events/${sequence.toString().padStart(8, "0")}.json`;
+  }
+
+  private async findTownTableAppendLogRecord(state: TownModuleTableState, input: { eventId?: string; beat?: number; view?: "table" | "xray" }): Promise<unknown> {
+    const prefix = `campaign-runs/${this.name}/${state.runId ?? "no-run"}`;
+    const key = input.eventId
+      ? `${prefix}/event-index/${input.eventId}.json`
+      : input.beat !== undefined
+        ? (await this.env.RUNTIME_SKILLS.list({ prefix: `${prefix}/beat-index/${String(input.beat).padStart(8, "0")}/`, limit: 1 })).objects[0]?.key
+        : undefined;
+    if (!key) return undefined;
+    const recordObject = await this.env.RUNTIME_SKILLS.get(key);
+    if (!recordObject) return undefined;
+    const raw = await recordObject.json() as { entry: TableRunAppendLogEntry; event: TownModuleTableEvent };
+    if (input.view === "table" && raw.entry.visibility !== "public") return undefined;
+    if (input.view === "table") return { entry: raw.entry, event: raw.event.visibility === "public" ? { ...raw.event, devText: undefined, statePatch: undefined } : undefined };
+    return raw;
+  }
+
+  private async persistTownTableAppendLogEvent(key: string, entry: TableRunAppendLogEntry, event: TownModuleTableEvent): Promise<void> {
+    const payload = JSON.stringify({ entry, event }, null, 2);
+    const metadata = { httpMetadata: { contentType: "application/json" } };
+    const prefix = `campaign-runs/${this.name}/${entry.runId ?? "no-run"}`;
+    await Promise.all([
+      this.env.RUNTIME_SKILLS.put(key, payload, metadata),
+      this.env.RUNTIME_SKILLS.put(`${prefix}/event-index/${entry.eventId}.json`, payload, metadata),
+      this.env.RUNTIME_SKILLS.put(`${prefix}/beat-index/${String(entry.beat).padStart(8, "0")}/${entry.sequence.toString().padStart(8, "0")}.json`, payload, metadata)
+    ]);
+  }
+
+  async getTownModuleTableAppendLogRecordRpc(input: { sequence?: number; eventId?: string; beat?: number; view?: "table" | "xray" }): Promise<unknown> {
+    const state = this.getTownModuleTableState();
+    const indexed = input.eventId ? state.fullEventLog.find((entry) => entry.eventId === input.eventId) : input.beat !== undefined ? state.fullEventLog.find((entry) => entry.beat === input.beat) : undefined;
+    if ((input.eventId || input.beat !== undefined) && !indexed && input.sequence === undefined) return this.findTownTableAppendLogRecord(state, input);
+    const sequence = input.sequence ?? indexed?.sequence ?? state.fullEventLog.at(-1)?.sequence;
+    if (sequence == null) return undefined;
+    const key = this.townTableAppendLogKey(state, sequence);
+    const object = await this.env.RUNTIME_SKILLS.get(key);
+    if (!object) return undefined;
+    const raw = await object.json() as { entry: TableRunAppendLogEntry; event: TownModuleTableEvent };
+    if (input.view === "table" && raw.entry.visibility !== "public") return undefined;
+    if (input.view === "table") return { entry: raw.entry, event: raw.event.visibility === "public" ? { ...raw.event, devText: undefined, statePatch: undefined } : undefined };
+    return raw;
+  }
+
+  private memoryCompactionsForTownTableEvent(event: TownModuleTableEvent, state: TownModuleTableState, fullEventLog: TableRunAppendLogEntry[], at: string): MemoryCompactionReceipt[] {
+    if (event.kind !== "commit") return state.memoryCompactions;
+    const latestSequence = fullEventLog.at(-1)?.sequence;
+    if (latestSequence === undefined) return state.memoryCompactions;
+    const latestCompletedBucketEnd = Math.floor(latestSequence / 100) * 100 - 1;
+    if (latestCompletedBucketEnd < 99 || state.memoryCompactions.some((receipt) => receipt.eventSequenceRange.to >= latestCompletedBucketEnd)) return state.memoryCompactions;
+    const from = latestCompletedBucketEnd - 99;
+    const to = latestCompletedBucketEnd;
+    const receipt = DomainMemoryCompactionReceiptSchema.parse({
+      schema: "MemoryCompactionReceipt.v1",
+      id: `memory-${state.runId ?? this.name}-${to}`,
+      campaignId: this.name,
+      runId: state.runId,
+      scope: "referee_campaign_digest",
+      eventSequenceRange: { from, to },
+      summary: compactText(`Recent campaign digest: ${state.refereeMemory.revealedFacts.slice(0, 4).join(" | ")} Open pressure: ${state.activeQuestion}`, 1000),
+      activeFactIds: Object.keys(state.campaignFacts).slice(-20),
+      createdAt: at
+    });
+    return [receipt, ...state.memoryCompactions.filter((item) => item.id !== receipt.id)].slice(0, 20);
+  }
+
+  private applyTownTableXpAndLeveling(state: TownModuleTableState, event: TownModuleTableEvent, at: string): Pick<TownModuleTableState, "party" | "levelingSessions"> {
+    const totals = this.xpTotalsByCharacter(state.xpLedger);
+    const atSafeHaven = state.expedition?.lifecycle === "returning" || /safe ?haven|stove boat|alder knoll|dry camp|settle/i.test(event.text.toLowerCase());
+    let levelingSessions = state.levelingSessions;
+    const party = state.party.map((member) => {
+      const characterId = member.characterId ?? member.playerId;
+      const xp = totals[characterId] ?? member.xp ?? 0;
+      const currentLevel = member.level ?? 1;
+      const threshold = this.oseLevelTwoThreshold(member.className);
+      if (currentLevel < 2 && xp >= threshold.xp) {
+        const sessionId = `leveling-${characterId}-2`;
+        if (!levelingSessions.some((session) => session.id === sessionId)) {
+          levelingSessions = [DomainLevelingSessionSchema.parse({ id: sessionId, campaignId: this.name, characterId, fromLevel: 1, toLevel: 2, status: atSafeHaven ? "committed" : "available", triggerLedgerEntryIds: state.xpLedger.filter((entry) => entry.participants.some((participant) => participant.characterId === characterId)).map((entry) => entry.id), safeHavenId: state.expedition?.safeHavenId, requirements: [{ id: "safe-enough-downtime", description: "Reach a SafeHaven or other safe-enough downtime boundary before committing level-up.", satisfied: atSafeHaven }], ...(atSafeHaven ? { commitReceiptEventId: event.id } : {}), rulesReceiptIds: [threshold.sourceRef, "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s165", "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s102"] }), ...levelingSessions];
+        }
+        if (atSafeHaven) {
+          const hpGain = secureRandomInt(this.hitDieForTownTableClass(member.className));
+          const maxHp = (member.maxHp ?? member.hp ?? 1) + hpGain;
+          return { ...member, level: 2, xp, nextLevelXp: threshold.xp, maxHp, hp: Math.max(member.hp ?? 0, maxHp), status: "active" as const, intent: `leveled to 2 at ${state.expedition?.safeHavenId ?? "a SafeHaven"}` };
+        }
+      }
+      return { ...member, xp, nextLevelXp: currentLevel < 2 ? threshold.xp : undefined };
+    });
+    return { party, levelingSessions: levelingSessions.slice(0, 20) };
+  }
+
+  private campaignFactsFromTownTableEvent(event: TownModuleTableEvent, state: TownModuleTableState): CampaignFact[] {
+    const createdAt = event.at;
+    const base = { schema: "CampaignFact.v1" as const, campaignId: this.name, sourceEventIds: [event.id], createdAt };
+    const facts: CampaignFact[] = [];
+    if (event.kind === "encounter_procedure") {
+      facts.push(DomainCampaignFactSchema.parse({ ...base, id: `fact-${event.id}-procedure`, kind: "threat", lifecycle: "active", visibility: "party_known", subjectLabel: "encounter procedure", claim: compactText(event.text, 520), playerSafeClaim: compactText(event.text, 420), tags: ["encounter", "procedure"] }));
+    }
+    if (event.kind === "encounter_start") {
+      facts.push(DomainCampaignFactSchema.parse({ ...base, id: `fact-${event.id}-encounter`, kind: "threat", lifecycle: "active", visibility: "party_known", subjectLabel: "active encounter", claim: compactText(event.text, 520), playerSafeClaim: compactText(event.text, 420), tags: ["encounter"] }));
+    }
+    if (/cannot take normal actions|incapacitated|0 hp/i.test(event.text)) {
+      const subjectLabel = state.party.find((member) => event.text.includes(member.character))?.character;
+      facts.push(DomainCampaignFactSchema.parse({ ...base, id: `fact-${event.id}-injury`, kind: "injury", lifecycle: "active", visibility: "party_known", subjectLabel, claim: compactText(event.text, 520), playerSafeClaim: compactText(event.text, 420), tags: ["injury", "aftermath"] }));
+    }
+    if (event.kind === "ruling" || event.kind === "world_update") {
+      facts.push(DomainCampaignFactSchema.parse({ ...base, id: `fact-${event.id}-world`, kind: "world", lifecycle: "active", visibility: "party_known", claim: compactText(event.text, 520), playerSafeClaim: compactText(event.text, 420), tags: [event.kind] }));
+    }
+    return facts;
+  }
+
   private appendTownTableEvent(input: Omit<TownModuleTableEvent, "schema" | "id" | "at"> & { id?: string; at?: string }): TownModuleTableEvent {
     const at = input.at ?? new Date().toISOString();
     const event = TownModuleTableEventSchema.parse({
@@ -2778,6 +3132,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const current = state.prototypeTownModuleTable ?? this.emptyTownModuleTableState();
     const rawPatch = event.kind === "commit" && event.statePatch && typeof event.statePatch === "object" ? event.statePatch as Record<string, unknown> : {};
     const isStopReceiptCommit = event.kind === "commit" && /^(sample|maxBeats|sampleSeconds|server hard-stop)/i.test(event.text);
+    if (current.mode === "failed" && event.kind !== "error") return event;
     if (event.kind === "commit" && typeof rawPatch.beat === "number" && rawPatch.beat <= current.beat) {
       if (!isStopReceiptCommit) {
         const summaryCounters = DomainTableRunSummaryCountersSchema.parse({ ...current.summaryCounters, duplicateCommitBeats: current.summaryCounters.duplicateCommitBeats + 1 });
@@ -2798,6 +3153,22 @@ export class Referee extends Agent<Env, RefereeState> {
       inactiveActionAttempts: current.summaryCounters.inactiveActionAttempts + inactiveActionAttempts,
       duplicateCommitBeats: current.summaryCounters.duplicateCommitBeats + (isDuplicateCommitBeat ? 1 : 0)
     });
+    const derivedFacts = this.campaignFactsFromTownTableEvent(event, current);
+    const campaignFacts = { ...current.campaignFacts };
+    for (const fact of derivedFacts) campaignFacts[fact.id] = fact;
+    const sequence = current.fullEventLogTrimmed + current.fullEventLog.length;
+    const fullEventLogEntry = DomainTableRunAppendLogEntrySchema.parse({ schema: "TableRunAppendLogEntry.v1", sequence, runId: current.runId, eventId: event.id, beat: event.beat, eventKind: event.kind, lane: event.lane, visibility: event.visibility, speaker: event.speaker, text: event.text, at, retainedInState: true, factIds: derivedFacts.map((fact) => fact.id) });
+    const appendLogKey = this.townTableAppendLogKey(current, sequence);
+    this.ctx.waitUntil(this.persistTownTableAppendLogEvent(appendLogKey, fullEventLogEntry, event).catch((error) => {
+      console.error("town table append log persist failed", error);
+    }));
+    const fullEventLog = [...current.fullEventLog, fullEventLogEntry].slice(-5000);
+    const fullEventLogTrimmed = current.fullEventLogTrimmed + Math.max(0, current.fullEventLog.length + 1 - fullEventLog.length);
+    const expedition = this.expeditionFromTownTableEvent(event, current, derivedFacts.map((fact) => fact.id), at);
+    const downtimeActions = this.downtimeActionsForTownTableEvent(event, { ...current, expedition }, at);
+    const memoryCompactions = this.memoryCompactionsForTownTableEvent(event, { ...current, campaignFacts }, fullEventLog, at);
+    const advancementState = this.advanceTownTableTreasureAndDowntime(event, { ...current, expedition }, at);
+    const levelingState = this.applyTownTableXpAndLeveling({ ...current, ...advancementState, expedition }, event, at);
     const activeFrontIds = takeUniqueStrings([...inferFenwaterFrontIds(event.text), ...current.activeFrontIds], 24);
     const inferredLocationId = inferFenwaterLocationId(event.text);
     const inferredLocation = fenwaterLocationTitle(inferredLocationId);
@@ -2807,6 +3178,14 @@ export class Referee extends Agent<Env, RefereeState> {
     const patched = TownModuleTableStateSchema.parse({
       ...current,
       events: [event, ...current.events].slice(0, 500),
+      fullEventLog,
+      fullEventLogTrimmed,
+      campaignFacts,
+      ...advancementState,
+      ...levelingState,
+      expedition,
+      downtimeActions,
+      memoryCompactions,
       committedBeatIds,
       summaryCounters,
       activeFrontIds,
@@ -2815,19 +3194,34 @@ export class Referee extends Agent<Env, RefereeState> {
       updatedAt: at,
       ...normalizedPatch
     });
-    const next = event.kind === "commit" ? this.reduceTownTableMemory(patched, event) : patched;
-    this.setState({ ...state, prototypeTownModuleTable: next });
+    const memoryNext = event.kind === "commit" ? this.reduceTownTableMemory(patched, event) : patched;
+    const campaignArc = this.campaignArcFromTownTableState(memoryNext, at);
+    const campaignArcBrief = this.campaignArcBriefFromState(memoryNext, campaignArc);
+    const next = TownModuleTableStateSchema.parse({ ...memoryNext, campaignArc, campaignArcBrief });
+    this.setState({ ...state, prototypeTownModuleTable: { ...next, waitStatus: undefined } });
     if (event.kind === "commit") this.ctx.waitUntil(this.syncTownTableMemoryToAgents(next));
     this.emitTownTableSocketEvent({ type: "town_table.event", event, at, campaignId: this.name });
     this.emitTownTableState(`event-${event.kind}`);
     return event;
   }
 
+  private updateTownTableWaitStatus(phase: string, detail?: string): void {
+    const state = this.getTownModuleTableState();
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, waitStatus: { phase, ...(detail ? { detail } : {}), startedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() } });
+    this.emitTownTableState(`wait-${phase}`);
+  }
+
+  private clearTownTableWaitStatus(): void {
+    const state = this.getTownModuleTableState();
+    if (!state.waitStatus) return;
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, waitStatus: undefined, updatedAt: new Date().toISOString() } });
+  }
+
   private emitTownTableError(error: unknown): void {
     const message = publicPrototypeError(error);
     const detail = String(error instanceof Error ? error.message : error);
     const state = this.getTownModuleTableState();
-    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, mode: "failed", lifecycle: "failed", runningFiberId: undefined, error: detail, updatedAt: new Date().toISOString() } });
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, mode: "failed", lifecycle: "failed", runningFiberId: undefined, waitStatus: undefined, error: detail, updatedAt: new Date().toISOString() } });
     this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "error", speaker: "Referee", kind: "error", text: message, devText: detail });
     this.emitTownTableSocketEvent({ type: "town_table.error", message, at: new Date().toISOString(), campaignId: this.name });
   }
@@ -4956,7 +5350,17 @@ export class Referee extends Agent<Env, RefereeState> {
 
   getTownModuleTableState(): TownModuleTableState {
     const state = this.requireRefereeState();
-    if (state.prototypeTownModuleTable) return TownModuleTableStateSchema.parse(state.prototypeTownModuleTable);
+    if (state.prototypeTownModuleTable) {
+      const table = TownModuleTableStateSchema.parse(state.prototypeTownModuleTable);
+      const startedAt = table.waitStatus?.startedAt ? Date.parse(table.waitStatus.startedAt) : Date.parse(table.updatedAt);
+      if (table.runningFiberId && table.mode !== "stopped" && startedAt && Date.now() - startedAt > TOWN_TABLE_STALE_WAIT_MS) {
+        const detail = `Stale ${table.waitStatus?.phase ?? "run"} wait exceeded ${Math.round(TOWN_TABLE_STALE_WAIT_MS / 1000)}s; clearing running fiber so the operator can rerun.`;
+        const recovered = TownModuleTableStateSchema.parse({ ...table, mode: "failed", lifecycle: "failed", runningFiberId: undefined, waitStatus: undefined, error: detail, updatedAt: new Date().toISOString() });
+        this.setState({ ...state, prototypeTownModuleTable: recovered });
+        return recovered;
+      }
+      return table;
+    }
     const table = this.emptyTownModuleTableState();
     this.setState({ ...state, prototypeTownModuleTable: table });
     return table;
@@ -4968,7 +5372,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const normalizedOptions = normalizeTableRunStartOptions(options);
     const difficulty = normalizedOptions.difficulty ?? Math.min(8, runCount);
     const { maxBeats, sampleSeconds } = normalizedOptions;
-    const table = { ...this.emptyTownModuleTableState(), difficulty, ...(maxBeats || sampleSeconds ? { runLimits: { ...(maxBeats ? { maxBeats } : {}), ...(sampleSeconds ? { sampleSeconds } : {}) } } : {}) };
+    const table = { ...this.emptyTownModuleTableState(), runId: crypto.randomUUID(), difficulty, ...(maxBeats || sampleSeconds ? { runLimits: { ...(maxBeats ? { maxBeats } : {}), ...(sampleSeconds ? { sampleSeconds } : {}) } } : {}) };
     this.setState({ ...state, prototypeTownModuleTable: table, prototypeTownModuleTableRunCount: runCount });
     this.emitTownTableState("reset");
     return table;
@@ -5021,16 +5425,19 @@ export class Referee extends Agent<Env, RefereeState> {
       visibleSituation: LooseOpeningStringSchema(1200),
       immediatePressure: LooseOpeningStringSchema(700),
       whyPartyIsTogether: LooseOpeningStringSchema(700),
-      initialAffordances: z.preprocess((value) => Array.isArray(value) ? value.map((item) => compactText(typeof item === "string" ? item : JSON.stringify(item), 180)) : value, z.array(z.string().min(1).max(180)).min(2).max(8)),
+      initialAffordances: z.preprocess((value) => Array.isArray(value) ? value.map((item) => compactText(typeof item === "string" ? item : JSON.stringify(item), 180)).filter(Boolean).slice(0, 8) : value, z.array(z.string().min(1).max(180)).min(2).max(8)),
       activeFrontIds: LooseStringArraySchema.default([]),
       publicClocks: z.array(DomainTableClockSchema).default([]),
       refereeNotes: LooseStringArraySchema.default([]),
       sourceRefs: LooseStringArraySchema.default([])
     }).parse(raw);
+    const knownLocationIds = new Set(locationComponents.map((component) => component.id));
+    const fallbackLocationId = locationComponents.find((component) => !(input.avoidStartingLocationIds ?? []).includes(component.id))?.id ?? locationComponents[0]?.id ?? parsed.startingLocationId;
+    const parsedForSeed = knownLocationIds.has(parsed.startingLocationId) ? parsed : { ...parsed, startingLocationId: fallbackLocationId, refereeNotes: [...parsed.refereeNotes, `Model proposed unknown startingLocationId ${parsed.startingLocationId}; Referee reassigned to known module location ${fallbackLocationId}.`] };
     const seed = validateTableRunOpeningSeedForModule({
-      id: `opening-${tableRunOpeningSlug(parsed.title)}-${crypto.randomUUID().slice(0, 8)}`,
-      ...parsed,
-      sourceRefs: parsed.sourceRefs.length ? parsed.sourceRefs : [input.module.manifest.moduleId]
+      id: `opening-${tableRunOpeningSlug(parsedForSeed.title)}-${crypto.randomUUID().slice(0, 8)}`,
+      ...parsedForSeed,
+      sourceRefs: parsedForSeed.sourceRefs.length ? parsedForSeed.sourceRefs : [input.module.manifest.moduleId]
     }, input.module);
     const avoidIds = new Set(input.avoidStartingLocationIds ?? []);
     if (avoidIds.has(seed.startingLocationId) && locationComponents.some((component) => !avoidIds.has(component.id))) {
@@ -5043,7 +5450,8 @@ export class Referee extends Agent<Env, RefereeState> {
   private async initializeTownModuleTableFromArtifacts(): Promise<TownModuleTableState> {
     const current = this.getTownModuleTableState();
     if (current.mode !== "idle") return current;
-    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, lifecycle: "session_zero", updatedAt: new Date().toISOString() } });
+    const currentWithRunId = current.runId ? current : TownModuleTableStateSchema.parse({ ...current, runId: crypto.randomUUID() });
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...currentWithRunId, lifecycle: "session_zero", waitStatus: { phase: "session_zero", detail: "Rolling characters and asking PlayerAgents for character plans.", startedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() } });
     this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "artifacts", speaker: "Referee", kind: "frame_moment", text: "Loading Fenwater Drainage from the Town Forge Artifacts repo." });
     const { town, artifactCommit } = await this.loadFenwaterTownModuleFromArtifacts();
     const adventureModule = adventureModuleFromFenwaterTownGraph({ town, artifactRepo: TOWN_FORGE_ARTIFACT_REPO, artifactCommit });
@@ -5069,13 +5477,14 @@ export class Referee extends Agent<Env, RefereeState> {
         this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "dice", agentId: playerId, speaker: "Session Zero", kind: "session_zero_roll", text: tableRunSessionZeroRollText(roll), devText: JSON.stringify(roll) });
       }
       this.appendTownTableEvent({ beat: 0, visibility: "dev", lane: "player", agentId: playerId, speaker: playerName, kind: "thought_bubble", text: `${playerName} studies the rolled sheet before entering Fenwater.`, devText: JSON.stringify(rolled.draft, null, 2) });
+      this.updateTownTableWaitStatus("session_zero", `Asking ${playerName} to turn rolled stats into a character plan.`);
       const playerAgent = await this.subAgent(PlayerAgent, playerId);
-      let plan = assertDistinctCharacterName(await playerAgent.createCharacterPlan(rolled.draft, campaign.stores), playerName);
+      let plan = assertDistinctCharacterName(await withPrototypeTimeout(playerAgent.createCharacterPlan(rolled.draft, campaign.stores), `${playerName} Session Zero character plan`, 60_000), playerName, players.map((existing) => existing.character.name));
       try {
         campaign = commitCharacterCreation(campaign, rolled.draft, plan, secureRandomInt);
       } catch (error) {
         console.warn("[Referee] town table character plan needed purchase repair", error);
-        plan = assertDistinctCharacterName(trimPlanToBudget(plan, campaign.stores, rolled.draft.startingGoldGp), playerName);
+        plan = assertDistinctCharacterName(trimPlanToBudget(plan, campaign.stores, rolled.draft.startingGoldGp), playerName, players.map((existing) => existing.character.name));
         campaign = commitCharacterCreation(campaign, rolled.draft, plan, secureRandomInt);
       }
       const character = Object.values(campaign.characters).find((candidate) => candidate.playerId === playerId);
@@ -5085,6 +5494,7 @@ export class Referee extends Agent<Env, RefereeState> {
       playerAgent.syncTownTablePersona({ playerId, ...artifact });
       players.push({ playerId, player: playerName, character, ...artifact });
     }
+    this.updateTownTableWaitStatus("opening_selection", "Generating a module-generic opening seed from the rolled party and AdventureModule components.");
     this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...this.getTownModuleTableState(), lifecycle: "opening_selection", updatedAt: new Date().toISOString() } });
     const openingSeed = await this.generateTableRunOpeningSeed({ module: adventureModule, party: players, difficulty: current.difficulty, avoidStartingLocationIds: projection.startingLocationId ? [projection.startingLocationId] : [] });
     const openingLocationComponent = adventureModule.components.find((component) => component.id === openingSeed.startingLocationId);
@@ -5094,11 +5504,14 @@ export class Referee extends Agent<Env, RefereeState> {
       : startingLocation.publicDescription;
     const visibleNpcIds = new Set(projection.visibleNpcIds);
     const visibleRumorIds = new Set(projection.visibleRumorIds);
+    const advancementState = this.seedTownTableAdvancementState(adventureModule, this.name);
+    const latestInitializationState = this.getTownModuleTableState();
     const table = TownModuleTableStateSchema.parse({
-      ...current,
+      ...latestInitializationState,
       mode: "running",
       lifecycle: "running",
-      runId: current.runId ?? crypto.randomUUID(),
+      waitStatus: undefined,
+      runId: latestInitializationState.runId ?? crypto.randomUUID(),
       townId: adventureModule.manifest.moduleId,
       townName: adventureModule.manifest.title,
       artifactRepo: TOWN_FORGE_ARTIFACT_REPO,
@@ -5116,13 +5529,14 @@ export class Referee extends Agent<Env, RefereeState> {
       openingSeed,
       activeFrontIds: openingSeed.activeFrontIds,
       clocks: openingSeed.publicClocks.length ? openingSeed.publicClocks : fenwaterInitialClocks(current.difficulty),
-      party: players.map(({ playerId, player, character }) => ({ playerId, player, character: character.name, className: character.className, hp: character.stats.hp, armorClass: character.stats.armorClass, inventory: character.inventory.length ? character.inventory : domainStarterGearForClass(character.className), position: openingLocationName, intent: "arriving", status: "active" as const })),
+      party: players.map(({ playerId, player, character }) => ({ playerId, characterId: character.id, player, character: character.name, className: character.className, level: character.level ?? 1, xp: character.xp ?? 0, nextLevelXp: this.oseLevelTwoThreshold(character.className).xp, maxHp: character.stats.hp, hp: character.stats.hp, armorClass: character.stats.armorClass, inventory: character.inventory.length ? character.inventory : domainStarterGearForClass(character.className), position: openingLocationName, intent: "arriving", status: "active" as const })),
       playerArtifacts: Object.fromEntries(players.map(({ playerId, soulMd, identityMd }) => [playerId, { soulMd, identityMd }])),
-      partyMemory: Object.fromEntries(players.map(({ playerId, soulMd, identityMd }) => [playerId, { knows: [identityMd.split("\n").slice(2, 6).join("; ")], suspects: [], goals: [soulMd.split("Private drive: ")[1]?.split("\n")[0] ?? "find leverage before accepting danger"], losses: [], tactics: ["Coordinate before danger resolves."], relationships: [] }])), 
-      events: this.getTownModuleTableState().events,
+      partyMemory: Object.fromEntries(players.map(({ playerId, soulMd, identityMd }) => [playerId, { knows: [identityMd.split("\n").slice(2, 6).join("; ")], suspects: [], goals: [soulMd.split("Private drive: ")[1]?.split("\n")[0] ?? "find leverage before accepting danger"], losses: [], tactics: ["Coordinate before danger resolves."], relationships: [] }])),
+      ...advancementState,
+      events: latestInitializationState.events,
       committedBeatIds: [],
       summaryCounters: { totalEvents: 0, localityCorrections: 0, objectiveProgress: 0, combatRows: 0, inactiveActionAttempts: 0, duplicateCommitBeats: 0 },
-      modelCallsUsed: this.getTownModuleTableState().modelCallsUsed + players.length + 1,
+      modelCallsUsed: latestInitializationState.modelCallsUsed + players.length + 1,
       startedAt: current.startedAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
@@ -5155,7 +5569,7 @@ export class Referee extends Agent<Env, RefereeState> {
       const runLimits = { ...initialized.runLimits, startedAtMs: Date.now() };
       this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...initialized, runLimits } });
       const shouldStopForSample = () => tableRunSampleStopReason(townModuleTableToDomainRunState(this.getTownModuleTableState()), Date.now());
-      const maxMoments = Math.max(TOWN_MODULE_TABLE_MAX_MOMENTS, runLimits.maxBeats ?? 0);
+      const maxMoments = Math.max(TOWN_MODULE_TABLE_MAX_MOMENTS, (runLimits.maxBeats ?? 0) * 3);
       for (let i = 0; i < maxMoments; i++) {
         const state = this.getTownModuleTableState();
         if (state.mode !== "running" || state.runId !== runId) return;
@@ -5166,13 +5580,15 @@ export class Referee extends Agent<Env, RefereeState> {
           this.appendTownTableEvent({ beat: state.beat + 1, visibility: "public", lane: "world", speaker: "Referee", kind: "world_update", text: `${foe} survives the exchange and breaks contact before the table can grind forever. The fight leaves a cost, a trail, and an aftermath choice.`, statePatch: { beat: state.beat + 1, moment: state.moment + 1, tablePhase: "aftermath", activeQuestion: `${foe} is not safely dead. Do you chase, bind wounds and secure evidence, or retreat before the clocks bite again?`, combat: undefined, lastEncounter: { foe, outcome: "escaped", beat: state.beat + 1 } } });
           continue;
         }
+        this.updateTownTableWaitStatus("beat", `Resolving beat ${state.beat} (${state.tablePhase}).`);
         await this.runTownModuleTableMoment();
+        this.clearTownTableWaitStatus();
       }
       if (this.getTownModuleTableState().runId !== runId) return;
       const state = this.getTownModuleTableState();
       const sampleStop = shouldStopForSample();
-      const stoppedReason = sampleStop ?? tableRunHardStopReason({ phase: state.tablePhase, maxMoments: TOWN_MODULE_TABLE_MAX_MOMENTS, maxCombatRounds: TOWN_MODULE_TABLE_MAX_COMBAT_ROUNDS, maxAfterCombatMoments: TOWN_MODULE_TABLE_MAX_AFTER_COMBAT_MOMENTS });
-      this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, mode: "stopped", runningFiberId: undefined, stoppedReason, updatedAt: new Date().toISOString() } });
+      const stoppedReason = sampleStop ?? tableRunHardStopReason({ phase: state.tablePhase, maxMoments, maxCombatRounds: TOWN_MODULE_TABLE_MAX_COMBAT_ROUNDS, maxAfterCombatMoments: TOWN_MODULE_TABLE_MAX_AFTER_COMBAT_MOMENTS });
+      this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...state, mode: "stopped", runningFiberId: undefined, waitStatus: undefined, stoppedReason, updatedAt: new Date().toISOString() } });
       this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `${stoppedReason}. Restart the Worker or clear state to run another slice.`, statePatch: { mode: "stopped", runningFiberId: undefined, stoppedReason } });
     } catch (error) {
       this.emitTownTableError(error);
@@ -5192,7 +5608,8 @@ export class Referee extends Agent<Env, RefereeState> {
   }
 
   private validateTownTableLocality(state: TownModuleTableState): TownModuleTableState {
-    const recentLocks = state.events.filter((event) => event.lane === "player" && event.kind === "lock_action").slice(0, state.party.length);
+    const activeIds = new Set(state.party.filter((member) => (member.status ?? "active") === "active" && (member.hp ?? 1) > 0).map((member) => member.playerId));
+    const recentLocks = state.events.filter((event) => event.beat === state.beat && event.lane === "player" && event.kind === "lock_action" && (!event.agentId || activeIds.has(event.agentId)) && !/move\/setup toward/i.test(event.text)).slice(0, Math.max(1, activeIds.size));
     if (!recentLocks.length) return state;
     let party = state.party;
     for (const event of recentLocks) {
@@ -5200,8 +5617,9 @@ export class Referee extends Agent<Env, RefereeState> {
       if (!member) continue;
       const text = event.text.toLowerCase();
       const position = member.position ?? state.location;
+      if (/\b(go|head|move|travel|follow|chase|enter|leave|exit|withdraw|sprint|run|cross|descend|climb|crawl|toward|through|backward|south|north|east|west)\b/i.test(text)) continue;
       const needs = requiredDomainLocalityForAction(text);
-      if (!needs || position === needs) continue;
+      if (!needs || position === needs || /defend|guard|brace|block|hold|protect/.test(text)) continue;
       const revisedIntent = `move/setup toward ${needs}; original action needs position first`;
       party = party.map((candidate) => candidate.playerId === member.playerId ? { ...candidate, position: needs, intent: revisedIntent } : candidate);
       this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "rules", speaker: "Referee", kind: "procedure_check", text: `Position matters: ${member.character} cannot fully resolve that action from ${position}. This beat moves/setup toward ${needs}; the effect is not instant.` });
@@ -5265,7 +5683,7 @@ export class Referee extends Agent<Env, RefereeState> {
     this.appendTownTableEvent({ beat, visibility: "public", lane: "dice", speaker: "Referee", kind: "dice_roll", text: `Encounter escalation check: ${roll} on d6. On 1-${encounterThreshold}, the table enters encounter/combat procedure.`, devText: "OSE source anchors: old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s1298:n0; old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s259:n0." });
     if (roll > encounterThreshold) return;
     const water = clock.name === "North Ditch water";
-    const foe = water ? "waterlogged debt-thing" : "cornered Fenwater cutter";
+    const foe = water ? "debt-drowned collector" : "cornered Fenwater cutter";
     const foeMaxHp = (water ? 12 : 8) + Math.max(0, current.difficulty - 1);
     const trigger = water ? "North Ditch flood hit 6/6 while the party handled keys, tokens, and black water." : "Mort panic hit 6/6 while pressure and witnesses crowded the bar.";
     const objective = water
@@ -5345,7 +5763,7 @@ export class Referee extends Agent<Env, RefereeState> {
         const hit = attack >= ac;
         const damage = hit ? secureRandomInt(4) : 0;
         party[targetIndex] = { ...target, hp: Math.max(0, (target.hp ?? 1) - damage) };
-        this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "dice", speaker: "Referee", kind: "combat_round", text: `${combat.foe} attacks ${target.character}: ${attack} vs AC ${ac}${hit ? `, ${damage} damage` : ", miss"}.` });
+        this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "dice", speaker: "Referee", kind: "combat_round", text: `${combat.foe} ${subjectVerb(combat.foe, "attacks", "attack")} ${target.character}: ${attack} vs AC ${ac}${hit ? `, ${damage} damage` : ", miss"}.` });
       }
     }
     const maxedClock = tacticalState.clocks.find((clock) => clock.value >= clock.max);
@@ -5468,8 +5886,84 @@ export class Referee extends Agent<Env, RefereeState> {
     return `Party tactic: ${parts.join("; ")}. Risk: ${riskClock ? `${riskClock.name} ${riskClock.value}/${riskClock.max}` : "the room moves if they wait"}.`;
   }
 
+  private latestTownTableEncounterOpportunity(state: TownModuleTableState): EncounterOpportunity | undefined {
+    if (state.tablePhase === "combat" || state.combat || state.encounterOpportunity) return undefined;
+    const recentProcedure = state.events.find((event) => /encounter_opportunity|encounter_procedure|encounter_start/.test(event.kind));
+    if (recentProcedure && state.beat - recentProcedure.beat < 8) return undefined;
+    if (/positive reaction|uncertain reaction|evasion succeeds|surprise\/position gained/i.test(state.activeQuestion)) return undefined;
+    const recentText = state.events.slice(0, 14).map((event) => `${event.kind}: ${event.text}`).join(" || ");
+    return detectEncounterOpportunity({ recentText, clocks: state.clocks, difficulty: state.difficulty, ...(typeof state.stall?.count === "number" ? { repeatedChoiceCount: state.stall.count } : {}) });
+  }
+
+  private emitTownTableEncounterOpportunity(state: TownModuleTableState, opportunity: EncounterOpportunity): void {
+    this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "referee", speaker: "Referee", kind: "encounter_opportunity", text: `Encounter opportunity: ${opportunity.threat}. Choose approach: parley, evade, sneak, fight, secure the object, rescue, or hold position.`, devText: JSON.stringify(opportunity, null, 2) });
+    this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "rules", speaker: "OSE", kind: "procedure_check", text: "Encounter procedure is available: the party chooses approach first; the Referee then uses reaction, surprise/distance, initiative, evasion, morale, or objective checks as appropriate.", devText: `OSE anchors: ${opportunity.sourceRefs.join(", ")}` });
+    const context = compactText(opportunity.trigger.replace(/^[^:]+:\s*/, ""), 120);
+    const question = `How does the party engage ${opportunity.threat} here: talk, hide, fight, flee, rescue someone, or grab the objective? Current pressure: ${context}`;
+    this.appendTownTableEvent({ beat: state.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${state.beat + 1} committed. ${question}`, statePatch: { beat: state.beat + 1, moment: state.moment + 1, tablePhase: "encounter", encounterOpportunity: opportunity, activeQuestion: question } });
+  }
+
+  private runTownTableEncounterProcedure(state: TownModuleTableState): void {
+    const opportunity = state.encounterOpportunity;
+    if (!opportunity) return;
+    const playerText = state.events.filter((event) => event.lane === "player" && event.beat >= state.beat).slice(0, Math.max(4, state.party.length)).map((event) => event.text).join(" || ");
+    const approach = classifyEncounterApproach(playerText || state.activeQuestion);
+    this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "player", speaker: "Party", kind: "encounter_approach", text: `Party approach: ${approach.replace("_", " ")}.` });
+    if (approach === "fight" || approach === "hold_position" || approach === "secure_object" || approach === "rescue") {
+      const surprise = secureRandomInt(6);
+      const distance = 10 * secureRandomInt(6);
+      this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "dice", speaker: "Referee", kind: "encounter_procedure", text: `Encounter setup: surprise ${surprise} on d6, distance ${distance} feet.`, devText: "OSE anchors: old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s259; old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s585." });
+      const foe = opportunity.threat;
+      const foeMaxHp = (opportunity.severity === "deadly" ? 12 : 8) + Math.max(0, state.difficulty - 1);
+      const objective = approach === "rescue" ? { kind: "extract_wounded" as const, text: "Extract the endangered ally before the threat owns the route.", progress: 0, target: 2 }
+        : approach === "secure_object" ? { kind: "grab_object" as const, text: "Secure the object/evidence under pressure before the threat closes.", progress: 0, target: 1 }
+          : { kind: "hold_door" as const, text: "Hold position long enough to choose fight, flight, or negotiation from better footing.", progress: 0, target: 2 };
+      const next = TownModuleTableStateSchema.parse({ ...state, tablePhase: "combat", encounterOpportunity: undefined, combat: { round: 0, foe, foeHp: foeMaxHp, foeMaxHp, foeArmorClass: opportunity.severity === "deadly" ? 13 : 12, trigger: opportunity.trigger, objective }, activeQuestion: `Encounter! ${foe} is in reach. Objective: ${objective.text} Who attacks, holds, rescues, grabs, casts, or withdraws?`, updatedAt: new Date().toISOString() });
+      this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: next });
+      this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "world", speaker: "Referee", kind: "encounter_start", text: `${foe} enters encounter procedure. Objective: ${objective.text}` });
+      return;
+    }
+    const roll = secureRandomInt(6) + secureRandomInt(6);
+    const outcome = approach === "parley" ? (roll >= 9 ? "positive reaction: the threat hesitates, bargains, or reveals a demand" : roll >= 6 ? "uncertain reaction: the threat talks but wants a cost now" : "hostile reaction: talks fail and initiative is next")
+      : approach === "sneak" ? (roll >= 8 ? "surprise/position gained before contact" : "position is mixed; the threat notices enough to force another choice")
+        : roll >= 7 ? "evasion succeeds; the party opens distance" : "evasion is costly; the threat follows or cuts off the route";
+    this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "dice", speaker: "Referee", kind: "encounter_procedure", text: `${approach.replace("_", " ")} roll: ${roll} on 2d6 — ${outcome}.`, devText: "OSE-inspired use of reaction/evasion/surprise procedure; public stream shows safe summary only." });
+    const nextQuestion = roll >= 9
+      ? `${outcome}. Use the opening: take terms, withdraw, ask one question, or reposition?`
+      : roll >= 7
+        ? `${outcome}. Choose quickly: pay the cost, back away, or force the issue?`
+        : `${outcome}. Initiative is next unless you flee, surrender leverage, or produce a better offer now.`;
+    if (roll < 7) {
+      const foeMaxHp = (opportunity.severity === "deadly" ? 12 : 8) + Math.max(0, state.difficulty - 1);
+      const objective = { kind: "hold_door" as const, text: "Survive the failed approach long enough to flee, bargain from weakness, or seize initiative.", progress: 0, target: 2 };
+      this.appendTownTableEvent({ beat: state.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${state.beat + 1} committed. ${nextQuestion}`, statePatch: { beat: state.beat + 1, moment: state.moment + 1, tablePhase: "combat", encounterOpportunity: undefined, combat: { round: 0, foe: opportunity.threat, foeHp: foeMaxHp, foeMaxHp, foeArmorClass: opportunity.severity === "deadly" ? 13 : 12, trigger: opportunity.trigger, objective }, activeQuestion: nextQuestion, lastEncounter: { foe: opportunity.threat, outcome: "escaped", beat: state.beat + 1 } } });
+      this.appendTownTableEvent({ beat: state.beat + 1, visibility: "public", lane: "world", speaker: "Referee", kind: "encounter_start", text: `${opportunity.threat} presses the failed approach into combat procedure. Objective: ${objective.text}` });
+      return;
+    }
+    this.appendTownTableEvent({ beat: state.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${state.beat + 1} committed. ${nextQuestion}`, statePatch: { beat: state.beat + 1, moment: state.moment + 1, tablePhase: "exploration", encounterOpportunity: undefined, activeQuestion: nextQuestion, lastEncounter: { foe: opportunity.threat, outcome: "avoided", beat: state.beat + 1 } } });
+  }
+
   private async runTownModuleTableMoment(): Promise<void> {
     const before = this.getTownModuleTableState();
+    const downed = before.party.filter((member) => (member.status ?? "active") !== "active" || (member.hp ?? 1) <= 0);
+    if (downed.length && before.tablePhase === "aftermath" && before.events.slice(0, 8).some((event) => /cannot take normal actions/i.test(event.text))) {
+      const names = downed.map((member) => member.character).join(", ");
+      const roll = secureRandomInt(6) + secureRandomInt(6);
+      const success = roll >= 7;
+      const party = before.party.map((member) => downed.some((down) => down.playerId === member.playerId)
+        ? success
+          ? { ...member, hp: 1, status: "active" as const, intent: "rescued and recovering", position: before.location }
+          : { ...member, status: "missing" as const, intent: "lost in the aftermath until recovered", position: before.location }
+        : member);
+      const outcome = success ? `${names} are dragged clear with 1 hp; the party loses time and must choose return or push on.` : `${names} are separated in the aftermath; the party must decide whether to pursue rescue or retreat with losses.`;
+      this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. rescue/aid roll: ${roll} on 2d6 — ${outcome}`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, party, tablePhase: "exploration", activeQuestion: `${outcome} Return to a SafeHaven, press deeper, or pursue the separated ally?` } });
+      return;
+    }
+    if (downed.length && before.tablePhase === "exploration") {
+      const names = downed.map((member) => member.character).join(", ");
+      this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. ${names} cannot take normal actions. Rescue, withdraw with them, make a death/aid check, or abandon the position?`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, tablePhase: "aftermath", activeQuestion: `${names} cannot take normal actions. Rescue, withdraw with them, make a death/aid check, or abandon the position?` } });
+      return;
+    }
     if (before.tablePhase === "combat" && before.combat) {
       await this.runTownModuleTableCombatRound();
       return;
@@ -5481,11 +5975,34 @@ export class Referee extends Agent<Env, RefereeState> {
       this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: "No active party members can act. The Referee shifts to capture, rescue, retreat, or TPK aftermath instead of asking downed characters for normal actions.", statePatch: { beat: before.beat + 1, moment: before.moment + 1, mode: "stopped", tablePhase: "aftermath", stoppedReason: "no active party members remain" } });
       return;
     }
-    const microResults = await Promise.all(activeParty.map(async (member) => {
+    const hasUnsettledCarriedTreasure = Object.values(before.treasureParcels).some((parcel) => parcel.state === "claimed" || parcel.state === "carried");
+    const badlyWounded = activeParty.some((member) => {
+      const hp = member.hp ?? 1;
+      const maxHp = member.maxHp ?? hp;
+      return hp < maxHp && hp <= Math.max(1, Math.ceil(maxHp / 2));
+    });
+    const atSafeHavenChoice = /^At .*: .*launch the next expedition/i.test(before.activeQuestion);
+    if (atSafeHavenChoice) {
+      const party = before.party.map((member) => ({ ...member, intent: "launching the next expedition", position: before.location }));
+      this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. Downtime closes; the party launches the next expedition from ${before.location}.`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, party, tablePhase: "exploration", activeQuestion: "Launch the next expedition: follow the Charter House lead, press the North Ditch route, investigate the pump house, or seek a safer rumor first?" } });
+      return;
+    }
+    const deterministicAftermath = before.tablePhase === "aftermath" && /objective secured|evidence, wounded ally, or exit|bind wounds|secure next|what do you secure next/i.test(before.activeQuestion);
+    const justAskedReturn = /return to a safehaven|return to safehaven|retreat before|bind wounds/i.test(before.activeQuestion);
+    if (before.tablePhase !== "combat" && (deterministicAftermath || justAskedReturn || (before.beat > 0 && (hasUnsettledCarriedTreasure || badlyWounded) && before.beat % 12 === 0))) {
+      const havenId = Object.keys(before.safeHavens).find((id) => /reedwright-stove-boat/.test(id)) ?? Object.keys(before.safeHavens)[0] ?? "fenwater-safehaven-reedwright-stove-boat";
+      const havenName = havenId.includes("reedwright") ? "Reedwright stove boat" : havenId.includes("alder") ? "Alder Knoll dry camp" : "SafeHaven";
+      const party = before.party.map((member) => ({ ...member, hp: Math.max(member.hp ?? 0, Math.min(member.maxHp ?? member.hp ?? 1, Math.max(1, member.hp ?? 0) + 2)), status: (member.status === "missing" ? "missing" : "active") as typeof member.status, position: havenName, intent: "returning, binding wounds, and settling the haul" }));
+      this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. The party returns to SafeHaven at ${havenName}, binds wounds, stashes treasure, and settles treasure before pressing deeper.`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, party, tablePhase: "exploration", location: havenName, activeQuestion: `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?` } });
+      return;
+    }
+    const spotlightParty = activeParty.length <= 2 ? activeParty : activeParty.filter((_, index) => (index + before.beat) % 2 === 0).slice(0, 2);
+    this.updateTownTableWaitStatus("player_micro_events", `Waiting for ${spotlightParty.length}/${activeParty.length} spotlight PlayerAgent micro-event(s); other intents carry forward.`);
+    const microResults = await Promise.all(spotlightParty.map(async (member) => {
       const playerId = TOWN_MODULE_TABLE_PLAYER_IDS.find((id) => id === member.playerId) ?? "player-a";
       let text: string;
       try {
-        text = await runPrototypeModelText(this.env, [
+        text = await withPrototypeTimeout(runPrototypeModelText(this.env, [
         "Write this PlayerAgent's next micro-event as one short line of table play.",
         "Do not return JSON. Start with one of these labels exactly: THOUGHT:, TALK:, FLOAT:, ASK:, or LOCK:.",
         "Use the identity artifact and compact memory as this agent's SOUL/IDENTITY/brain. Thoughts/feelings are audience-visible. Use LOCK when committing to concrete action. Do not reveal hidden facts.",
@@ -5493,6 +6010,7 @@ export class Referee extends Agent<Env, RefereeState> {
         `Identity artifact: ${before.playerArtifacts[playerId] ? `${before.playerArtifacts[playerId]?.soulMd}\n${before.playerArtifacts[playerId]?.identityMd}` : "none"}.`,
         `Player: ${member.player}; character: ${member.character}; class: ${member.className ?? "adventurer"}.`,
         `Current location: ${before.location}. Active question: ${before.activeQuestion}.`,
+        `Campaign arc brief: ${before.campaignArcBrief ? JSON.stringify(before.campaignArcBrief) : "none yet"}.`,
         `Affordances: ${before.affordances.join(" | ")}.`,
         `Active leads: ${before.activeLeads.join(" | ")}.`,
         `Difficulty: ${before.difficulty}/8. Higher difficulty means less safe dithering, harder encounters, and faster clock consequences.`,
@@ -5501,7 +6019,7 @@ export class Referee extends Agent<Env, RefereeState> {
         `Own memory: ${before.partyMemory[playerId] ? [...before.partyMemory[playerId].knows, ...before.partyMemory[playerId].goals, ...before.partyMemory[playerId].losses, ...before.partyMemory[playerId].tactics].slice(0, 8).join(" | ") : "none yet"}.`,
         `Party tactical memory: ${before.party.map((p) => `${p.character}: ${(before.partyMemory[p.playerId]?.tactics ?? []).slice(0, 2).join("; ")}`).join(" | ")}.`,
         `Recent events: ${before.events.slice(0, 8).map((event) => `${event.speaker}:${event.kind}:${event.text}`).join(" || ")}.`
-        ].join("\n"), 260);
+        ].join("\n"), 260), `${member.character} micro-event`, 25_000);
       } catch (error) {
         this.appendTownTableEvent({ beat: before.beat, visibility: "public", lane: "error", speaker: member.character, kind: "error", text: `${member.character}'s thought/action generation failed honestly; they hesitate and hold position.`, devText: String(error instanceof Error ? error.message : error) });
         text = `THOUGHT: ${member.character} hesitates, holds position, and watches for the next clear opening.`;
@@ -5517,7 +6035,17 @@ export class Referee extends Agent<Env, RefereeState> {
     const afterMicro = this.getTownModuleTableState();
     this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...afterMicro, modelCallsUsed: afterMicro.modelCallsUsed + microResults.length } });
     const afterPlayers = this.validateTownTableLocality(this.getTownModuleTableState());
+    if (before.tablePhase === "encounter" && before.encounterOpportunity) {
+      this.runTownTableEncounterProcedure(afterPlayers);
+      return;
+    }
+    const opportunity = this.latestTownTableEncounterOpportunity(afterPlayers);
+    if (opportunity) {
+      this.emitTownTableEncounterOpportunity(afterPlayers, opportunity);
+      return;
+    }
     const hasLockedAction = afterPlayers.events.slice(0, Math.max(8, afterPlayers.party.length + 2)).some((event) => event.kind === "lock_action");
+    this.updateTownTableWaitStatus("readiness_check", hasLockedAction ? "Locked action found; skipping readiness model call." : "Asking Referee whether the table has enough commitment to resolve.");
     const readiness = hasLockedAction ? { status: "ready_to_resolve", reason: "At least one player locked a concrete action." } : await runPrototypeModelJson(this.env, [
       "Return JSON for TableMomentReadiness: {status, reason, prompt?, targetAgentId?, lockedActions?, procedure?}.",
       "status must be keep_accumulating, needs_commitment, or ready_to_resolve.",
@@ -5541,8 +6069,17 @@ export class Referee extends Agent<Env, RefereeState> {
     const beforeRuling = this.getTownModuleTableState();
     const tacticSummary = this.townTablePartyTacticSummary(beforeRuling);
     if (tacticSummary) this.appendTownTableEvent({ beat: beforeRuling.beat, visibility: "public", lane: "referee", speaker: "Referee", kind: "referee_thought", text: tacticSummary });
+    const injured = beforeRuling.party.filter((member) => (member.status ?? "active") !== "active" || (member.hp ?? 1) <= 0);
+    if (beforeRuling.tablePhase === "aftermath" && (injured.length || /objective secured|bind wounds|exit|wounded ally/i.test(beforeRuling.activeQuestion))) {
+      const havenId = Object.keys(beforeRuling.safeHavens).find((id) => /reedwright-stove-boat/.test(id)) ?? Object.keys(beforeRuling.safeHavens)[0] ?? "fenwater-safehaven-reedwright-stove-boat";
+      const havenName = havenId.includes("reedwright") ? "Reedwright stove boat" : havenId.includes("alder") ? "Alder Knoll dry camp" : "SafeHaven";
+      const party = beforeRuling.party.map((member) => ({ ...member, hp: Math.max(member.hp ?? 0, Math.min(member.maxHp ?? member.hp ?? 1, Math.max(1, member.hp ?? 0) + 2)), status: (member.status === "missing" ? "missing" : "active") as typeof member.status, position: havenName, intent: "falling back to SafeHaven after aftermath" }));
+      this.appendTownTableEvent({ beat: beforeRuling.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${beforeRuling.beat + 1} committed. Aftermath resolved without a model ruling: the party falls back to SafeHaven at ${havenName}, binds wounds, and protects any recovered evidence.`, statePatch: { beat: beforeRuling.beat + 1, moment: beforeRuling.moment + 1, party, tablePhase: "exploration", location: havenName, activeQuestion: `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?` } });
+      return;
+    }
     let rulingText: string;
     try {
+      this.updateTownTableWaitStatus("referee_ruling", "Resolving the committed table moment.");
       rulingText = await runPrototypeModelText(this.env, [
       "Resolve the accumulated table moment as exactly three short lines with these labels:",
       "THOUGHT: audience-safe Referee thought",
@@ -6512,13 +7049,39 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
   if (url.pathname === "/api/prototype/town-module-table-state") {
     const referee = await getAgentByName(env.Referee, "town-module-table");
     const state = await referee.getTownModuleTableStateRpc();
-    const view = url.searchParams.get("view");
-    return json({ state: monitorTownModuleTableState(state, { xray: view !== "table" }) });
+    const xray = url.searchParams.get("view") === "xray" && isPrototypeBrainDevRequest(request, env);
+    return json({ state: monitorTownModuleTableState(state, { xray }) });
   }
   if (url.pathname === "/api/prototype/town-module-table-summary") {
     const referee = await getAgentByName(env.Referee, "town-module-table");
     const state = await referee.getTownModuleTableStateRpc();
     return json({ summary: townModuleTableRunSummary(state) });
+  }
+  if (url.pathname === "/api/prototype/town-module-table-log") {
+    const referee = await getAgentByName(env.Referee, "town-module-table");
+    const state = await referee.getTownModuleTableStateRpc() as TownModuleTableState;
+    const xray = url.searchParams.get("view") === "xray" && isPrototypeBrainDevRequest(request, env);
+    const requestedLimit = Number(url.searchParams.get("limit") ?? 100);
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(500, requestedLimit)) : 100;
+    const before = url.searchParams.get("beforeSequence");
+    const source = monitorTownModuleTableState(state, { xray }).fullEventLog;
+    const entries = source.filter((entry) => before ? entry.sequence < Number(before) : true).slice(-limit);
+    return json({ log: { totalEntries: state.fullEventLogTrimmed + state.fullEventLog.length, retainedEntries: source.length, entries } });
+  }
+  if (url.pathname === "/api/prototype/town-module-table-facts") {
+    const referee = await getAgentByName(env.Referee, "town-module-table");
+    const state = await referee.getTownModuleTableStateRpc() as TownModuleTableState;
+    const xray = url.searchParams.get("view") === "xray" && isPrototypeBrainDevRequest(request, env);
+    const facts = Object.values(monitorTownModuleTableState(state, { xray }).campaignFacts);
+    return json({ facts });
+  }
+  if (url.pathname === "/api/prototype/town-module-table-postmortem") {
+    const referee = await getAgentByName(env.Referee, "town-module-table");
+    const sequence = url.searchParams.get("sequence");
+    const beat = url.searchParams.get("beat");
+    const eventId = url.searchParams.get("eventId");
+    const view = url.searchParams.get("view") === "xray" && isPrototypeBrainDevRequest(request, env) ? "xray" : "table";
+    return json({ record: await referee.getTownModuleTableAppendLogRecordRpc({ ...(sequence ? { sequence: Number(sequence) } : {}), ...(beat ? { beat: Number(beat) } : {}), ...(eventId ? { eventId } : {}), view }) });
   }
   if (url.pathname === "/api/prototype/town-module-table-run") {
     if (request.method !== "POST") return json({ error: "POST only" }, { status: 405 });
@@ -6698,7 +7261,26 @@ function townModuleTableToDomainRunState(state: TownModuleTableState): TableRunC
 }
 
 function townModuleTableRunSummary(state: TownModuleTableState): Record<string, unknown> {
-  return summarizeDomainTableRun(townModuleTableToDomainRunState(state));
+  const summary = summarizeDomainTableRun(townModuleTableToDomainRunState(state));
+  return {
+    ...summary,
+    fullEventLog: {
+      totalEntries: state.fullEventLogTrimmed + state.fullEventLog.length,
+      retainedEntries: state.fullEventLog.length,
+      trimmedEntries: state.fullEventLogTrimmed,
+      firstSequence: state.fullEventLog[0]?.sequence,
+      latestSequence: state.fullEventLog.at(-1)?.sequence
+    },
+    campaignFacts: {
+      total: Object.keys(state.campaignFacts).length,
+      playerVisible: Object.values(state.campaignFacts).filter((fact) => toPlayerCampaignFactProjection(fact)).length
+    },
+    campaignArc: state.campaignArc ? { status: state.campaignArc.status, summary: state.campaignArc.summary, activeLeadFactIds: state.campaignArc.activeLeadFactIds.length, treasureParcelIds: state.campaignArc.treasureParcelIds.length, xpLedgerEntryIds: state.campaignArc.xpLedgerEntryIds.length, levelingSessionIds: state.campaignArc.levelingSessionIds.length } : undefined,
+    advancement: { safeHavens: Object.keys(state.safeHavens).length, knownSafeHavens: Object.values(state.safeHavens).filter((haven) => haven.knownToParty).length, treasureParcels: Object.keys(state.treasureParcels).length, recoveredTreasure: Object.values(state.treasureParcels).filter((parcel) => parcel.state === "recovered_to_safety" || parcel.state === "settled").length, xpLedgerEntries: state.xpLedger.length, levelingSessions: state.levelingSessions.length, leveledCharacters: state.party.filter((member) => (member.level ?? 1) > 1).length },
+    expedition: state.expedition ? { lifecycle: state.expedition.lifecycle, injuredCharacterIds: state.expedition.injuredCharacterIds.length, openThreadFactIds: state.expedition.openThreadFactIds.length, safeHavenId: state.expedition.safeHavenId } : undefined,
+    downtime: { actions: state.downtimeActions.length, available: state.downtimeActions.filter((action) => action.status === "available").length },
+    memoryCompactions: { count: state.memoryCompactions.length, latestRange: state.memoryCompactions[0]?.eventSequenceRange }
+  };
 }
 
 function architecturePage(): Response {
@@ -6739,43 +7321,51 @@ function townModuleTableUiPage(): Response {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Agent Dungeon — Town Module Table</title>
   <style>
-    body{margin:0;background:#050605;color:#eaf8de;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}header{position:sticky;top:0;z-index:3;background:#0b0f0a;border-bottom:1px solid #2d3a2a;padding:10px 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}.tag{background:#b7ff5a;color:#050605;font-weight:800;padding:2px 6px;text-transform:uppercase}.muted{color:#8ca184}.dot{width:10px;height:10px;border-radius:99px;background:#ffd166;box-shadow:0 0 12px #ffd166;display:inline-block}.dot.on{background:#b7ff5a;box-shadow:0 0 14px #b7ff5a}.dot.err{background:#ff6b57;box-shadow:0 0 14px #ff6b57}.strip{position:sticky;top:45px;z-index:2;background:#081008;border-bottom:1px solid #21331e;padding:8px 12px;display:grid;grid-template-columns:1fr 1fr 1fr 1.5fr 1.5fr;gap:8px}.strip h2,.xray h2{font-size:10px;color:#8ca184;margin:0 0 2px;text-transform:uppercase}.strip div{min-width:0}.strip p{margin:0;color:#dfffd2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.clockline{color:#ffd166}.partyline{color:#d6a4ff}.xray{display:none;border-bottom:1px solid #35264a;background:#090711;padding:8px 12px;grid-template-columns:1.2fr 1.4fr 1fr;gap:8px}.xray.on{display:grid}.xray p{margin:0;color:#d6a4ff;max-height:110px;overflow:auto}.mode{border:1px solid #394534;color:#dfffd2;padding:2px 6px;text-decoration:none}.mode.active{background:#d6a4ff;color:#120619}@media(max-width:900px){.strip,.xray{grid-template-columns:1fr;top:72px}}main{display:grid;grid-template-columns:1fr;gap:0}.event{border-bottom:1px solid #1e2a1b;padding:9px 12px;background:#050605}.event:first-child{background:#091009}.meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:#8ca184;font-size:11px;text-transform:uppercase}.lane{background:#6dd3ff;color:#031018;font-weight:800;padding:1px 5px}.lane.referee{background:#b7ff5a}.lane.world{background:#ffd166}.lane.commit{background:#d6a4ff}.lane.error{background:#ff6b57}.lane.artifacts{background:#cfe7c6}.lane.rules{background:#ffef9a}.lane.dice{background:#ffad69}.lane.clock{background:#ff7ab6}.kind{color:#cfe7c6}.speaker{color:#f6ffe9;font-weight:800}p{margin:4px 0 0;white-space:pre-wrap}.thought p{color:#d6a4ff}.event.encounter_start{background:#241008;border-left:8px solid #ff6b57;padding:16px 14px}.event.encounter_start p{font-size:18px;font-weight:900;color:#fff1d6}.event.combat_round{background:#18090b;border-left:8px solid #ffad69}.phase-combat{color:#ffad69;font-weight:900}.phase-aftermath{color:#d6a4ff;font-weight:900}.state{margin-left:auto}.empty{padding:32px 12px;color:#8ca184}
+    body{margin:0;background:#050605;color:#eaf8de;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}header{position:sticky;top:0;z-index:4;background:#0b0f0a;border-bottom:1px solid #2d3a2a;padding:10px 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}.tag{background:#b7ff5a;color:#050605;font-weight:800;padding:2px 6px;text-transform:uppercase}.muted{color:#8ca184}.dot{width:10px;height:10px;border-radius:99px;background:#ffd166;box-shadow:0 0 12px #ffd166;display:inline-block}.dot.on{background:#b7ff5a;box-shadow:0 0 14px #b7ff5a}.dot.err{background:#ff6b57;box-shadow:0 0 14px #ff6b57}.strip{position:sticky;top:45px;z-index:3;background:#081008;border-bottom:1px solid #21331e;padding:8px 12px;display:grid;grid-template-columns:.85fr 1fr 1fr 1.2fr;gap:8px}.hud{position:sticky;top:118px;z-index:2;background:#050805;border-bottom:1px solid #21331e;padding:8px 12px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.pc{border:1px solid #263a22;background:#081008;padding:8px;min-width:0}.pc.dead,.pc.incapacitated,.pc.missing{border-color:#6b251f;background:#170807}.pc h3{margin:0 0 5px;color:#f6ffe9;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pc .stats{display:flex;gap:8px;flex-wrap:wrap;color:#b7ff5a;font-weight:800}.pc .meta2{color:#8ca184;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.strip h2,.xray h2{font-size:10px;color:#8ca184;margin:0 0 2px;text-transform:uppercase}.strip div{min-width:0}.strip p{margin:0;color:#dfffd2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.clockline{color:#ffd166}.partyline{color:#d6a4ff}.xray{display:none;border-bottom:1px solid #35264a;background:#090711;padding:8px 12px;grid-template-columns:1fr;gap:8px}.xray.on{display:grid}.xray details{border:1px solid #2b2340;background:#07050d;padding:6px}.xray summary{cursor:pointer;color:#8ca184;text-transform:uppercase;font-size:10px;font-weight:800}.xray p{margin:6px 0 0;color:#d6a4ff;max-height:150px;overflow:auto}.mode{border:1px solid #394534;color:#dfffd2;padding:2px 6px;text-decoration:none}.mode.active{background:#d6a4ff;color:#120619}@media(max-width:900px){.strip,.xray,.hud{grid-template-columns:1fr;top:72px}.hud{position:relative;top:auto}}main{display:grid;grid-template-columns:1fr;gap:0}.event{border-bottom:1px solid #1e2a1b;padding:9px 12px;background:#050605}.event:first-child{background:#091009}.meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:#8ca184;font-size:11px;text-transform:uppercase}.lane{background:#6dd3ff;color:#031018;font-weight:800;padding:1px 5px}.lane.referee{background:#b7ff5a}.lane.world{background:#ffd166}.lane.commit{background:#d6a4ff}.lane.error{background:#ff6b57}.lane.artifacts{background:#cfe7c6}.lane.rules{background:#ffef9a}.lane.dice{background:#ffad69}.lane.clock{background:#ff7ab6}.kind{color:#cfe7c6}.speaker{color:#f6ffe9;font-weight:800}p{margin:4px 0 0;white-space:pre-wrap}.thought p{color:#d6a4ff}.event.encounter_start{background:#241008;border-left:8px solid #ff6b57;padding:16px 14px}.event.encounter_start p{font-size:18px;font-weight:900;color:#fff1d6}.event.combat_round{background:#18090b;border-left:8px solid #ffad69}.phase-combat{color:#ffad69;font-weight:900}.phase-aftermath{color:#d6a4ff;font-weight:900}.state{margin-left:auto}.empty{padding:32px 12px;color:#8ca184}
   </style>
 </head>
 <body>
   <header><span class="tag">Town Module Table</span><span id="dot" class="dot"></span><strong>Fenwater Drainage live table</strong><a id="xrayLink" class="mode" href="?view=xray">x-ray</a><a id="tableLink" class="mode" href="?view=table">table-safe</a><span id="status" class="muted state">connecting…</span></header>
-  <section class="strip" id="strip"><div><h2>Phase</h2><p>—</p></div><div><h2>Location</h2><p>—</p></div><div><h2>Clocks</h2><p>—</p></div><div><h2>Leads</h2><p>—</p></div><div><h2>Party</h2><p>—</p></div></section>
-  <section class="xray" id="xray"><div><h2>Referee memory</h2><p>—</p></div><div><h2>Player memory</h2><p>—</p></div><div><h2>Audit counters</h2><p>—</p></div></section>
+  <section class="strip" id="strip"><div><h2>Phase</h2><p>—</p></div><div><h2>Location</h2><p>—</p></div><div><h2>Clocks</h2><p>—</p></div><div><h2>Leads</h2><p>—</p></div></section>
+  <section class="hud" id="hud"><div class="pc"><h3>Party HUD</h3><p class="meta2">waiting for Session Zero…</p></div></section>
+  <section class="xray" id="xray"><details open><summary>Runtime</summary><p>—</p></details><details open><summary>Campaign facts</summary><p>—</p></details><details><summary>Memory compaction</summary><p>—</p></details><details open><summary>Audit counters</summary><p>—</p></details></section>
   <main id="feed"><div class="empty">Attaching to Referee stream…</div></main>
 <script>
-const feed=document.getElementById('feed'); const status=document.getElementById('status'); const dot=document.getElementById('dot'); const strip=document.getElementById('strip'); const xray=document.getElementById('xray');
-const params=new URLSearchParams(location.search); const view=params.get('view')||'xray'; document.getElementById(view==='table'?'tableLink':'xrayLink').classList.add('active');
+const feed=document.getElementById('feed'); const status=document.getElementById('status'); const dot=document.getElementById('dot'); const strip=document.getElementById('strip'); const hud=document.getElementById('hud'); const xray=document.getElementById('xray');
+const params=new URLSearchParams(location.search); const view=params.get('view')==='xray'?'xray':'table'; document.getElementById(view==='table'?'tableLink':'xrayLink').classList.add('active');
 let events=[]; let tableState=null;
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function render(){
   if(tableState){
     const clocks=(tableState.clocks||[]).map(c=>c.name+' '+c.value+'/'+c.max).join(' · ')+' · difficulty '+(tableState.difficulty||1)+'/8';
     const leads=(tableState.activeLeads||[]).slice(0,5).join(' · ');
-    const party=(tableState.party||[]).map(p=>p.character+' '+(p.hp??'?')+'hp AC'+(p.armorClass??'?')+' '+((p.inventory||[]).slice(0,2).join('/')||'gear')+' @ '+(p.position||tableState.location||'?')).join(' · ');
+    const party=(tableState.party||[]).map(p=>p.character+' '+(p.hp??'?')+'hp AC'+(p.armorClass??'?')+' @ '+(p.position||tableState.location||'?')).join(' · ');
     const combat=tableState.combat;
     const last=tableState.lastEncounter;
     const phase=(tableState.tablePhase||'exploration')+(combat?' · '+combat.foe+' HP '+combat.foeHp+'/'+(combat.foeMaxHp||combat.foeHp)+' AC '+combat.foeArmorClass:(last?' · last: '+last.foe+' '+last.outcome+' beat '+last.beat:''));
+    const arc=tableState.campaignArc;
+    const arcBrief=tableState.campaignArcBrief;
     const phaseClass=tableState.tablePhase==='combat'?'phase-combat':(tableState.tablePhase==='aftermath'?'phase-aftermath':'');
-    strip.innerHTML='<div><h2>Phase</h2><p class="'+phaseClass+'">'+esc(phase)+'</p></div><div><h2>Location</h2><p>'+esc(tableState.location||'—')+'</p></div><div><h2>Clocks</h2><p class="clockline">'+esc(clocks||'—')+'</p></div><div><h2>Leads</h2><p>'+esc(leads||'—')+'</p></div><div><h2>Party</h2><p class="partyline">'+esc(party||'—')+'</p></div>';
+    strip.innerHTML='<div><h2>Arc</h2><p>'+esc(arc?(arc.status+' · '+arc.summary):(phase))+'</p></div><div><h2>Location</h2><p>'+esc(tableState.location||'—')+'</p></div><div><h2>Clocks</h2><p class="clockline">'+esc(clocks||'—')+'</p></div><div><h2>Aim</h2><p class="'+phaseClass+'">'+esc(arcBrief?(arcBrief.aim):phase)+'</p></div>';
+    hud.innerHTML=(tableState.party||[]).length?(tableState.party||[]).map(p=>{const status=p.status||'active'; const gear=(p.inventory||[]).slice(0,3).join(' · ')||'gear unknown'; const intent=p.intent?(' · '+p.intent):''; return '<div class="pc '+esc(status)+'"><h3>'+esc(p.character)+'</h3><div class="stats"><span>HP '+esc(p.hp??'?')+'/'+esc(p.maxHp??'?')+'</span><span>AC '+esc(p.armorClass??'?')+'</span><span>L'+esc(p.level||1)+' '+esc(p.className||'adventurer')+'</span><span>XP '+esc(p.xp||0)+'/'+esc(p.nextLevelXp||'—')+'</span><span>'+esc(status)+'</span></div><div class="meta2">'+esc((p.player||p.playerId||'player')+' @ '+(p.position||tableState.location||'?'))+'</div><div class="meta2">'+esc(gear+intent)+'</div></div>'}).join(''):'<div class="pc"><h3>Party HUD</h3><p class="meta2">waiting for Session Zero…</p></div>';
     const counters=tableState.summaryCounters||{};
-    const referee=tableState.refereeMemory||{};
-    const refText=['revealed: '+(referee.revealedFacts||[]).slice(0,4).join(' | '),'unresolved: '+(referee.unresolvedThreads||[]).slice(0,4).join(' | '),'npc: '+(referee.npcState||[]).slice(0,3).join(' | '),'hidden: '+(referee.hiddenStillPrivate||[]).slice(0,2).join(' | ')].join('\\n');
-    const playerText=Object.entries(tableState.partyMemory||{}).map(([id,m])=>id+': '+[...(m.knows||[]).slice(0,2),...(m.goals||[]).slice(0,1),...(m.losses||[]).slice(0,1),...(m.tactics||[]).slice(0,1)].join(' | ')).join('\\n');
+    const facts=Object.values(tableState.campaignFacts||{}).slice(-8).map(f=>f.kind+': '+f.claim).join('\\n');
+    const comp=(tableState.memoryCompactions||[]).slice(0,3).map(m=>m.scope+' '+m.eventSequenceRange.from+'-'+m.eventSequenceRange.to+': '+m.summary).join('\\n');
+    const adv=tableState.safeHavens?'safeHavens '+Object.keys(tableState.safeHavens||{}).length+' · treasure '+Object.keys(tableState.treasureParcels||{}).length+' · xp '+(tableState.xpLedger||[]).length:'—';
+    const wait=tableState.waitStatus;
+    const waitAge=wait&&wait.startedAt?Math.max(0,Math.round((Date.now()-Date.parse(wait.startedAt))/1000)):0;
+    const runtimeText='mode '+(tableState.mode||'unknown')+' · lifecycle '+(tableState.lifecycle||'unknown')+' · beat '+(tableState.beat??0)+'\\nwaiting '+(wait?(wait.phase+' '+waitAge+'s'+(wait.detail?' — '+wait.detail:'')):'—')+'\\nfiber '+(tableState.runningFiberId||'—')+'\\nupdated '+(tableState.updatedAt||'—');
     const counterText='events '+(counters.totalEvents??events.length)+' retained '+events.length+'\\nlocality '+(counters.localityCorrections??0)+' combat '+(counters.combatRows??0)+' objective '+(counters.objectiveProgress??0)+'\\ninactive attempts '+(counters.inactiveActionAttempts??0)+' duplicate commits '+(counters.duplicateCommitBeats??0);
     xray.classList.toggle('on', view!=='table');
-    xray.innerHTML='<div><h2>Referee memory</h2><p>'+esc(refText)+'</p></div><div><h2>Player memory</h2><p>'+esc(playerText||'—')+'</p></div><div><h2>Audit counters</h2><p>'+esc(counterText)+'</p></div>';
+    xray.innerHTML='<details open><summary>Runtime</summary><p>'+esc(runtimeText+'\\n'+adv)+'</p></details><details open><summary>Campaign facts</summary><p>'+esc(facts||'—')+'</p></details><details><summary>Memory compaction</summary><p>'+esc(comp||'—')+'</p></details><details open><summary>Audit counters</summary><p>'+esc(counterText)+'</p></details>';
   }
   events.sort((a,b)=>Date.parse(b.at||0)-Date.parse(a.at||0));
   feed.innerHTML=events.length?events.map(e=>'<article class="event '+esc(e.kind)+'"><div class="meta"><span class="lane '+esc(e.lane)+'">'+esc(e.lane)+'</span><span class="kind">'+esc(e.kind)+'</span><span class="speaker">'+esc(e.speaker)+'</span><span>beat '+esc(e.beat)+'</span><span>'+new Date(e.at).toLocaleTimeString()+'</span></div><p>'+esc(e.text)+'</p>'+(e.devText?'<p class="muted">'+esc(e.devText)+'</p>':'')+'</article>').join(''):'<div class="empty">Waiting for table events…</div>';
 }
 function connect(){
   const protocol=location.protocol==='https:'?'wss:':'ws:';
-  const ws=new WebSocket(protocol+'//'+location.host+'/agents/referee/town-module-table?monitor=town-table&view='+encodeURIComponent(view));
+  const socketParams=new URLSearchParams({monitor:'town-table',view}); if(params.get('dev')==='1') socketParams.set('dev','1');
+  const ws=new WebSocket(protocol+'//'+location.host+'/agents/referee/town-module-table?'+socketParams.toString());
   ws.onopen=()=>{status.textContent='connected · server starts/resumes automatically';dot.className='dot on'};
   ws.onclose=()=>{status.textContent='disconnected · retrying';dot.className='dot';setTimeout(connect,1200)};
   ws.onerror=()=>{status.textContent='socket error';dot.className='dot err'};

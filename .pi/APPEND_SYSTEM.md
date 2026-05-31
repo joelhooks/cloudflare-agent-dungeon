@@ -130,6 +130,13 @@ Use `.brain/` as the canonical durable project graph.
 
 Use `second-brain-execution` and `para-operator` when organizing durable knowledge.
 
+When creating or materially updating a Brain page, the final operator summary must include both:
+
+- the source file path, e.g. `.brain/areas/example.svx`
+- a verified local rendered Document Host URL/link for that exact page.
+
+Do **not** guess the Brain URL from a global/system notes host. The `pi-notes.localhost` route may point at another workspace. First verify which Document Host is serving this repo's `.brain` by opening or `curl`ing the exact page and requiring HTTP 200. If no current local host serves this repo, start one with `PI_NOTES_WORKSPACE_ROOT=/Users/joel/Code/joelhooks/cloudflare-agent-dungeon` and a project-specific portless alias, then share that verified URL.
+
 Do not let chat history be the only source of truth.
 
 ## Brain data and receipt efficiency

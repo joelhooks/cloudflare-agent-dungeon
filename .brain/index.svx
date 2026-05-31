@@ -16,6 +16,7 @@ created: 2026-05-24
 ## Areas
 
 - [[areas/agent-dungeon-operating-context]]
+- [[areas/application-architecture-brief]]
 
 ## Decisions
 

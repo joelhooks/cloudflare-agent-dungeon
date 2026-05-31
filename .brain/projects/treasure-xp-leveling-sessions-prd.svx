@@ -162,7 +162,7 @@ Minimum states:
 
 The Referee decides when safety is reached: rest site, town contact, secured cache, or end-of-expedition return. Capture that decision in the event log and campaign treasure state.
 
-Recovered treasure should not necessarily become XP immediately on the same danger beat. Prefer a bounded **settlement/accounting procedure** with the old-school "get home and count the haul" feel: return to base, sort loot, appraise/sell/barter where needed, award XP, check level eligibility, and decide town actions.
+Recovered treasure **must not** become XP immediately on the same danger beat. Canonical lifecycle is two distinct procedures: `RecoveryBoundary` moves a carried parcel to `recovered_to_safety`, then a bounded **settlement/accounting procedure** converts recovered treasure into `XpLedgerEntry` records. Keep the old-school "get home and count the haul" feel: return to base, sort loot, appraise/sell/barter where needed, award XP, check level eligibility, and decide town actions.
 
 ### SafeHaven / Base Town abstraction
 
@@ -185,6 +185,24 @@ type SafeHaven = {
 ```
 
 `base_town` can be a subtype/tag/source alias. Do not hardcode tavern as the only safe return/leveling place.
+
+Settlement XP requires a SafeHaven with `settle_treasure`. A RecoveryBoundary without that capability may cache or protect a parcel, but it leaves the parcel `cached` / not-yet-settled until the party reaches a settlement-capable SafeHaven.
+
+Level-up commitment requires a separate SafeHaven capability: `train_level_up`. A `settle_treasure` SafeHaven may create XP ledger entries and mark characters eligible, but it should not automatically apply a level unless that SafeHaven also supports training or the campaign has an explicit source-backed exception/ruling.
+
+Fenwater should deliberately include at least one settlement-capable SafeHaven that is not training-capable, plus one training-capable SafeHaven/contact that must be earned, revealed, or reached. The intended arc is: recover haul → settle XP at a SafeHaven → mark LevelingSession eligible → pursue trainer/contact/location → commit level-up.
+
+A 150–300 beat level-up is an observational smell-test, not a scripted guarantee. If level-up does not emerge by that range, run longer samples as needed (400+ beats is valid) and diagnose the campaign ecology before changing rules or forcing treasure. Tune for interesting OSE play: meaningful expeditions, danger, extraction, downtime, trainer access, and narrative structure. Do not cheat thresholds, inject milestone XP, or reveal rewards just because a beat counter says it is time.
+
+The unit of tuning is the **CampaignArc**, composed of expeditions, not a raw beat counter. A healthy arc looks like: leave SafeHaven with intent → explore/contact/procedure → claim treasure/information/leverage → choose push-on or return → recover/settle/downtime → train/hire/follow a new lead → launch the next expedition. TableRun beats are the execution log; CampaignArc is the shape being tuned.
+
+Promote `CampaignArc` into a lightweight domain schema now instead of leaving it as Worker prose. Initial shape should be small and observable: `id`, `campaignId`, `status` (`opening | expedition | returning | settlement | downtime | training | closed`), `expeditionIds`, `activeLeadFactIds`, `treasureParcelIds`, `xpLedgerEntryIds`, `levelingSessionIds`, `summary`, and `updatedAt`. It should help the monitor and Referee describe campaign structure without scripting chapters. Put the first schema in `packages/domain/src/advancement.ts` and export it from `packages/domain/src/index.ts`; split to a dedicated campaign-arc module later only if it grows beyond the advancement/ecology seam. The monitor should display `CampaignArc.status` as the primary story state above raw TableRun `phase`, because `phase=exploration` is too low-level to explain whether the campaign is launching, delving, returning, settling, or pursuing training.
+
+Autonomous play should optimize **arc momentum**, with survival and treasure extraction as constraints. The Referee should keep the table playing the game: make a meaningful expedition choice, take a risk, resolve the consequence, bring something back or lose something, change campaign state, and choose the next pressure. Do not optimize purely for survival/turtling or treasure/suicide-running.
+
+PlayerAgents should receive a compact player-safe `CampaignArcBrief` when choice-relevant. It should tell them where they are in the arc, what they are trying to do, why it matters, known risks, and plausible next moves. It must orient and motivate without railroading: present the current aim and stakes, but keep multiple viable choices open and never reveal hidden treasure placement, Referee-only facts, or forced outcomes.
+
+`CampaignArcBrief` should be derived from committed player-visible campaign state: `CampaignArc.status`, player-visible `CampaignFact`s, known SafeHavens, party-visible carried/recovered treasure, open expedition aim, and public clocks/threats. It may include Referee-authored player-safe stakes only when those stakes have been committed as an event/fact. It must not include hidden planning hints or uncommitted Referee intent.
 
 ### Player-facing advancement/town skills
 
@@ -377,6 +395,28 @@ First Fenwater ecology pass should include all mutually reinforcing essentials:
 - magic items/weird treasure where source-backed and module-fitting;
 - supplies/light/time/recovery pressures;
 - domain/faction hooks that make long play feel like a living place.
+
+### Encounter opportunity / OSE procedure correction
+
+A production run reached beat 69 with heavy danger but no `encounter_start`, `combat_round`, or initiative events in the retained window. The run had many cutter/threat/damage references, but the runtime converted danger into repeated hard-choice prose instead of entering OSE encounter procedure.
+
+Corrected invariant: PlayerAgents choose **how** to engage; the Referee mitigates/adjudicates with OSE-ish procedure and rolls. The Referee should not force combat, but hostile/uncertain contact should become an `EncounterOpportunity` where players choose approach:
+
+- parley/negotiate → reaction roll / morale posture;
+- hide/ambush/scout → surprise and encounter distance;
+- fight/hold/block → initiative and combat round/objective procedure;
+- flee/evade/chase → evasion/pursuit procedure;
+- rescue/secure treasure under pressure → objective clock + checks with consequences.
+
+OSE receipts for this correction:
+
+- `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s243` — adventuring turn sequence routes encounters to Encounters procedure.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s541/s557/s572` — dungeon/wilderness/waterborne sequence references Encounter procedure.
+- `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s259` and `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s585/s1298` — Encounter Sequence includes surprise, distance, initiative, actions.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s664` — maintaining challenge means presenting meaningful choices.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s665` — Referee describes effects/unknowns without revealing hidden truth.
+
+Next runtime seam: introduce a generic `EncounterOpportunity`/`EncounterApproach` domain shape and detection path so hostile actors, maxed threat clocks, immediate violence, or physical danger trigger procedure choice instead of cinematic death spiral loops.
 
 ### Implementation order inside one work session
 

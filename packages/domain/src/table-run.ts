@@ -31,7 +31,18 @@ export const TableEventKindSchema = z.enum([
   "opening_seed_draft",
   "opening_committed",
   "clock_tick",
+  "encounter_opportunity",
+  "encounter_approach",
+  "encounter_procedure",
   "encounter_start",
+  "treasure_discovered",
+  "treasure_claimed",
+  "treasure_recovered",
+  "treasure_settled",
+  "xp_ledger_entry",
+  "downtime_action",
+  "return_to_safety",
+  "memory_compaction",
   "combat_round",
   "commit",
   "error"
@@ -95,6 +106,49 @@ export const CombatObjectiveSchema = z.object({
 });
 export type CombatObjective = z.infer<typeof CombatObjectiveSchema>;
 
+export const EncounterApproachSchema = z.enum(["parley", "evade", "sneak", "fight", "secure_object", "rescue", "hold_position"]);
+export type EncounterApproach = z.infer<typeof EncounterApproachSchema>;
+
+export const EncounterOpportunitySchema = z.object({
+  id: z.string().min(1),
+  threat: z.string().min(1).max(160),
+  trigger: z.string().min(1).max(520),
+  severity: z.enum(["uncertain", "dangerous", "deadly"]).default("dangerous"),
+  approaches: z.array(EncounterApproachSchema).min(2).max(7),
+  sourceRefs: z.array(z.string().min(1).max(220)).default([])
+});
+export type EncounterOpportunity = z.infer<typeof EncounterOpportunitySchema>;
+
+export function classifyEncounterApproach(text: string): EncounterApproach {
+  const lower = text.toLowerCase();
+  if (/parley|talk|bargain|negotiate|reaction|offer|bribe|warn/.test(lower)) return "parley";
+  if (/flee|run|retreat|withdraw|escape|evade|chase|pursuit/.test(lower)) return "evade";
+  if (/hide|sneak|ambush|scout|shadow|listen|surprise/.test(lower)) return "sneak";
+  if (/rescue|drag|carry|save|extract wounded|help .*up/.test(lower)) return "rescue";
+  if (/grab|secure|snatch|ledger|treasure|object|evidence|key|token/.test(lower)) return "secure_object";
+  if (/hold|block|guard|defend|brace|door|line/.test(lower)) return "hold_position";
+  return "fight";
+}
+
+export function detectEncounterOpportunity(input: { recentText: string; clocks?: TableClock[]; difficulty?: number; repeatedChoiceCount?: number }): EncounterOpportunity | undefined {
+  const text = input.recentText.toLowerCase();
+  const maxedClock = input.clocks?.find((clock) => clock.value >= clock.max);
+  const hostile = /cutter|bandit|monster|foe|enemy|debt-thing|debt-drowned|collector|hostile|attacks?|grenado|blade|knife|club|spear|bow|boots? .*climb|ambush|pursu|chase|guard[s]? attack|armed guard|something attacks|thing attacks/.test(text);
+  const physicalDanger = /drown|flood|pinned|trapped|crushed|damage|hp|wounded|bleeding|fire|collapse|poison|fall/.test(text);
+  const repeated = (input.repeatedChoiceCount ?? 0) >= 2;
+  if (!hostile && !(maxedClock && physicalDanger) && !(repeated && (hostile || physicalDanger))) return undefined;
+  const threat = hostile ? (text.includes("cutter") ? "Fenwater cutters" : text.includes("debt") || text.includes("collector") ? "debt-drowned collector" : "immediate hostile contact") : maxedClock ? maxedClock.name : "dangerous situation";
+  const approaches: EncounterApproach[] = hostile ? ["parley", "evade", "sneak", "fight", "secure_object", "rescue"] : ["evade", "secure_object", "rescue", "hold_position"];
+  return EncounterOpportunitySchema.parse({
+    id: `encounter-${Math.abs([...input.recentText].reduce((hash, char) => ((hash * 31) + char.charCodeAt(0)) | 0, 7)).toString(36)}`,
+    threat,
+    trigger: input.recentText.slice(0, 500),
+    severity: (input.difficulty ?? 1) >= 6 || (maxedClock && physicalDanger) ? "deadly" : "dangerous",
+    approaches,
+    sourceRefs: ["old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s259", "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s585"]
+  });
+}
+
 export const CombatStateSchema = z.object({
   round: z.number().int().nonnegative(),
   foe: z.string().min(1),
@@ -126,9 +180,14 @@ export type TablePartyMemberStatus = z.infer<typeof TablePartyMemberStatusSchema
 
 export const TablePartyMemberSchema = z.object({
   playerId: z.string().min(1),
+  characterId: z.string().min(1).optional(),
   player: z.string().min(1),
   character: z.string().min(1),
   className: z.string().optional(),
+  level: z.number().int().positive().optional(),
+  xp: z.number().int().nonnegative().optional(),
+  nextLevelXp: z.number().int().nonnegative().optional(),
+  maxHp: z.number().int().positive().optional(),
   hp: z.number().int().optional(),
   armorClass: z.number().int().optional(),
   inventory: z.array(z.string()).optional(),

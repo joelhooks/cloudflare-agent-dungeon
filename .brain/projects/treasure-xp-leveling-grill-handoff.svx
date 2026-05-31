@@ -3,6 +3,7 @@ title: "Treasure XP Leveling Grill Handoff"
 type: "project"
 status: "active"
 created_at: "2026-05-30"
+updated_at: "2026-05-30"
 tags:
   - handoff
   - agent-dungeon
@@ -11,25 +12,16 @@ tags:
   - xp
   - leveling
   - safehaven
+  - encounter-procedure
 ---
 
 # Treasure XP Leveling Grill Handoff
 
 ## Current objective
 
-Continue the grill or start implementation for OSE-style treasure, XP, leveling, and SafeHaven/domain interfaces.
+Resume after the OSE ecology/domain seam work, runtime hardening, and production run review.
 
-Joel wants the advancement loop to be real OSE-ish play:
-
-- treasure parcels;
-- extraction / return to safety;
-- campaign-scoped parcel lifecycle;
-- campaign-scoped XP ledger;
-- settlement/accounting procedure;
-- level-up sessions when thresholds are met;
-- player-facing skills/artifacts so PlayerAgents understand when to return, settle loot, buy gear, rest, hire, barter, and level;
-- full OSE ruleset support to the extent possible;
-- interface/domain-first design, not module-specific Worker goo.
+Next likely task: implement the **EncounterOpportunity / OSE procedure correction** and then run another production sample. The last run showed lots of danger but almost no formal encounter/combat procedure; the Referee over-narrated a hard-choice loop instead of letting PlayerAgents choose an engagement approach and then resolving with rolls.
 
 ## Current live state
 
@@ -37,248 +29,322 @@ Repo:
 
 - cwd: `/Users/joel/Code/joelhooks/cloudflare-agent-dungeon`
 - branch: `feat/realtime-agent-dungeon-campaign`
+- `origin` now points to GitHub: `git@github.com:joelhooks/cloudflare-agent-dungeon.git`
+- pushed public commit as ShitRat: `accbd732899363d2864470dccbdb45798e6fd70e`
+  - https://github.com/joelhooks/cloudflare-agent-dungeon/commit/accbd732899363d2864470dccbdb45798e6fd70e
 
-Git status at handoff:
+Current git status at this handoff:
 
-- modified:
-  - `.brain/data/prototype-build-log.jsonl`
-  - `.pi/APPEND_SYSTEM.md`
-  - `AGENTS.md`
-  - `apps/worker/src/index.ts`
-  - `packages/domain/src/table-run.test.ts`
-  - `packages/domain/src/table-run.ts`
-- untracked:
-  - `.brain/projects/adventure-opening-and-campaign-persistence-handoff.svx`
-  - `.brain/projects/table-run-session-zero-opening-seed-prd.svx`
-  - `.brain/projects/treasure-xp-leveling-sessions-prd.svx`
-  - `.brain/projects/treasure-xp-leveling-grill-handoff.svx`
-  - `.pi/workflow-runs/`
+```txt
+ M apps/worker/src/index.ts
+ M .brain/projects/treasure-xp-leveling-sessions-prd.svx
+ M .brain/projects/treasure-xp-leveling-grill-handoff.svx
+?? .pi/workflow-runs/
+```
 
-Do not casually delete `.pi/workflow-runs/`; it appeared during this session and was not investigated.
+`apps/worker/src/index.ts` contains post-commit runtime hardening/UI changes. They were deployed to production before the last run review, but not yet committed/pushed. `.pi/workflow-runs/` is local workflow scratch; do not casually commit it.
 
 ## Durable artifacts updated
 
+Main planning doc:
+
 - `.brain/projects/treasure-xp-leveling-sessions-prd.svx`
-  - Main PRD for this next workstream.
-- `.pi/APPEND_SYSTEM.md`
-  - Added **Domain-first interfaces** operating rule.
-- `AGENTS.md`
-  - Added concise domain-first interface rule.
-- `.brain/data/prototype-build-log.jsonl`
-  - Added receipt for TableRun Session Zero + opening seed implementation/prod smoke.
-- `.brain/projects/table-run-session-zero-opening-seed-prd.svx`
-  - PRD for completed opening seed slice.
-- `.brain/projects/adventure-opening-and-campaign-persistence-handoff.svx`
-  - Earlier handoff for opening seed/campaign persistence.
+  - Added EncounterOpportunity / OSE procedure correction after reviewing beat-69 run behavior.
 
-Likely Document Host URLs:
+This handoff:
 
-- `/notes/projects/treasure-xp-leveling-sessions-prd`
-- `/notes/projects/treasure-xp-leveling-grill-handoff`
+- `.brain/projects/treasure-xp-leveling-grill-handoff.svx`
 
-## Important current runtime receipt
+Operating layer already updated earlier:
 
-A production 100-beat run was started after the opening-seed implementation.
+- `.pi/APPEND_SYSTEM.md` — Domain-first interfaces operating rule.
+- `AGENTS.md` — concise domain-first rule.
 
-Current summary at handoff:
+Domain/runtime commit already pushed:
+
+- `packages/domain/src/advancement.ts`
+- `packages/domain/src/advancement.test.ts`
+- `packages/domain/src/adventure-module.ts`
+- `packages/domain/src/index.ts`
+- `apps/worker/src/adventure-module/fenwater-content.ts`
+- opening-seed/runtime changes in `apps/worker/src/index.ts`
+- Brain PRDs/build log receipts
+
+## What changed since the prior handoff
+
+### Domain/OSE ecology seam implemented and pushed
+
+Workflow OS ran context → design → implement → review. The implemented slice added:
+
+- `GameplayVisibilitySchema` and `PlayerSafeVisibilitySchema`
+- `TreasureParcelTemplateSchema`
+- `CampaignTreasureParcelStateSchema`
+- `SafeHavenTemplateSchema`
+- `CampaignSafeHavenStateSchema`
+- `XpLedgerEntrySchema`
+- `LevelingSessionSchema`
+- `RuleSupplementSchema`
+- `OseRulesCatalogArtifactSchema`
+- `toPlayerTreasureProjection(...)`
+
+Fenwater now validates three treasure payloads through `TreasureParcelTemplateSchema.parse(...)` and has three `safeHaven` components:
+
+- Alder Knoll dry camp
+- Reedwright stove boat
+- Pump House mezzanine
+
+Reviewer findings were fixed before push:
+
+- lifecycle state is `recovered_to_safety` instead of vague `recovered`;
+- player-facing treasure visibility rejects `referee_private` and `audience_xray`;
+- rule supplement schema now models temporary/campaign/module/citation shape better.
+
+### Review tools
+
+- Macroscope was reinstalled manually after its self-update deleted the binary.
+- `macroscope codereview --in-place --base HEAD` ran and produced three valid Worker findings. Fixed:
+  - null/undefined opening strings no longer coerce to literal `""`;
+  - combat `modelCallsUsed` counts tactic calls, not full party length;
+  - locked exploration action counts one model call instead of two.
+- CodeRabbit was available but timed out; surfaced one unrelated Brain duplicate-step nit only.
+
+### Runtime hardening deployed, not committed
+
+`apps/worker/src/index.ts` currently has local hardening/UI changes:
+
+- `waitStatus` on Town Module Table state:
+  - `phase`
+  - `detail`
+  - `startedAt`
+- x-ray Runtime accordion:
+  - mode/lifecycle/beat
+  - wait phase + age
+  - running fiber id
+  - updatedAt
+- memory panels are now accordions:
+  - Runtime open
+  - Referee memory collapsed
+  - Player memory collapsed
+  - Audit counters open
+- `runPrototypeModelJson(...)` now wraps Workers AI JSON calls with `withPrototypeTimeout(..., 60s)`.
+- each table beat is wrapped with `withPrototypeTimeout(..., 2min)`.
+- wait status updates around:
+  - Session Zero
+  - opening selection
+  - beat resolution
+  - player micro-events
+  - readiness check
+  - Referee ruling
+
+These changes were deployed via Wrangler, then a run was kicked, reviewed, and stopped/reset. They are not yet pushed.
+
+## Production run receipts
+
+### Run after hardening deploy
+
+A 100-beat run was started after deploying hardening. It was stopped/reset manually for review.
+
+Pre-stop snapshot:
 
 ```json
 {
-  "mode": "stopped",
-  "beat": 100,
-  "phase": "aftermath",
-  "stoppedReason": "sample maxBeats 100 reached",
-  "visited": [
-    "fenwater-location-reed-maze",
-    "fenwater-location-sluice-mouth",
-    "fenwater-location-north-ditch-door",
-    "fenwater-location-tithe-mill-yard",
-    "fenwater-location-morts-bar",
-    "fenwater-location-glasswort-sink",
-    "fenwater-location-old-pump-house",
-    "fenwater-location-causeway-shrine",
-    "fenwater-location-alder-knoll"
-  ],
-  "activeFrontIds": [
-    "fenwater-front-mort-bolts",
-    "fenwater-front-cutter-intercepts",
-    "fenwater-front-runner-warns",
-    "fenwater-front-waterlogged-debt",
-    "fenwater-front-pump-failure"
-  ],
+  "mode": "running",
+  "beat": 69,
+  "phase": "exploration",
+  "location": "Mort's bar",
   "counts": {
-    "events": 1138,
+    "events": 893,
     "retainedEvents": 500,
-    "modelCalls": 499,
-    "localityCorrections": 124,
-    "objectiveProgress": 2,
-    "combatRows": 9,
+    "modelCalls": 353,
+    "localityCorrections": 117,
+    "objectiveProgress": 0,
+    "combatRows": 0,
     "inactiveActionAttempts": 0,
-    "inactivePartyMembers": 1,
+    "inactivePartyMembers": 0,
     "clockOverflows": 0,
     "duplicateCommitBeats": 0
+  },
+  "waitStatus": {
+    "phase": "readiness_check",
+    "detail": "Asking Referee whether the table has enough commitment to resolve.",
+    "startedAt": "2026-05-30T18:09:55.957Z"
   }
 }
 ```
 
-Command used:
+Retained event lane counts:
 
-```bash
-curl -sS 'https://agentdungeon.ai/api/prototype/town-module-table-summary'
+```txt
+rules    110
+player   160
+referee  115
+commit    39
+dice      39
+world     37
 ```
 
-## Decisions and invariants from the grill
+Retained event kind counts:
 
-### Domain/interface-first is now operating law
+```txt
+procedure_check 110
+referee_thought 112
+lock_action      90
+thought_bubble   66
+commit           39
+dice_roll        39
+ruling           36
+```
 
-Joel corrected that we must build against interfaces and a domain model, not hard-coded concrete implementations.
+No error rows in retained logs.
 
-Captured in `.pi/APPEND_SYSTEM.md` and `AGENTS.md`:
+The run was stopped with:
 
-- build the domain model, not one-off module goo;
-- promote cross-module gameplay shapes into `packages/domain` or shared boundaries;
-- Fenwater is the first module, not the architecture;
-- avoid Worker switch statements, name pools, prompt-only contracts, and hidden module assumptions.
+```bash
+curl -sS -X POST 'https://agentdungeon.ai/api/prototype/town-module-table-reset?difficulty=7&maxBeats=100'
+```
 
-### Treasure and XP
+Current production summary after reset:
 
-- Advancement should be driven by **actual recovered treasure**, not milestone XP.
-- Treasure XP should usually happen during settlement/accounting after return-to-safety, not immediately on the danger beat.
-- XP ledger is **campaign-scoped** immediately.
-- TableRun events link into the XP ledger as receipts.
-- Existing prototype hook in `packages/domain/src/index.ts`: `awardRecoveredTreasureXp(...)`.
+```json
+{
+  "mode": "idle",
+  "beat": 1,
+  "phase": "exploration",
+  "counts": {
+    "events": 9,
+    "retainedEvents": 9,
+    "modelCalls": 5,
+    "localityCorrections": 0,
+    "objectiveProgress": 0,
+    "combatRows": 0,
+    "inactiveActionAttempts": 0,
+    "inactivePartyMembers": 0,
+    "clockOverflows": 0,
+    "duplicateCommitBeats": 0
+  },
+  "visited": 1,
+  "fronts": 5
+}
+```
 
-### Treasure parcel lifecycle
+## Key diagnosis from run review
 
-- AdventureModule defines `TreasureParcelTemplate`.
-- Campaign owns `CampaignTreasureParcelState`.
-- Campaign lifecycle states should include at least:
-  - `undiscovered`
-  - `discovered`
-  - `claimed`
-  - `carried`
-  - `cached`
-  - `lost`
-  - `recovered_to_safety`
+Combat opportunities were **not scarce**. The party path generated lots of danger, but the runtime converted danger into prose/hard-choice pressure instead of formal OSE encounter/combat procedure.
 
-### SafeHaven / Base Town
+Retained 500-event search from beat-69 snapshot:
 
-Canonical domain term: **SafeHaven**.
+```txt
+encounter_start 0
+combat_round    0
+initiative      0
+combat          0
+cutter mentions 136
+reaction mentions 22
+attack mentions 5
+damage/hp mentions ~6
+```
 
-OSE source term: **Base Town**. Use `base_town` as subtype/tag/source alias, not the domain ceiling.
+The fiction had cutters, grenadoes, drowning, pinned legs, sinking ledgers, and repeated choices around Mort/Glasswort sink, but no `encounter_start` or combat mode.
 
-A SafeHaven is a capability-bearing safe-enough place, not necessarily a literal town/tavern:
+Problem shape:
 
-- tavern;
-- inn;
-- camp;
-- patron house;
-- shrine;
-- guild hall;
-- reed boat;
-- other campaign-defined base.
+- Current encounter trigger is too narrow and tied to specific old clock names / maxes.
+- Dynamic Referee rulings introduced other pressures like Drowned Chapel Submersion, Shell-token Alert, cutters climbing, grenadoes, etc.
+- Those became cinematic pressure rather than `EncounterOpportunity` + OSE procedure.
+- Around beats 60-69, the run repeated almost the same Endrin / Mort / ledger / Glasswort sink hard choice instead of resolving and moving on.
 
-SafeHaven should be split template vs instance:
+Corrected invariant from Joel:
 
-- AdventureModule/SafeHaven template defines possible services/capabilities.
-- Campaign owns mutable instance state: discovered, friendly, currently safe, available services, risk tonight.
+> Players should be able to choose how to engage. The Referee should mitigate/adjudicate and use rolls.
 
-### PlayerAgent skills / artifacts
+Do not force every hostile situation into combat. Do expose an encounter opportunity, ask PlayerAgents how they engage, and then use the appropriate OSE-ish roll/procedure.
 
-PlayerAgents need choice-relevant player-safe skills/artifacts for:
+## OSE/source receipts for encounter correction
 
-- when/why to return to base;
-- risks of pressing on while loaded, wounded, low on supplies, or chased;
-- treasure → recovery → settlement → XP → leveling;
-- town actions: buy gear, sell/appraise loot, negotiate, barter, hire help, rest, recover, follow rumors, bank/cache valuables.
+Searched JoelClaw during the session.
 
-Do not dump raw rules. Referee exposes compact table guidance when choice-relevant.
+Receipts:
 
-### OSE rules catalog artifact
+- `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s243` — adventuring turn sequence routes encounters to Encounters procedure.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s541/s557/s572` — dungeon/wilderness/waterborne sequence references Encounter procedure.
+- `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s259` — Encounter Sequence includes surprise, encounter distance, initiative/actions.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s585/s1298` — Encounter Sequence receipts.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s664` — maintaining challenge means presenting meaningful choices.
+- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s665` — Referee describes effects/unknowns while hidden info stays hidden.
 
-- Full OSE rule set is in scope to the extent possible.
-- Anything in the OSE corpus is open for addition when source-backed.
-- Base OSE rules catalog/artifact is global/shared across campaigns/modules.
-- Referee loads the catalog on demand as a dedicated artifact, similar to memory but with a rules-catalog contract.
-- Schemas/interfaces should live in `packages/domain`; data should be a versioned global artifact.
-- Catalog stores lookup tables, safe summaries, and doc/chunk IDs, not large raw rules excerpts.
-- Modules/campaigns can add local supplements and explicit house-rule overrides.
+## Decisions and invariants to preserve
 
-### Rule overrides / supplements
+- Domain/interface-first. No Fenwater-only Worker goo.
+- Fenwater is the proving ground, not the architecture.
+- Authored bones + dynamic adaptation.
+- New facts become `CampaignFact`s / typed events/artifacts; they cannot evaporate.
+- PlayerAgent capability access is the hard fog-of-war boundary.
+- Audience/x-ray can see hidden Referee facts; PlayerAgents cannot.
+- `public` is ambiguous; new domain visibility should use explicit values like `party_known`, `player_private`, `referee_private`, `audience_xray`.
+- Referee can access full OSE corpus via JoelClaw. Catalog/artifacts are fast typed basics, not source replacement.
+- Treasure, SafeHavens, XP ledger, level-up eligibility, and CampaignFacts are campaign-scoped where durable.
+- PlayerAgents should choose approach; Referee should adjudicate with OSE procedure and dice, not narrative fiat loops.
 
-Allowed when they make play better for players, but must be auditable.
+## Commands/checks run recently
 
-Types:
+Before deploying hardening:
 
-- `temporary_ruling`
-- `campaign_rule`
-- `module_rule`
+```bash
+pnpm --filter @cloudflare-agent-dungeon/worker check
+pnpm --filter @cloudflare-agent-dungeon/domain test
+pnpm --filter @cloudflare-agent-dungeon/domain check
+```
 
-Each should capture:
+All passed.
 
-- affected base rule/source ref;
-- scope/expiry;
-- Referee reason;
-- whether PlayerAgents receive a player-safe summary;
-- event/ledger id.
+Deployment command used with leased Cloudflare token:
 
-PlayerAgents only receive active rulings when choice-relevant.
+```bash
+CLOUDFLARE_API_TOKEN="$TOKEN" pnpm --filter @cloudflare-agent-dungeon/worker exec wrangler deploy src/index.ts
+```
 
-Important visibility correction from Joel: avoid bare `public` in gameplay/domain visibility because it is ambiguous. Prefer robust enum values like `referee_private`, `party_known`, `player_private`, `player_public`, and `audience_xray`. The x-ray monitor/audience view for Joel may show Referee-private facts, hidden causes, drafts, and receipts because that is observability. PlayerAgent capability access is the hard security/fun boundary and must not leak hidden truth.
+Deploy succeeded:
 
-## Source receipts found
+```txt
+Uploaded cloudflare-agent-dungeon
+Deployed cloudflare-agent-dungeon triggers
+agentdungeon.ai (custom domain)
+```
 
-OSE receipts via JoelClaw:
+Brain check should be rerun after this handoff update.
 
-- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s700` — Base Town setup concept.
-- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s705` — Base Town services, including selling treasure / black market contacts.
-- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s709` — XP from treasure recovered and monsters defeated.
-- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s710` — recovered non-magical treasure grants XP, including 1 XP per 1 gp value.
-- `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s165` and `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s102` — levelling up after enough XP.
-- Retainer/hiring pointers found:
-  - `old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s86`
-  - `old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s241/s245/s1278`
+## Next 3-7 concrete actions
 
-Design receipts via JoelClaw:
-
-- `domain-driven-design-eric-evans-e33b32520524:s522` — domain model / bounded context / model-driven design glossary.
-- `domain-driven-design-eric-evans-e33b32520524:s90` — Smart UI anti-pattern.
-- `domain-driven-design-eric-evans-e33b32520524:s159` — repository encapsulates data store.
-- `philosophy-of-software-design-48cee0a4a0df:s144` and `:s154` — information hiding / information leakage.
-- `designing-dataintensive-applications-39cc0d1842a5:s95` — logs as durable record principle.
-
-## Checks run in this phase
-
-- `pi_notes_brain_check` passed after PRD/handoff edits.
-- Earlier implementation checks before this grill:
-  - `pnpm --filter @cloudflare-agent-dungeon/domain test`
-  - `pnpm --filter @cloudflare-agent-dungeon/worker test`
-  - `pnpm --filter @cloudflare-agent-dungeon/worker exec tsc --noEmit`
-  - Wrangler deploy succeeded and production smoke verified opening-seed slice.
-
-## Suggested next 3-7 actions
-
-1. Continue grill if needed: decide aggregate boundaries for Campaign vs TableRun vs AdventureModule vs OSE catalog artifact.
-2. If implementing, start with `packages/domain` schemas/interfaces:
-   - `OseRulesCatalogArtifact`
-   - `RuleSupplement`
-   - `TreasureParcelTemplate`
-   - `CampaignTreasureParcelState`
-   - `SafeHavenTemplate` / `CampaignSafeHavenState`
-   - `XpLedgerEntry`
-   - `LevelingSession`
-3. Source OSE class/XP/level-up catalog subset with `ose-rules-access`; capture doc/chunk IDs.
-4. Add Fenwater treasure parcel templates as `AdventureModule` components satisfying generic interfaces.
-5. Add campaign-scoped state/ledger hooks; TableRun only emits receipts/events.
-6. Add player-safe skill/artifact text for return-to-base/settlement/leveling choices.
-7. Test one tracer bullet: discover parcel → carry/cache/recover to SafeHaven → settlement/accounting → XP ledger entry → level-up availability.
+1. Run checks on current local state:
+   - `pnpm --filter @cloudflare-agent-dungeon/worker check`
+   - `pnpm --filter @cloudflare-agent-dungeon/domain test`
+   - `pnpm --filter @cloudflare-agent-dungeon/domain check`
+   - `pi_notes_brain_check`
+2. Commit/push the current hardening + PRD/handoff update as ShitRat if desired.
+3. Design domain seam for encounter procedure:
+   - `EncounterOpportunity`
+   - `EncounterApproach`
+   - `EncounterProcedureReceipt`
+   - likely TableRun event kinds: `encounter_opportunity`, `encounter_approach`, `encounter_procedure`, `encounter_resolution`.
+4. Implement runtime detection that turns hostile/uncertain contact into an encounter opportunity, not forced combat:
+   - hostile actors / cutters / violence;
+   - maxed threat clocks;
+   - immediate physical danger;
+   - repeated hard-choice loop.
+5. Let PlayerAgents choose approach:
+   - parley/negotiate → reaction roll;
+   - hide/ambush/scout → surprise/distance;
+   - fight/hold/block → initiative/combat/objective;
+   - flee/evade/chase → evasion/pursuit;
+   - rescue/secure object → objective clock/check.
+6. Add repeated-hard-choice breaker: if same dilemma repeats 2-3 beats, Referee commits a consequence/resolution and moves state forward.
+7. Redeploy, kick a 100-beat run, and inspect x-ray Runtime wait status + retained logs.
 
 ## Relevant skills next
 
-- `grill-with-docs` if continuing decisions.
-- `to-prd` if reshaping the PRD further.
-- `ose-rules-access` before implementing exact OSE procedures/classes/thresholds.
+- `ose-rules-access` before implementing exact encounter/reaction/morale/evasion/combat procedures.
+- `diagnose` if production run gets stuck again.
+- `agent-browser` to verify x-ray accordion/runtime panel in browser after deploy.
+- `code-review-clis` for Macroscope/CodeRabbit after implementation.
 - `brain-maintenance` / `brain-component-composition` for Brain updates.
-- `diagnose` if the prod 100-run or UI state looks broken.
-- `agent-browser` for any production UI validation.
-- `pi-subagents` for review after non-trivial implementation.
+- `pi-subagents` if using a review lane after the encounter implementation.

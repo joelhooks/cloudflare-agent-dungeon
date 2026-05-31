@@ -1,0 +1,293 @@
+---
+title: "Long Campaign 1000 Beat Handoff"
+type: "project"
+status: "active"
+created_at: "2026-05-30"
+tags:
+  - handoff
+  - agent-dungeon
+  - campaign-persistence
+  - campaign-facts
+  - fenwater
+  - ecology
+  - autoreview-goal
+---
+
+# Long Campaign 1000 Beat Handoff
+
+## Current objective
+
+Next pass should prepare Cloudflare Agent Dungeon for **1000-beat long campaign play**. Treat this as an **autoreview goal**: implement in small verified slices, run production samples, then close with review before commit/push.
+
+Do not expand by making a huge shallow map first. The goal is a durable campaign ecology: full receipts, typed truth, meaningful world substrate, downtime breathing room, expedition lifecycle, and memory compaction.
+
+## Current repo state
+
+- cwd: `/Users/joel/Code/joelhooks/cloudflare-agent-dungeon`
+- branch: `feat/realtime-agent-dungeon-campaign`
+- latest pushed public commit: `accbd732899363d2864470dccbdb45798e6fd70e`
+- current local work is deployed to production but not committed/pushed.
+
+Current dirty files at handoff creation:
+
+```txt
+M .brain/data/prototype-build-log.jsonl
+M .brain/projects/treasure-xp-leveling-grill-handoff.svx
+M .brain/projects/treasure-xp-leveling-sessions-prd.svx
+M apps/worker/src/index.ts
+M packages/domain/src/table-run.test.ts
+M packages/domain/src/table-run.ts
+```
+
+`.pi/workflow-runs/` was added to `.git/info/exclude` as local workflow scratch after autoreview flagged it. Do not commit workflow run JSON.
+
+## Recently completed / deployed context
+
+The prior pass implemented and production-validated the first **EncounterOpportunity / OSE procedure** loop:
+
+- PlayerAgents choose approach before procedure.
+- Referee resolves with reaction/evasion/sneak/combat-ish rolls.
+- Combat can actually hurt/incapacitate PCs.
+- Runtime now emits x-ray wait status and clears stale waits.
+- Spotlight PlayerAgent micro-events reduce setup/beat stalls.
+- Downed PCs trigger rescue/death aftermath instead of normal action prompts.
+
+Key files touched:
+
+- `packages/domain/src/table-run.ts`
+  - `EncounterApproachSchema`
+  - `EncounterOpportunitySchema`
+  - `classifyEncounterApproach(...)`
+  - `detectEncounterOpportunity(...)`
+  - new event kinds: `encounter_opportunity`, `encounter_approach`, `encounter_procedure`
+- `packages/domain/src/table-run.test.ts`
+  - test for encounter opportunity detection and approach classification
+- `apps/worker/src/index.ts`
+  - x-ray wait status, stale wait recovery
+  - runtime accordions
+  - encounter opportunity/procedure/combat wiring
+  - duplicate name protection
+  - plural attack grammar
+  - locality-noise reduction
+  - rescue/death aftermath stop for incapacitated PCs
+- `.brain/data/prototype-build-log.jsonl`
+  - receipts for encounter procedure and tiered validation
+- `.brain/projects/treasure-xp-leveling-sessions-prd.svx`
+  - OSE encounter correction and source receipts
+
+## Production validation receipts
+
+Tiered validation completed after fixes:
+
+### 20-beat smoke
+
+- stopped at beat 20
+- opening committed
+- 4 Session Zero characters committed
+- encounter opportunities: 3
+- procedure rolls: 3
+- combat-related rows: 11
+- duplicate names: 0
+- bad grammar: 0
+- table-safe projection stripped player memory/artifacts/dev rows
+
+### 50-beat gameplay check
+
+- stopped at beat 50
+- encounter opportunities: 5
+- procedure rolls: 5
+- combat rows: 5
+- repeated hard choices >=5: 0
+- duplicate names: 0
+- bad grammar: 0
+
+### 100-max endurance samples
+
+Multiple 100-max samples ran:
+
+- Run A stopped at beat 98 via server hard-stop after moments/combat/aftermath.
+- Run B stopped at beat 22 via `party rescue/death aftermath required for Osso Brack` after one transient Cloudflare Native I/O failure at beat 0 and a clean rerun.
+- Run C stopped at beat 91 via `party rescue/death aftermath required for Thistle`.
+
+Useful final counters from Run C:
+
+```txt
+opportunities: 7
+procedures: 5
+combat retained: 19
+combatRows cumulative: 21
+localityCorrections cumulative: 3
+duplicate names: 0
+bad grammar: 0
+repeated hard choices >=5: 0
+```
+
+Checks passed after fixes:
+
+```bash
+pnpm --filter @cloudflare-agent-dungeon/domain test
+pnpm --filter @cloudflare-agent-dungeon/domain check
+pnpm --filter @cloudflare-agent-dungeon/worker check
+pi_notes_brain_check
+```
+
+Goal `edf8f2e5-a37e-4442-b50a-8a54735fceb6` was marked complete after the tiered validation audit.
+
+## Decisions/invariants to preserve
+
+- **Player agency first**: players choose how to engage; Referee adjudicates with OSE-ish procedure and rolls.
+- **No scripted chapters**: leave SafeHaven → explore → encounter/procedure → recover treasure/info → return or push deeper must emerge from choices and pressure, not a fixed route.
+- **Domain-first interfaces**: generic domain shapes first, Fenwater as first concrete module second.
+- **Referee owns canonical truth**; PlayerAgents see only projections.
+- **X-ray monitor may show hidden/operator truth**; PlayerAgents may not.
+- **No canned runtime demo data**: generated runs must be honest; failures should surface with receipts.
+- **OSE source-grounding**: before implementing exact OSE procedures, use JoelClaw/OSE docs and capture doc/chunk refs. Do not paste raw rules corpus into public output.
+- **CampaignFacts are durable gameplay truth**, not a string bin.
+- **Retained 500 events is not enough** for 1000-beat play; add full append log before relying on long-run postmortems.
+
+## Next pass: 1000-beat campaign backbone
+
+### 1. Campaign persistence + full append log
+
+Problem: retained 500-event window is not enough for 1000 beats.
+
+Build:
+
+- Full append-only campaign/run event log.
+- Durable event records separate from compact state cache.
+- Query/readback path for postmortem and replay.
+- Receipts for model calls, procedure rolls, fact creation, XP/treasure/downtime, and failure states.
+- Summary counters should be derivable from the full log, not only the retained window.
+
+Acceptance:
+
+- A run can exceed retained event window while full log remains queryable.
+- Summary endpoint can cite total events and retained events separately.
+- A postmortem script/endpoint can inspect an earlier beat after it has fallen out of the 500 retained events.
+
+### 2. CampaignFacts
+
+Problem: improvised facts currently live in prose/events/memory and can evaporate.
+
+Build:
+
+- `CampaignFact` domain schema in `packages/domain`.
+- Fact lifecycle: active, superseded, resolved, rumor, false_belief.
+- Visibility: `referee_private`, `party_known`, `player_private`, `player_public`, `audience_xray`.
+- Fact kinds: world, npc, location, faction, treasure, rule, relationship, threat, resource, injury/debt/status if useful.
+- Fact creation from committed events/rulings/procedure outcomes.
+- Projection helpers for PlayerAgents vs x-ray.
+
+Acceptance:
+
+- A runtime-created fact is committed as typed truth with source event ids.
+- A player-known rumor can link to a Referee-private hidden truth without leaking it.
+- Player projection excludes private facts; x-ray can show them.
+
+### 3. Fenwater ecology pass
+
+Problem: 1000 beats need living substrate, not a larger shallow map.
+
+Build enough Fenwater ecology for long play:
+
+- 8–12 meaningful locations total.
+- Factions/fronts with goals/clocks.
+- Monster/encounter candidates with noncombat outs.
+- Treasure parcels and weird objects/clues.
+- SafeHavens and partial havens.
+- Retainers/services.
+- Routes, hazards, supplies, weather/water pressure.
+
+Acceptance:
+
+- Content is expressed through generic AdventureModule/domain components, not Worker switch statements.
+- The Referee can dynamically adapt components without turning them into a fixed plot sequence.
+- Dynamic adaptations that matter become CampaignFacts or typed events.
+
+### 4. Downtime / return loop
+
+Problem: long play needs breathing room and reward conversion.
+
+Build:
+
+- Retreat/return-to-safety procedure.
+- Rest/recovery.
+- Sell/appraise treasure.
+- Hire help / retainers.
+- Buy gear/supplies.
+- Level-up availability and LevelingSession handoff.
+- SafeHaven service capabilities and mutable availability/risk.
+
+Acceptance:
+
+- A recovered treasure parcel can become XP only after recovery/safety/settlement.
+- A SafeHaven exposes player-safe choices: rest, sell, buy, hire, rumors, level.
+- PlayerAgents receive compact guidance on why/when to return, not raw rules text.
+
+### 5. Expedition lifecycle
+
+Problem: the run loop needs durable shape without railroading.
+
+Desired emergent loop:
+
+```txt
+leave SafeHaven → explore → encounter/procedure → recover treasure/info → return or push deeper
+```
+
+Build:
+
+- Expedition/session state that tracks supplies, light/time, wounded/downed PCs, carried treasure, route risk, current objective pressure.
+- Push-on vs return decision prompts.
+- Procedure hooks for routes, hazards, encounters, recovery, and settlement.
+
+Acceptance:
+
+- No fixed tavern→dungeon→loot→return script.
+- The Referee presents choices based on current state and pressure.
+- Players can retreat, negotiate, avoid, push deeper, or return to settle.
+
+### 6. Memory compaction
+
+Problem: 1000 beats will overwhelm raw prompt context.
+
+Build:
+
+- PlayerAgent memory summaries.
+- Referee campaign digest.
+- Active/resolved thread lists.
+- Open debts, injuries, relationships, faction changes, and unresolved mysteries.
+- Compaction should write to durable campaign/fact surfaces and feed projections.
+
+Acceptance:
+
+- Long runs keep coherent player/referee memory without replaying full raw logs.
+- Compaction receipts preserve source event ranges.
+- Private player memories remain private; Referee/x-ray sees appropriate operator receipts.
+
+## Suggested implementation order
+
+1. Define domain schemas/tests for append log pointer + `CampaignFact` + projection helpers.
+2. Add a project-local full event log storage seam in Worker with a tiny readback endpoint.
+3. Commit facts from one or two existing event types: encounter outcome, incapacitation, route/location fact.
+4. Add one SafeHaven return/downtime tracer bullet.
+5. Add one treasure parcel recovery-to-safety → XP ledger tracer bullet.
+6. Add memory compaction receipts from event ranges.
+7. Run a 100-beat sample, then a 300-beat sample before attempting 1000.
+8. Run autoreview, fix accepted findings, rerun focused checks.
+
+## Skills to use next
+
+- `ose-rules-access` for exact OSE procedure/source refs.
+- `autoreview` for the closeout loop; this next pass is explicitly an autoreview goal.
+- `diagnose` if production stalls or Cloudflare runtime errors recur.
+- `agent-browser` to verify x-ray/table-safe monitor after UI/projection changes.
+- `brain-maintenance` / `brain-component-composition` for Brain/data receipts.
+- `pi-subagents` for advisory architecture review if the scope gets wide.
+
+## Known risks / sharp edges
+
+- Workers/Durable Object runtime can hit transient Cloudflare Native I/O errors during Session Zero/model setup. Retry/reset handled manually so far; do not hide these as success.
+- Current full history is not durable beyond state/event window. Do append log first before serious 1000-beat claims.
+- Downed-PC aftermath currently stops the autonomous sample. Long campaign needs actual rescue/death/recovery procedure next.
+- EncounterOpportunity cooldown and detection are heuristic. Keep improving through production receipts, but avoid hardcoding Fenwater-only phrases as the architecture.
+- Do not build a generic VTT. Build the campaign/run substrate.

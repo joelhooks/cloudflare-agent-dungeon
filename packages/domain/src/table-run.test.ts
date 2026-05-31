@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TableRunCoreStateSchema, TableRunOpeningSeedSchema, advanceCombatObjective, clampTableClock, normalizeTablePartyMember, normalizeTableRunPatch, normalizeTableRunStartOptions, parseLabeledActionProposal, parseRefereeRulingText, requiredLocalityForAction, starterGearForClass, summarizeTableRun, tableRunHardStopReason, tableRunSampleStopReason, validateTableRunOpeningSeedForModule } from "./table-run";
+import { TableRunCoreStateSchema, TableRunOpeningSeedSchema, advanceCombatObjective, classifyEncounterApproach, clampTableClock, detectEncounterOpportunity, normalizeTablePartyMember, normalizeTableRunPatch, normalizeTableRunStartOptions, parseLabeledActionProposal, parseRefereeRulingText, requiredLocalityForAction, starterGearForClass, summarizeTableRun, tableRunHardStopReason, tableRunSampleStopReason, validateTableRunOpeningSeedForModule } from "./table-run";
 
 describe("table run mechanics", () => {
   it("computes run stop reasons", () => {
@@ -49,6 +49,19 @@ describe("table run mechanics", () => {
     const result = advanceCombatObjective({ kind: "stop_messenger", text: "Stop the runner", progress: 0, target: 1 }, "Nessa trips the runner at the door");
     expect(result.completed).toBe(true);
     expect(result.objective?.progress).toBe(1);
+  });
+
+  it("detects encounter opportunities without forcing combat", () => {
+    const opportunity = detectEncounterOpportunity({
+      recentText: "Cutters climb the ladder while black water pins Endrin against the grate and the ledger sinks.",
+      clocks: [{ name: "Drowned Chapel Submersion", value: 6, max: 6 }],
+      difficulty: 7
+    });
+    expect(opportunity?.threat).toBe("Fenwater cutters");
+    expect(opportunity?.approaches).toContain("parley");
+    expect(opportunity?.approaches).toContain("fight");
+    expect(classifyEncounterApproach("LOCK: talk fast and offer the ledger for safe passage")).toBe("parley");
+    expect(classifyEncounterApproach("WITHDRAW: drag Endrin out through the sluice")).toBe("evade");
   });
 
   it("validates opening seeds against generic AdventureModule components", () => {
