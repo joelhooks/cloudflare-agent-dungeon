@@ -2924,7 +2924,8 @@ export class Referee extends Agent<Env, RefereeState> {
     const hasDowntimePrompt = /settle treasure|train if eligible|hire help|gather rumors|launch the next expedition/i.test(state.activeQuestion);
     const hasRecovered = Object.values(state.treasureParcels).some((parcel) => parcel.state === "recovered_to_safety");
     const hasCarried = Object.values(state.treasureParcels).some((parcel) => parcel.state === "claimed" || parcel.state === "carried");
-    const status = state.lifecycle === "opening_selection" ? "opening" : hasTraining ? "training" : hasDowntimePrompt ? "downtime" : hasRecovered ? "settlement" : hasCarried || state.expedition?.lifecycle === "returning" ? "returning" : state.lifecycle === "stopped" ? "closed" : "expedition";
+    const atKnownSafeHaven = Object.values(state.safeHavens).some((haven) => haven.knownToParty && state.location.toLowerCase().includes(haven.safeHavenId.replace(/^fenwater-safehaven-/, "").replaceAll("-", " ")));
+    const status = state.lifecycle === "opening_selection" ? "opening" : hasTraining ? "training" : hasDowntimePrompt ? "downtime" : hasCarried || state.expedition?.lifecycle === "returning" ? "returning" : hasRecovered && atKnownSafeHaven ? "settlement" : state.lifecycle === "stopped" ? "closed" : "expedition";
     return DomainCampaignArcSchema.parse({
       schema: "CampaignArc.v1",
       id: `arc-${state.runId ?? this.name}`,
