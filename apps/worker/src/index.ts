@@ -3078,6 +3078,8 @@ export class Referee extends Agent<Env, RefereeState> {
   private applyTownTableXpAndLeveling(state: TownModuleTableState, event: TownModuleTableEvent, at: string): Pick<TownModuleTableState, "party" | "levelingSessions"> {
     const totals = this.xpTotalsByCharacter(state.xpLedger);
     const atSafeHaven = state.expedition?.lifecycle === "returning" || /safe ?haven|stove boat|alder knoll|dry camp|settle/i.test(event.text.toLowerCase());
+    const currentSafeHaven = state.expedition?.safeHavenId ? state.safeHavens[state.expedition.safeHavenId] : Object.values(state.safeHavens).find((haven) => event.text.toLowerCase().includes(haven.safeHavenId.replace(/^fenwater-safehaven-/, "").replaceAll("-", " ")));
+    const canTrain = Boolean(atSafeHaven && currentSafeHaven?.availableCapabilities.includes("train_level_up"));
     let levelingSessions = state.levelingSessions;
     const party = state.party.map((member) => {
       const characterId = member.characterId ?? member.playerId;
@@ -3087,12 +3089,12 @@ export class Referee extends Agent<Env, RefereeState> {
       if (currentLevel < 2 && xp >= threshold.xp) {
         const sessionId = `leveling-${characterId}-2`;
         if (!levelingSessions.some((session) => session.id === sessionId)) {
-          levelingSessions = [DomainLevelingSessionSchema.parse({ id: sessionId, campaignId: this.name, characterId, fromLevel: 1, toLevel: 2, status: atSafeHaven ? "committed" : "available", triggerLedgerEntryIds: state.xpLedger.filter((entry) => entry.participants.some((participant) => participant.characterId === characterId)).map((entry) => entry.id), safeHavenId: state.expedition?.safeHavenId, requirements: [{ id: "safe-enough-downtime", description: "Reach a SafeHaven or other safe-enough downtime boundary before committing level-up.", satisfied: atSafeHaven }], ...(atSafeHaven ? { commitReceiptEventId: event.id } : {}), rulesReceiptIds: [threshold.sourceRef, "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s165", "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s102"] }), ...levelingSessions];
+          levelingSessions = [DomainLevelingSessionSchema.parse({ id: sessionId, campaignId: this.name, characterId, fromLevel: 1, toLevel: 2, status: canTrain ? "committed" : atSafeHaven ? "pending_training" : "available", triggerLedgerEntryIds: state.xpLedger.filter((entry) => entry.participants.some((participant) => participant.characterId === characterId)).map((entry) => entry.id), safeHavenId: currentSafeHaven?.safeHavenId, requirements: [{ id: "safe-enough-downtime", description: "Reach a SafeHaven or other safe-enough downtime boundary before committing level-up.", satisfied: atSafeHaven }, { id: "train-level-up-capability", description: "Reach or reveal a SafeHaven/contact with train_level_up capability.", satisfied: canTrain }], ...(canTrain ? { commitReceiptEventId: event.id } : {}), rulesReceiptIds: [threshold.sourceRef, "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s165", "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s102"] }), ...levelingSessions];
         }
-        if (atSafeHaven) {
+        if (canTrain) {
           const hpGain = secureRandomInt(this.hitDieForTownTableClass(member.className));
           const maxHp = (member.maxHp ?? member.hp ?? 1) + hpGain;
-          return { ...member, level: 2, xp, nextLevelXp: threshold.xp, maxHp, hp: Math.max(member.hp ?? 0, maxHp), status: "active" as const, intent: `leveled to 2 at ${state.expedition?.safeHavenId ?? "a SafeHaven"}` };
+          return { ...member, level: 2, xp, nextLevelXp: threshold.xp, maxHp, hp: Math.max(member.hp ?? 0, maxHp), status: "active" as const, intent: `leveled to 2 at ${currentSafeHaven?.safeHavenId ?? "a training SafeHaven"}` };
         }
       }
       return { ...member, xp, nextLevelXp: currentLevel < 2 ? threshold.xp : undefined };
