@@ -2089,11 +2089,8 @@ function trimPlanToBudget(plan: CharacterCreationPlan, stores: Record<StoreId, S
 function assertDistinctCharacterName(plan: CharacterCreationPlan, playerName: string, existingNames: Iterable<string> = []): CharacterCreationPlan {
   const characterName = plan.name.trim().toLowerCase();
   const normalizedPlayer = playerName.trim().toLowerCase();
-  if (characterName === normalizedPlayer || characterName.startsWith(`${normalizedPlayer} `) || characterName.startsWith(`${normalizedPlayer}-`)) {
-    throw new Error(`Generated character name "${plan.name}" reuses player name "${playerName}"; no canned replacement names are allowed.`);
-  }
   const existing = new Set([...existingNames].map((name) => name.trim().toLowerCase()).filter(Boolean));
-  if (!existing.has(characterName)) return plan;
+  if (characterName !== normalizedPlayer && !characterName.startsWith(`${normalizedPlayer} `) && !characterName.startsWith(`${normalizedPlayer}-`) && !existing.has(characterName)) return plan;
   const byname = `${plan.name.trim()} of ${playerName.trim() || "the table"}`;
   return { ...plan, name: byname };
 }
