@@ -6089,6 +6089,15 @@ export class Referee extends Agent<Env, RefereeState> {
       this.appendTownTableEvent({ beat: beforeRuling.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${beforeRuling.beat + 1} committed. Aftermath resolved without a model ruling: the party falls back to SafeHaven at ${havenName}, binds wounds, and protects any recovered evidence.`, statePatch: { beat: beforeRuling.beat + 1, moment: beforeRuling.moment + 1, party, tablePhase: "exploration", location: havenName, activeQuestion: `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?` } });
       return;
     }
+    const maxedClock = beforeRuling.clocks.find((clock) => clock.value >= clock.max);
+    const extractionLoop = maxedClock && /grab|evidence|ledger|flood|mezzanine|sluice|door|wrist|ring|grate/i.test(beforeRuling.activeQuestion);
+    if (beforeRuling.tablePhase !== "combat" && extractionLoop) {
+      const havenId = Object.keys(beforeRuling.safeHavens).find((id) => /reedwright-stove-boat/.test(id)) ?? Object.keys(beforeRuling.safeHavens)[0] ?? "fenwater-safehaven-reedwright-stove-boat";
+      const havenName = havenId.includes("reedwright") ? "Reedwright stove boat" : havenId.includes("alder") ? "Alder Knoll dry camp" : "SafeHaven";
+      const party = beforeRuling.party.map((member) => ({ ...member, hp: Math.max(member.hp ?? 0, Math.min(member.maxHp ?? member.hp ?? 1, Math.max(1, member.hp ?? 0) + 1)), status: (member.status === "missing" ? "missing" : "active") as typeof member.status, position: havenName, intent: "dragging the surviving haul out after the clock breaks" }));
+      this.appendTownTableEvent({ beat: beforeRuling.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${beforeRuling.beat + 1} committed. ${maxedClock.name} is already at ${maxedClock.value}/${maxedClock.max}; the table stops grinding the same grab. The party pays the cost, drags the surviving haul to ${havenName}, and the Referee moves to settlement.`, statePatch: { beat: beforeRuling.beat + 1, moment: beforeRuling.moment + 1, party, tablePhase: "exploration", location: havenName, activeQuestion: `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?` } });
+      return;
+    }
     let rulingText: string;
     try {
       this.updateTownTableWaitStatus("referee_ruling", "Resolving the committed table moment.");
