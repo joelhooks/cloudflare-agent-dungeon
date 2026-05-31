@@ -6087,7 +6087,7 @@ export class Referee extends Agent<Env, RefereeState> {
       return;
     }
     const maxedClock = beforeRuling.clocks.find((clock) => clock.value >= clock.max);
-    const extractionLoop = maxedClock && /grab|evidence|ledger|flood|mezzanine|sluice|door|wrist|ring|grate/i.test(beforeRuling.activeQuestion);
+    const extractionLoop = maxedClock && /grab|evidence|ledger|flood|mezzanine|sluice|door|wrist|ring|grate|brace|burn|parcel|stove boat|pump house|route|cover/i.test(beforeRuling.activeQuestion);
     if (beforeRuling.tablePhase !== "combat" && extractionLoop) {
       const havenId = Object.keys(beforeRuling.safeHavens).find((id) => /reedwright-stove-boat/.test(id)) ?? Object.keys(beforeRuling.safeHavens)[0] ?? "fenwater-safehaven-reedwright-stove-boat";
       const havenName = havenId.includes("reedwright") ? "Reedwright stove boat" : havenId.includes("alder") ? "Alder Knoll dry camp" : "SafeHaven";
@@ -7346,7 +7346,7 @@ function townModuleTableUiPage(): Response {
   <header><span class="tag">Town Module Table</span><span id="dot" class="dot"></span><strong>Fenwater Drainage live table</strong><a id="xrayLink" class="mode" href="?view=xray">x-ray</a><a id="tableLink" class="mode" href="?view=table">table-safe</a><span id="status" class="muted state">connecting…</span></header>
   <section class="strip" id="strip"><div><h2>Phase</h2><p>—</p></div><div><h2>Location</h2><p>—</p></div><div><h2>Clocks</h2><p>—</p></div><div><h2>Leads</h2><p>—</p></div></section>
   <section class="hud" id="hud"><div class="pc"><h3>Party HUD</h3><p class="meta2">waiting for Session Zero…</p></div></section>
-  <section class="xray" id="xray"><details open><summary>Runtime</summary><p>—</p></details><details open><summary>Campaign facts</summary><p>—</p></details><details><summary>Memory compaction</summary><p>—</p></details><details open><summary>Audit counters</summary><p>—</p></details></section>
+  <section class="xray" id="xray"><details><summary>Runtime</summary><p>—</p></details><details><summary>Campaign facts</summary><p>—</p></details><details><summary>Memory compaction</summary><p>—</p></details><details><summary>Audit counters</summary><p>—</p></details></section>
   <main id="feed"><div class="empty">Attaching to Referee stream…</div></main>
 <script>
 const feed=document.getElementById('feed'); const status=document.getElementById('status'); const dot=document.getElementById('dot'); const strip=document.getElementById('strip'); const hud=document.getElementById('hud'); const xray=document.getElementById('xray');
@@ -7375,7 +7375,7 @@ function render(){
     const runtimeText='mode '+(tableState.mode||'unknown')+' · lifecycle '+(tableState.lifecycle||'unknown')+' · beat '+(tableState.beat??0)+'\\nwaiting '+(wait?(wait.phase+' '+waitAge+'s'+(wait.detail?' — '+wait.detail:'')):'—')+'\\nfiber '+(tableState.runningFiberId||'—')+'\\nupdated '+(tableState.updatedAt||'—');
     const counterText='events '+(counters.totalEvents??events.length)+' retained '+events.length+'\\nlocality '+(counters.localityCorrections??0)+' combat '+(counters.combatRows??0)+' objective '+(counters.objectiveProgress??0)+'\\ninactive attempts '+(counters.inactiveActionAttempts??0)+' duplicate commits '+(counters.duplicateCommitBeats??0);
     xray.classList.toggle('on', view!=='table');
-    xray.innerHTML='<details open><summary>Runtime</summary><p>'+esc(runtimeText+'\\n'+adv)+'</p></details><details open><summary>Campaign facts</summary><p>'+esc(facts||'—')+'</p></details><details><summary>Memory compaction</summary><p>'+esc(comp||'—')+'</p></details><details open><summary>Audit counters</summary><p>'+esc(counterText)+'</p></details>';
+    xray.innerHTML='<details><summary>Runtime</summary><p>'+esc(runtimeText+'\\n'+adv)+'</p></details><details><summary>Campaign facts</summary><p>'+esc(facts||'—')+'</p></details><details><summary>Memory compaction</summary><p>'+esc(comp||'—')+'</p></details><details><summary>Audit counters</summary><p>'+esc(counterText)+'</p></details>';
   }
   events.sort((a,b)=>Date.parse(b.at||0)-Date.parse(a.at||0));
   feed.innerHTML=events.length?events.map(e=>'<article class="event '+esc(e.kind)+'"><div class="meta"><span class="lane '+esc(e.lane)+'">'+esc(e.lane)+'</span><span class="kind">'+esc(e.kind)+'</span><span class="speaker">'+esc(e.speaker)+'</span><span>beat '+esc(e.beat)+'</span><span>'+new Date(e.at).toLocaleTimeString()+'</span></div><p>'+esc(e.text)+'</p>'+(e.devText?'<p class="muted">'+esc(e.devText)+'</p>':'')+'</article>').join(''):'<div class="empty">Waiting for table events…</div>';
