@@ -2953,8 +2953,8 @@ export class Referee extends Agent<Env, RefereeState> {
   private campaignArcBriefFromState(state: TownModuleTableState, arc: CampaignArc): CampaignArcBrief {
     const visibleFacts = Object.values(state.campaignFacts).filter((fact) => fact.visibility === "party_known" || fact.visibility === "player_public").slice(0, 6);
     const carried = Object.values(state.treasureParcels).filter((parcel) => parcel.state === "claimed" || parcel.state === "carried");
-    const knownRisks = [...state.clocks.map((clock) => `${clock.name}: ${clock.value}/${clock.max}`), ...visibleFacts.filter((fact) => fact.kind === "threat").map((fact) => fact.playerSafeClaim ?? fact.claim)].slice(0, 5);
-    const visibleChoices = arc.status === "downtime" ? ["settle treasure", "train if eligible", "hire help", "gather rumors", "launch the next expedition"] : arc.status === "returning" ? ["protect the haul", "choose a safe route", "abandon weight", "cover the wounded"] : state.affordances.slice(0, 5);
+    const knownRisks = [...state.clocks.map((clock) => `${clock.name}: ${clock.value}/${clock.max}`), ...visibleFacts.filter((fact) => fact.kind === "threat").map((fact) => fact.playerSafeClaim ?? fact.claim)].slice(0, 5).map((risk) => compactText(risk, 180));
+    const visibleChoices = (arc.status === "downtime" ? ["settle treasure", "train if eligible", "hire help", "gather rumors", "launch the next expedition"] : arc.status === "returning" ? ["protect the haul", "choose a safe route", "abandon weight", "cover the wounded"] : state.affordances.slice(0, 5)).map((choice) => compactText(choice, 180));
     return DomainCampaignArcBriefSchema.parse({
       schema: "CampaignArcBrief.v1",
       status: arc.status,
