@@ -5960,7 +5960,7 @@ export class Referee extends Agent<Env, RefereeState> {
   private runTownTableEncounterProcedure(state: TownModuleTableState): void {
     const opportunity = state.encounterOpportunity;
     if (!opportunity) return;
-    const playerText = state.events.filter((event) => event.lane === "player" && event.beat >= state.beat).slice(0, Math.max(4, state.party.length)).map((event) => event.text).join(" || ");
+    const playerText = state.events.filter((event) => event.lane === "player" && event.beat >= state.beat - 1).slice(0, Math.max(4, state.party.length)).map((event) => event.text).join(" || ");
     const approach = classifyEncounterApproach(playerText || state.activeQuestion);
     this.appendTownTableEvent({ beat: state.beat, visibility: "public", lane: "player", speaker: "Party", kind: "encounter_approach", text: `Party approach: ${approach.replace("_", " ")}.` });
     if (approach === "fight" || approach === "hold_position" || approach === "secure_object" || approach === "rescue") {
@@ -6133,6 +6133,10 @@ export class Referee extends Agent<Env, RefereeState> {
       const havenName = havenId.includes("reedwright") ? "Reedwright stove boat" : havenId.includes("alder") ? "Alder Knoll dry camp" : "SafeHaven";
       const party = before.party.map((member) => ({ ...member, hp: Math.max(member.hp ?? 0, Math.min(member.maxHp ?? member.hp ?? 1, Math.max(1, member.hp ?? 0) + 2)), status: (member.status === "missing" ? "missing" : "active") as typeof member.status, position: havenName, intent: "returning, binding wounds, and settling the haul" }));
       this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. The party returns to SafeHaven at ${havenName}, binds wounds, stashes treasure, and settles treasure before pressing deeper.`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, party, tablePhase: "exploration", location: havenName, activeQuestion: `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?` } });
+      return;
+    }
+    if (before.tablePhase === "encounter" && before.encounterOpportunity) {
+      this.runTownTableEncounterProcedure(before);
       return;
     }
     const stewardBeforePlayers = await this.reviewTownTableWithSteward(before, "before_player_micro_events");
