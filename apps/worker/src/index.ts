@@ -6111,7 +6111,7 @@ export class Referee extends Agent<Env, RefereeState> {
       return;
     }
     const maxedClock = beforeRuling.clocks.find((clock) => clock.value >= clock.max);
-    const extractionLoop = maxedClock && /grab|evidence|ledger|flood|mezzanine|sluice|door|wrist|ring|grate|brace|burn|parcel|stove boat|pump house|route|cover/i.test(beforeRuling.activeQuestion);
+    const extractionLoop = maxedClock && /grab|evidence|ledger|flood|mezzanine|sluice|door|wrist|ring|grate|brace|burn|parcel|stove boat|pump house|route|cover|haul|belt|rope|bell|drag|nave|debt-name|drown|footing|ally|abandon/i.test(beforeRuling.activeQuestion);
     if (beforeRuling.tablePhase !== "combat" && extractionLoop) {
       const havenId = Object.keys(beforeRuling.safeHavens).find((id) => /reedwright-stove-boat/.test(id)) ?? Object.keys(beforeRuling.safeHavens)[0] ?? "fenwater-safehaven-reedwright-stove-boat";
       const havenName = havenId.includes("reedwright") ? "Reedwright stove boat" : havenId.includes("alder") ? "Alder Knoll dry camp" : "SafeHaven";
