@@ -5435,7 +5435,7 @@ export class Referee extends Agent<Env, RefereeState> {
       kind: "steward_intervention",
       text: `Beat ${table.beat + 1} committed. Steward heartbeat: ${receipt}`,
       devText: JSON.stringify({ action, confidence: 0.78, waitAgeMs, phase, maxedClock: maxedClock?.name, campaignArcStatus: table.campaignArc?.status, activeQuestion: table.activeQuestion }, null, 2),
-      statePatch: { beat: table.beat + 1, moment: table.moment + 1, party, mode: "running", lifecycle: "running", runningFiberId: table.runningFiberId, waitStatus: { phase: "steward_heartbeat", detail: receipt, startedAt: new Date().toISOString() }, tablePhase: "exploration", combat: undefined, encounterOpportunity: undefined, location: targetLocation, activeQuestion: nextQuestion }
+      statePatch: { beat: table.beat + 1, moment: table.moment + 1, party, mode: "running", lifecycle: "running", runningFiberId: undefined, waitStatus: undefined, tablePhase: "exploration", combat: undefined, encounterOpportunity: undefined, location: targetLocation, activeQuestion: nextQuestion }
     });
     return TownModuleTableStateSchema.parse(this.requireRefereeState().prototypeTownModuleTable);
   }
@@ -5650,7 +5650,7 @@ export class Referee extends Agent<Env, RefereeState> {
 
   async startTownModuleTableRun(): Promise<TownModuleTableState> {
     const current = this.getTownModuleTableState();
-    if (current.mode === "running" || current.runningFiberId) return current;
+    if (current.runningFiberId || current.mode === "stopped" || current.mode === "failed") return current;
     const fiberId = `town-module-table-run-${current.runId ?? crypto.randomUUID()}`;
     this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, runningFiberId: fiberId, updatedAt: new Date().toISOString() } });
     await this.startFiber("town-module-table-run", async () => {
