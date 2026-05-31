@@ -5411,22 +5411,29 @@ export class Referee extends Agent<Env, RefereeState> {
     const extractionLoop = Boolean(maxedClock && /\b(haul|drag|rope|belt|brace|jamb|gap|door|seal|return|retreat|wounded|ally|evidence|treasure|haul|safehaven|safety|abandon)\b/i.test(activeText));
     const menuLoop = /\b(launch the next expedition|settle treasure|train if eligible|hire help|gather rumors|follow the charter|press the north ditch|investigate the pump house|seek a safer rumor)\b/i.test(table.activeQuestion);
     const returningMicroWait = phase === "player_micro_events" && table.campaignArc?.status === "returning";
-    if (!returningMicroWait && !extractionLoop && !menuLoop) return undefined;
+    const genericPlayerMicroWait = phase === "player_micro_events";
+    if (!genericPlayerMicroWait && !extractionLoop && !menuLoop) return undefined;
 
     const havenId = Object.keys(table.safeHavens).find((id) => /reedwright-stove-boat/.test(id)) ?? Object.keys(table.safeHavens)[0] ?? "fenwater-safehaven-reedwright-stove-boat";
     const havenName = havenId.includes("reedwright") ? "Reedwright stove boat" : havenId.includes("alder") ? "Alder Knoll dry camp" : "SafeHaven";
     const destination = /charter/i.test(activeText) ? "Charter House" : /north ditch/i.test(activeText) ? "North Ditch" : /pump/i.test(activeText) ? "Old pump house" : "Charter House";
-    const action = returningMicroWait || extractionLoop ? "force_return_to_safety" : "repair_menu_question";
+    const action = returningMicroWait || extractionLoop ? "force_return_to_safety" : menuLoop ? "repair_menu_question" : "carry_forward_intents";
     const receipt = action === "force_return_to_safety"
       ? `Heartbeat saw ${phase} stuck for ${Math.round(waitAgeMs / 1000)}s while the arc was already returning; the Referee closes the extraction instead of waiting for more PlayerAgent prose.`
-      : `Heartbeat saw ${phase} stuck for ${Math.round(waitAgeMs / 1000)}s on a menu prompt; the Referee chooses ${destination} instead of waiting.`;
-    const targetLocation = action === "force_return_to_safety" ? havenName : destination;
+      : action === "repair_menu_question"
+        ? `Heartbeat saw ${phase} stuck for ${Math.round(waitAgeMs / 1000)}s on a menu prompt; the Referee chooses ${destination} instead of waiting.`
+        : `Heartbeat saw ${phase} stuck for ${Math.round(waitAgeMs / 1000)}s; the Referee carries forward existing intents instead of waiting for more PlayerAgent prose.`;
+    const targetLocation = action === "force_return_to_safety" ? havenName : action === "repair_menu_question" ? destination : table.location;
     const nextQuestion = action === "force_return_to_safety"
       ? `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?`
-      : `At ${destination}: scout the approach, force entry, question a witness, or fall back before the clocks bite?`;
+      : action === "repair_menu_question"
+        ? `At ${destination}: scout the approach, force entry, question a witness, or fall back before the clocks bite?`
+        : `At ${table.location}: the party carries forward declared roles under pressure. Referee resolves the current danger, cost, or opening.`;
     const party = table.party.map((member) => action === "force_return_to_safety"
       ? ({ ...member, hp: Math.max(member.hp ?? 0, Math.min(member.maxHp ?? member.hp ?? 1, Math.max(1, member.hp ?? 0) + 1)), status: (member.status === "missing" ? "missing" : "active") as typeof member.status, position: targetLocation, intent: "following the Steward heartbeat return-to-safety call" })
-      : ({ ...member, position: targetLocation, intent: `taking point toward ${targetLocation}` }));
+      : action === "repair_menu_question"
+        ? ({ ...member, position: targetLocation, intent: `taking point toward ${targetLocation}` })
+        : ({ ...member, intent: member.intent ?? "holding formation as the Steward carries intent forward" }));
     this.appendTownTableEvent({
       beat: table.beat + 1,
       visibility: "public",
@@ -6180,6 +6187,12 @@ export class Referee extends Agent<Env, RefereeState> {
     }
     if (before.tablePhase === "encounter" && before.encounterOpportunity) {
       this.runTownTableEncounterProcedure(before);
+      return;
+    }
+    if (/carries forward declared roles|Referee resolves the current danger/i.test(before.activeQuestion)) {
+      const prompt = "The party holds formation and carries prior intent forward. The Referee resolves the current pressure into a concrete cost, opening, or next route.";
+      const latestState = this.getTownModuleTableState();
+      this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. ${prompt}`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, activeQuestion: prompt, clocks: latestState.clocks, party: latestState.party, modelCallsUsed: latestState.modelCallsUsed } });
       return;
     }
     if (before.campaignArc?.status === "returning" && /\b(haul|wounded|ally|return|retreat|safehaven|safety|gap|door|jamb|seal|brace|drag|abandon|cover)\b/i.test([before.activeQuestion, ...before.events.slice(0, 8).map((event) => event.text)].join("\n"))) {
