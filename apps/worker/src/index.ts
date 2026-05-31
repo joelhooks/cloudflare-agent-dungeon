@@ -6182,6 +6182,13 @@ export class Referee extends Agent<Env, RefereeState> {
       this.runTownTableEncounterProcedure(before);
       return;
     }
+    if (before.campaignArc?.status === "returning" && /\b(haul|wounded|ally|return|retreat|safehaven|safety|gap|door|jamb|seal|brace|drag|abandon|cover)\b/i.test([before.activeQuestion, ...before.events.slice(0, 8).map((event) => event.text)].join("\n"))) {
+      const havenId = Object.keys(before.safeHavens).find((id) => /reedwright-stove-boat/.test(id)) ?? Object.keys(before.safeHavens)[0] ?? "fenwater-safehaven-reedwright-stove-boat";
+      const havenName = havenId.includes("reedwright") ? "Reedwright stove boat" : havenId.includes("alder") ? "Alder Knoll dry camp" : "SafeHaven";
+      const party = before.party.map((member) => ({ ...member, hp: Math.max(member.hp ?? 0, Math.min(member.maxHp ?? member.hp ?? 1, Math.max(1, member.hp ?? 0) + 1)), status: (member.status === "missing" ? "missing" : "active") as typeof member.status, position: havenName, intent: "following the Referee's return-to-safety closure" }));
+      this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "steward_intervention", text: `Beat ${before.beat + 1} committed. Steward preflight: the arc is already returning, so the Referee closes the extraction instead of asking for more PlayerAgent micro-events.`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, party, tablePhase: "exploration", combat: undefined, encounterOpportunity: undefined, location: havenName, activeQuestion: `At ${havenName}: settle treasure, train if eligible, hire help, gather rumors, or launch the next expedition?` } });
+      return;
+    }
     const stewardBeforePlayers = await this.reviewTownTableWithSteward(before, "before_player_micro_events");
     if (this.applyTownTableStewardDecision(before, stewardBeforePlayers)) return;
     const spotlightParty = activeParty.length <= 2 ? activeParty : activeParty.filter((_, index) => (index + before.beat) % 2 === 0).slice(0, 2);
