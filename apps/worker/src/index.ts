@@ -2086,13 +2086,29 @@ function trimPlanToBudget(plan: CharacterCreationPlan, stores: Record<StoreId, S
   return { ...plan, purchases, planSource: plan.planSource === "kimi" ? "repaired_kimi" : (plan.planSource ?? "unknown") };
 }
 
+function townTableNameByname(plan: CharacterCreationPlan): string {
+  const text = `${plan.reasonExceptional} ${plan.goal ?? ""} ${plan.fear ?? ""}`.toLowerCase();
+  if (/reed|stove|boat|fen|water/.test(text)) return "Reedhook";
+  if (/ditch|north/.test(text)) return "Northditch";
+  if (/pump|rust|tank|clank/.test(text)) return "Rusttank";
+  if (/ledger|tally|shell|token|debt/.test(text)) return "Shellmark";
+  if (/charter|bailiff|reeve|bond/.test(text)) return "Chartermark";
+  if (/knife|beam|bar|mort/.test(text)) return "Beamnick";
+  if (plan.className === "cleric") return "Bellmark";
+  if (plan.className === "thief") return "Mudstep";
+  return "Fenmark";
+}
+
 function assertDistinctCharacterName(plan: CharacterCreationPlan, playerName: string, existingNames: Iterable<string> = []): CharacterCreationPlan {
-  const characterName = plan.name.trim().toLowerCase();
+  const baseName = plan.name.trim();
+  const characterName = baseName.toLowerCase();
   const normalizedPlayer = playerName.trim().toLowerCase();
   const existing = new Set([...existingNames].map((name) => name.trim().toLowerCase()).filter(Boolean));
   if (characterName !== normalizedPlayer && !characterName.startsWith(`${normalizedPlayer} `) && !characterName.startsWith(`${normalizedPlayer}-`) && !existing.has(characterName)) return plan;
-  const byname = `${plan.name.trim()} of ${playerName.trim() || "the table"}`;
-  return { ...plan, name: byname };
+  let repaired = `${baseName} ${townTableNameByname(plan)}`;
+  let suffix = 2;
+  while (existing.has(repaired.toLowerCase()) || repaired.toLowerCase() === normalizedPlayer) repaired = `${baseName} ${townTableNameByname(plan)} ${suffix++}`;
+  return { ...plan, name: repaired };
 }
 
 function subjectVerb(subject: string, singular: string, plural: string): string {
@@ -5994,6 +6010,13 @@ export class Referee extends Agent<Env, RefereeState> {
       }
       const party = before.party.map((member) => ({ ...member, intent: "launching the next expedition", position: before.location }));
       this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. Downtime closes; the party launches the next expedition from ${before.location}.`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, party, tablePhase: "exploration", activeQuestion: "Launch the next expedition: follow the Charter House lead, press the North Ditch route, investigate the pump house, or seek a safer rumor first?" } });
+      return;
+    }
+    const launchExpeditionChoice = /^Launch the next expedition:/i.test(before.activeQuestion);
+    if (launchExpeditionChoice) {
+      const destination = before.activeLeads.some((lead) => /charter/i.test(lead)) ? "Charter House" : before.activeLeads.some((lead) => /north ditch/i.test(lead)) ? "North Ditch" : before.activeLeads.some((lead) => /pump/i.test(lead)) ? "Old pump house" : "Charter House";
+      const party = before.party.map((member) => ({ ...member, position: destination, intent: `taking point toward ${destination}` }));
+      this.appendTownTableEvent({ beat: before.beat + 1, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Beat ${before.beat + 1} committed. The party chooses a concrete expedition target: ${destination}.`, statePatch: { beat: before.beat + 1, moment: before.moment + 1, party, tablePhase: "exploration", location: destination, activeQuestion: `At ${destination}: scout the approach, force entry, question a witness, or fall back before the clocks bite?` } });
       return;
     }
     const deterministicAftermath = before.tablePhase === "aftermath" && /objective secured|evidence, wounded ally, or exit|bind wounds|secure next|what do you secure next/i.test(before.activeQuestion);

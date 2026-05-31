@@ -133,13 +133,13 @@ export function classifyEncounterApproach(text: string): EncounterApproach {
 export function detectEncounterOpportunity(input: { recentText: string; clocks?: TableClock[]; difficulty?: number; repeatedChoiceCount?: number }): EncounterOpportunity | undefined {
   const text = input.recentText.toLowerCase();
   const maxedClock = input.clocks?.find((clock) => clock.value >= clock.max);
-  const hostile = /cutter|bandit|monster|foe|enemy|debt-thing|debt-drowned|collector|hostile|attacks?|grenado|blade|knife|club|spear|bow|boots? .*climb|ambush|pursu|chase|guard[s]? attack|armed guard|something attacks|thing attacks/.test(text);
+  const hostile = /cutter|bandit|monster|foe|enemy|debt-drowned|collector|hostile|attacks?|grenado|blade|knife|club|spear|bow|boots? .*climb|ambush|pursu|chase|guard[s]? attack|armed guard|something attacks|thing attacks/.test(text);
   const physicalDanger = /drown|flood|pinned|trapped|crushed|damage|hp|wounded|bleeding|fire|collapse|poison|fall/.test(text);
   const repeated = (input.repeatedChoiceCount ?? 0) >= 2;
   if (!hostile && !(maxedClock && physicalDanger) && !(repeated && (hostile || physicalDanger))) return undefined;
   const threat = hostile
     ? (text.includes("cutter") ? "Fenwater cutters" : text.includes("debt") || text.includes("collector") ? "debt-drowned collector" : text.includes("bailiff") ? "bailiff's armed runner" : text.includes("mort") ? "Mort's knife-runner" : "armed Fenwater runner")
-    : maxedClock ? `${maxedClock.name} enforcers` : "dangerous situation";
+    : maxedClock ? `${maxedClock.name} enforcers` : "visible Fenwater danger";
   const approaches: EncounterApproach[] = hostile ? ["parley", "evade", "sneak", "fight", "secure_object", "rescue"] : ["evade", "secure_object", "rescue", "hold_position"];
   return EncounterOpportunitySchema.parse({
     id: `encounter-${Math.abs([...input.recentText].reduce((hash, char) => ((hash * 31) + char.charCodeAt(0)) | 0, 7)).toString(36)}`,
