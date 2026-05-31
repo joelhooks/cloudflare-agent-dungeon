@@ -6014,8 +6014,29 @@ export class Referee extends Agent<Env, RefereeState> {
 
   private async reviewTownTableWithSteward(state: TownModuleTableState, phase: "before_player_micro_events" | "before_referee_ruling"): Promise<TableRunStewardDecision | undefined> {
     try {
-      const steward = await this.subAgent(TableRunStewardAgent, "table-run-steward");
-      const decision = await withPrototypeTimeout(steward.reviewMoment(this.townTableStewardInput(state, phase)), `table run steward ${phase}`, 18_000);
+      const workersai = createWorkersAI({ binding: this.env.AI });
+      const model = workersai("@cf/moonshotai/kimi-k2.6", { safePromptCaching: true });
+      const input = this.townTableStewardInput(state, phase);
+      const result = await withPrototypeTimeout(generateObject({
+        model,
+        schema: DomainTableRunStewardDecisionSchema,
+        prompt: [
+          "You are the TableRun Steward for Cloudflare Agent Dungeon.",
+          "You are not a PlayerAgent. You are not the Referee narrator. You do not own canonical truth.",
+          "Your job is to keep the autonomous table playable, legible, and moving.",
+          "Audit committed TableRun state and propose exactly one bounded intervention when needed.",
+          "Never invent hidden facts. Use only committed state, player-visible facts, clocks, events, module-safe names, and player-safe CampaignArcBrief inputs.",
+          "Prefer continue unless a lifecycle/model call would obviously waste money or wedge the run.",
+          "Use close_maxed_clock_extraction when maxed clocks plus rescue/haul/evidence/escape choices are looping.",
+          "Use repair_menu_question when PlayerAgents are being asked broad route/menu logistics instead of an actionable in-fiction beat.",
+          "Use force_return_to_safety when the arc is already returning or the party has wounded/haul pressure and the current question still asks for more danger.",
+          "Use force_downtime_close when a SafeHaven downtime prompt should become a concrete expedition target.",
+          "Use rename_threat only for debug labels like immediate hostile contact, dangerous situation, raw clock names as monsters, or placeholder creature names.",
+          "Return JSON only. Keep receipts short.",
+          JSON.stringify(input)
+        ].join("\n")
+      }), `table run steward ${phase}`, 18_000);
+      const decision = DomainTableRunStewardDecisionSchema.parse(result.object);
       this.appendTownTableEvent({ beat: state.beat, visibility: "dev", lane: "referee", speaker: "TableRun Steward", kind: "steward_review", text: `Steward ${decision.action}: ${decision.tableSafeReceipt}`, devText: JSON.stringify(decision, null, 2) });
       return decision;
     } catch (error) {
