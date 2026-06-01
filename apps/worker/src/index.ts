@@ -7361,7 +7361,7 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
     if (maxBeats) options.maxBeats = Number(maxBeats);
     if (sampleSeconds) options.sampleSeconds = Number(sampleSeconds);
     const current = await referee.getTownModuleTableStateRpc() as TownModuleTableState;
-    const shouldResumeExisting = current.mode !== "stopped" && current.mode !== "failed" && (current.beat > 0 || current.party.length > 0 || current.events.length > 1);
+    const shouldResumeExisting = current.beat > 0 || current.party.length > 0 || current.events.length > 1;
     if (!shouldResumeExisting) await referee.resetTownModuleTable(options);
     return json({ state: await referee.startTownModuleTableRun() });
   }
