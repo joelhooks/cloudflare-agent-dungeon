@@ -2084,6 +2084,22 @@ function compactStoreCatalog(stores: Record<StoreId, Store>): string {
     .join("; ");
 }
 
+function fallbackCharacterCreationPlan(draft: CharacterCreationDraft, playerName: string): CharacterCreationPlan {
+  const scores = draft.rawAbilities;
+  const className = scores.dexterity >= 13 ? "thief" : scores.wisdom >= 13 ? "cleric" : scores.intelligence >= 13 ? "magic-user" : "fighter";
+  return {
+    playerId: draft.playerId,
+    name: playerName,
+    className,
+    alignment: "neutral",
+    reasonExceptional: `${playerName} enters Fenwater because the dice put them closest to the danger when the water started rising.`,
+    goal: "get one useful truth back to safety",
+    fear: "being trapped while the table waits",
+    purchases: [],
+    planSource: "unknown"
+  };
+}
+
 function toCharacterCreationPlan(playerId: PlayerId, output: CharacterCreationPlanOutput): CharacterCreationPlan {
   return {
     playerId,
@@ -5524,7 +5540,29 @@ export class Referee extends Agent<Env, RefereeState> {
       `Known pressure/front components: ${pressureBriefs || "none"}`,
       `Party:\n${partyBrief}`
     ].join("\n");
-    const raw = await runPrototypeModelJson(this.env, prompt, 1600);
+    let raw: unknown;
+    try {
+      raw = await runPrototypeModelJson(this.env, prompt, 1600);
+    } catch (error) {
+      const fallbackLocation = locationComponents.find((component) => !(input.avoidStartingLocationIds ?? []).includes(component.id)) ?? locationComponents[0];
+      if (!fallbackLocation) throw error;
+      const fallbackPressureIds = pressureComponents.slice(0, 2).map((component) => component.id);
+      const seed = validateTableRunOpeningSeedForModule({
+        id: `opening-source-backed-${crypto.randomUUID().slice(0, 8)}`,
+        title: `${fallbackLocation.title} pressure start`,
+        startingLocationId: fallbackLocation.id,
+        visibleSituation: `The party starts together at ${fallbackLocation.title} with Fenwater pressure already moving and no time for a staged opening monologue.`,
+        immediatePressure: pressureComponents[0]?.title ?? "Fenwater pressure closes in.",
+        whyPartyIsTogether: `The newly rolled party is the only mobile crew on hand at ${fallbackLocation.title}; the Referee uses module components directly because opening seed generation failed honestly.`,
+        initialAffordances: ["scout the approach", "secure evidence", "question a witness", "fall back toward safety"],
+        activeFrontIds: fallbackPressureIds,
+        publicClocks: fenwaterInitialClocks(input.difficulty).slice(0, 2),
+        refereeNotes: [`Opening seed model failed: ${String(error instanceof Error ? error.message : error)}`],
+        sourceRefs: [input.module.manifest.moduleId, fallbackLocation.id, ...fallbackPressureIds]
+      }, input.module);
+      this.appendTownTableEvent({ beat: 0, visibility: "dev", lane: "referee", speaker: "Referee", kind: "opening_seed_draft", text: `Referee used source-backed opening seed fallback: ${seed.title}`, devText: JSON.stringify({ prompt, seed, error: String(error instanceof Error ? error.message : error) }, null, 2) });
+      return seed;
+    }
     const parsed = z.object({
       title: LooseOpeningStringSchema(160),
       startingLocationId: z.string().min(1),
@@ -5556,6 +5594,7 @@ export class Referee extends Agent<Env, RefereeState> {
   private async initializeTownModuleTableFromArtifacts(): Promise<TownModuleTableState> {
     const current = this.getTownModuleTableState();
     if (current.mode !== "idle") return current;
+    if (current.party.length > 0 || current.beat > 0 || current.events.length > 1) return TownModuleTableStateSchema.parse({ ...current, mode: "running", lifecycle: "running", updatedAt: new Date().toISOString() });
     const currentWithRunId = current.runId ? current : TownModuleTableStateSchema.parse({ ...current, runId: crypto.randomUUID() });
     this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...currentWithRunId, mode: "running", lifecycle: "session_zero", waitStatus: { phase: "session_zero", detail: "Rolling characters and asking PlayerAgents for character plans.", startedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() } });
     this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "artifacts", speaker: "Referee", kind: "frame_moment", text: "Loading Fenwater Drainage from the Town Forge Artifacts repo." });
@@ -5585,7 +5624,13 @@ export class Referee extends Agent<Env, RefereeState> {
       this.appendTownTableEvent({ beat: 0, visibility: "dev", lane: "player", agentId: playerId, speaker: playerName, kind: "thought_bubble", text: `${playerName} studies the rolled sheet before entering Fenwater.`, devText: JSON.stringify(rolled.draft, null, 2) });
       this.updateTownTableWaitStatus("session_zero", `Asking ${playerName} to turn rolled stats into a character plan.`);
       const playerAgent = await this.subAgent(PlayerAgent, playerId);
-      let plan = assertDistinctCharacterName(await withPrototypeTimeout(playerAgent.createCharacterPlan(rolled.draft, campaign.stores), `${playerName} Session Zero character plan`, 60_000), playerName, players.map((existing) => existing.character.name));
+      let plan: CharacterCreationPlan;
+      try {
+        plan = assertDistinctCharacterName(await withPrototypeTimeout(playerAgent.createCharacterPlan(rolled.draft, campaign.stores), `${playerName} Session Zero character plan`, 60_000), playerName, players.map((existing) => existing.character.name));
+      } catch (error) {
+        plan = assertDistinctCharacterName(fallbackCharacterCreationPlan(rolled.draft, playerName), playerName, players.map((existing) => existing.character.name));
+        this.appendTownTableEvent({ beat: 0, visibility: "dev", lane: "error", agentId: playerId, speaker: playerName, kind: "error", text: `${playerName} Session Zero character plan failed honestly; using rolled-sheet fallback plan so the table can start.`, devText: String(error instanceof Error ? error.message : error) });
+      }
       try {
         campaign = commitCharacterCreation(campaign, rolled.draft, plan, secureRandomInt);
       } catch (error) {
@@ -5658,9 +5703,10 @@ export class Referee extends Agent<Env, RefereeState> {
   }
 
   async startTownModuleTableRun(): Promise<TownModuleTableState> {
-    const current = this.getTownModuleTableState();
+    const currentRaw = this.getTownModuleTableState();
+    const current = currentRaw.mode === "idle" && currentRaw.runningFiberId ? TownModuleTableStateSchema.parse({ ...currentRaw, runningFiberId: undefined, waitStatus: undefined }) : currentRaw;
     if (current.runningFiberId || current.mode === "stopped" || current.mode === "failed") return current;
-    const fiberId = `town-module-table-run-${current.runId ?? crypto.randomUUID()}`;
+    const fiberId = `town-module-table-run-${current.runId ?? crypto.randomUUID()}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
     this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, runningFiberId: fiberId, updatedAt: new Date().toISOString() } });
     await this.startFiber("town-module-table-run", async () => {
       await this.executeTownModuleTableRun();
@@ -7314,7 +7360,9 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
     if (difficulty) options.difficulty = Number(difficulty);
     if (maxBeats) options.maxBeats = Number(maxBeats);
     if (sampleSeconds) options.sampleSeconds = Number(sampleSeconds);
-    await referee.resetTownModuleTable(options);
+    const current = await referee.getTownModuleTableStateRpc() as TownModuleTableState;
+    const shouldResumeExisting = current.mode !== "stopped" && current.mode !== "failed" && (current.beat > 0 || current.party.length > 0 || current.events.length > 1);
+    if (!shouldResumeExisting) await referee.resetTownModuleTable(options);
     return json({ state: await referee.startTownModuleTableRun() });
   }
   if (url.pathname === "/api/prototype/town-module-table-reset") {
