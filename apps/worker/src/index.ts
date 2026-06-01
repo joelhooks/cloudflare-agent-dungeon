@@ -5721,6 +5721,25 @@ export class Referee extends Agent<Env, RefereeState> {
     return this.getTownModuleTableState();
   }
 
+  async extendTownModuleTableRunRpc(options: { maxBeats?: number; sampleSeconds?: number } = {}): Promise<TownModuleTableState> {
+    const current = this.getTownModuleTableState();
+    if (current.mode !== "stopped" || !/sample maxBeats/i.test(current.stoppedReason ?? "")) return current;
+    const nextMaxBeats = Math.max(options.maxBeats ?? current.beat + 80, current.beat + 1);
+    const next = TownModuleTableStateSchema.parse({
+      ...current,
+      mode: "idle",
+      lifecycle: "running",
+      stoppedReason: undefined,
+      runningFiberId: undefined,
+      waitStatus: undefined,
+      runLimits: { ...current.runLimits, maxBeats: nextMaxBeats, ...(options.sampleSeconds ? { sampleSeconds: options.sampleSeconds } : {}) },
+      updatedAt: new Date().toISOString()
+    });
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: next });
+    this.appendTownTableEvent({ beat: current.beat, visibility: "public", lane: "commit", speaker: "Referee", kind: "commit", text: `Operator extends the sample cap to ${nextMaxBeats} beats; the in-flight table resumes from beat ${current.beat}.`, statePatch: { mode: "idle", stoppedReason: undefined, runningFiberId: undefined, waitStatus: undefined, runLimits: next.runLimits } });
+    return this.startTownModuleTableRun();
+  }
+
   private async executeTownModuleTableRun(): Promise<void> {
     try {
       const initialized = await this.initializeTownModuleTableFromArtifacts();
@@ -7369,6 +7388,7 @@ async function handleApi(request: Request, env: Env): Promise<Response | null> {
     if (sampleSeconds) options.sampleSeconds = Number(sampleSeconds);
     const current = await referee.getTownModuleTableStateRpc() as TownModuleTableState;
     const shouldResumeExisting = current.beat > 0 || current.party.length > 0 || current.events.length > 1;
+    if (shouldResumeExisting && current.mode === "stopped" && /sample maxBeats/i.test(current.stoppedReason ?? "")) return json({ state: await referee.extendTownModuleTableRunRpc(options) });
     if (!shouldResumeExisting) await referee.resetTownModuleTable(options);
     return json({ state: await referee.startTownModuleTableRun() });
   }
