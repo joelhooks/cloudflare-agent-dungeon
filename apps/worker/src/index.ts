@@ -5661,7 +5661,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const current = this.getTownModuleTableState();
     if (current.runningFiberId || current.mode === "stopped" || current.mode === "failed") return current;
     const fiberId = `town-module-table-run-${current.runId ?? crypto.randomUUID()}`;
-    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, mode: "running", lifecycle: "running", runningFiberId: fiberId, updatedAt: new Date().toISOString() } });
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, runningFiberId: fiberId, updatedAt: new Date().toISOString() } });
     await this.startFiber("town-module-table-run", async () => {
       await this.executeTownModuleTableRun();
     }, { fiberId, idempotencyKey: fiberId, waitForCompletion: false });
