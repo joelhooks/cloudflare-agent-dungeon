@@ -7788,7 +7788,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/events") return campaignEvents(request, env);
     if (url.pathname === "/events-dev") return campaignEvents(request, env, true);
-    if (url.pathname === "/" || url.pathname === "/monitor") return monitorPage();
+    if (url.pathname === "/" || url.pathname === "/monitor") return townModuleTableUiPage();
     if (url.pathname === "/architecture" || url.pathname === "/architecture/cloudflare") return architecturePage();
     if (url.pathname === "/prototype/town-forge") return townForgeUiPage();
     if (url.pathname === "/prototype/town-module-table") return townModuleTableUiPage();
