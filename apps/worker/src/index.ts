@@ -5557,7 +5557,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const current = this.getTownModuleTableState();
     if (current.mode !== "idle") return current;
     const currentWithRunId = current.runId ? current : TownModuleTableStateSchema.parse({ ...current, runId: crypto.randomUUID() });
-    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...currentWithRunId, lifecycle: "session_zero", waitStatus: { phase: "session_zero", detail: "Rolling characters and asking PlayerAgents for character plans.", startedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() } });
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...currentWithRunId, mode: "running", lifecycle: "session_zero", waitStatus: { phase: "session_zero", detail: "Rolling characters and asking PlayerAgents for character plans.", startedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() } });
     this.appendTownTableEvent({ beat: 0, visibility: "public", lane: "artifacts", speaker: "Referee", kind: "frame_moment", text: "Loading Fenwater Drainage from the Town Forge Artifacts repo." });
     const { town, artifactCommit } = await this.loadFenwaterTownModuleFromArtifacts();
     const adventureModule = adventureModuleFromFenwaterTownGraph({ town, artifactRepo: TOWN_FORGE_ARTIFACT_REPO, artifactCommit });
@@ -5661,7 +5661,7 @@ export class Referee extends Agent<Env, RefereeState> {
     const current = this.getTownModuleTableState();
     if (current.runningFiberId || current.mode === "stopped" || current.mode === "failed") return current;
     const fiberId = `town-module-table-run-${current.runId ?? crypto.randomUUID()}`;
-    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, runningFiberId: fiberId, updatedAt: new Date().toISOString() } });
+    this.setState({ ...this.requireRefereeState(), prototypeTownModuleTable: { ...current, mode: "running", lifecycle: "running", runningFiberId: fiberId, updatedAt: new Date().toISOString() } });
     await this.startFiber("town-module-table-run", async () => {
       await this.executeTownModuleTableRun();
     }, { fiberId, idempotencyKey: fiberId, waitForCompletion: false });
