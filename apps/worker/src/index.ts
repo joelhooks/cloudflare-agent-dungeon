@@ -5442,7 +5442,7 @@ export class Referee extends Agent<Env, RefereeState> {
       kind: "steward_intervention",
       text: `Beat ${table.beat + 1} committed. Steward heartbeat: ${receipt}`,
       devText: JSON.stringify({ action, confidence: 0.78, waitAgeMs, phase, maxedClock: maxedClock?.name, campaignArcStatus: table.campaignArc?.status, activeQuestion: table.activeQuestion }, null, 2),
-      statePatch: { beat: table.beat + 1, moment: table.moment + 1, party, mode: "running", lifecycle: "running", runningFiberId: undefined, waitStatus: undefined, tablePhase: "exploration", combat: undefined, encounterOpportunity: undefined, location: targetLocation, activeQuestion: nextQuestion }
+      statePatch: { beat: table.beat + 1, moment: table.moment + 1, party, mode: "idle", lifecycle: "running", runningFiberId: undefined, waitStatus: undefined, tablePhase: "exploration", combat: undefined, encounterOpportunity: undefined, location: targetLocation, activeQuestion: nextQuestion }
     });
     return TownModuleTableStateSchema.parse(this.requireRefereeState().prototypeTownModuleTable);
   }
@@ -5457,9 +5457,11 @@ export class Referee extends Agent<Env, RefereeState> {
         const heartbeat = this.tryTownTableStewardHeartbeatRecovery(table, waitAgeMs);
         if (heartbeat) return heartbeat;
       }
-      if (table.runningFiberId && table.mode !== "stopped" && startedAt && waitAgeMs > TOWN_TABLE_STALE_WAIT_MS) {
+      if (table.runningFiberId && table.mode === "running" && startedAt && waitAgeMs > TOWN_TABLE_STALE_WAIT_MS) {
+        const heartbeat = this.tryTownTableStewardHeartbeatRecovery(table, waitAgeMs);
+        if (heartbeat) return heartbeat;
         const detail = `Stale ${table.waitStatus?.phase ?? "run"} wait exceeded ${Math.round(TOWN_TABLE_STALE_WAIT_MS / 1000)}s; clearing running fiber so the operator can rerun.`;
-        const recovered = TownModuleTableStateSchema.parse({ ...table, mode: "failed", lifecycle: "failed", runningFiberId: undefined, waitStatus: undefined, error: detail, updatedAt: new Date().toISOString() });
+        const recovered = TownModuleTableStateSchema.parse({ ...table, mode: "idle", lifecycle: "running", runningFiberId: undefined, waitStatus: undefined, error: detail, updatedAt: new Date().toISOString() });
         this.setState({ ...state, prototypeTownModuleTable: recovered });
         return recovered;
       }
