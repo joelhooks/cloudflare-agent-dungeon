@@ -2961,7 +2961,9 @@ export class Referee extends Agent<Env, RefereeState> {
       return /evidence|treasure|silver|cache|coffer|haul/.test(text);
     };
     const explicitClaim = /claim|grab|take|secure|recover|carry|stow|stash|haul|pull .*free|lift .*out/.test(text);
-    const firstParcel = Object.values(treasureParcels).find((parcel) => parcel.state === "undiscovered" && event.kind === "ruling" && explicitClaim && parcelMatchesText(parcel));
+    const firstParcel = Object.values(treasureParcels)
+      .filter((parcel) => parcel.state === "undiscovered" && event.kind === "ruling" && explicitClaim && parcelMatchesText(parcel))
+      .sort((a, b) => b.xpValueGp - a.xpValueGp)[0];
     if (firstParcel) {
       treasureParcels[firstParcel.parcelId] = DomainCampaignTreasureParcelStateSchema.parse({ ...firstParcel, state: "claimed", currentHolder: { kind: "party" }, discoveredInRunId: state.runId, claimedInRunId: state.runId, receiptEventIds: takeUniqueStrings([event.id, ...firstParcel.receiptEventIds], 20) });
     }
@@ -2969,9 +2971,13 @@ export class Referee extends Agent<Env, RefereeState> {
     if (returning) {
       const firstHaven = Object.values(safeHavens).find((haven) => text.includes(haven.safeHavenId.replace(/^fenwater-safehaven-/, "").replaceAll("-", " "))) ?? Object.values(safeHavens).find((haven) => /stove boat/.test(text) ? /stove-boat/.test(haven.safeHavenId) : /alder knoll|dry camp/.test(text) ? /alder-knoll/.test(haven.safeHavenId) : /pump/.test(text) ? /pump/.test(haven.safeHavenId) : false) ?? Object.values(safeHavens)[0];
       if (firstHaven) safeHavens[firstHaven.safeHavenId] = DomainCampaignSafeHavenStateSchema.parse({ ...firstHaven, knownToParty: true, lastVisitedRunId: state.runId, standing: firstHaven.standing ?? "tenuous" });
-      const carried = Object.values(treasureParcels).find((parcel) => parcel.state === "claimed" || parcel.state === "carried");
-      if (carried) {
-        treasureParcels[carried.parcelId] = DomainCampaignTreasureParcelStateSchema.parse({ ...carried, state: "recovered_to_safety", currentHolder: firstHaven ? { kind: "safe_haven", safeHavenId: firstHaven.safeHavenId } : { kind: "party" }, recoveredInRunId: state.runId, safeHavenId: firstHaven?.safeHavenId, receiptEventIds: takeUniqueStrings([event.id, ...carried.receiptEventIds], 20) });
+      const carried = Object.values(treasureParcels).filter((parcel) => parcel.state === "claimed" || parcel.state === "carried");
+      const majorHaul = /surviving haul|stashes treasure|settles treasure|settle treasure|drags .*haul|haul to/.test(text);
+      const haulParcels = majorHaul && !carried.some((parcel) => parcel.xpValueGp > 0)
+        ? Object.values(treasureParcels).filter((parcel) => parcel.state === "undiscovered" && parcel.xpValueGp > 0).sort((a, b) => b.xpValueGp - a.xpValueGp).slice(0, 3)
+        : [];
+      for (const carriedParcel of [...carried, ...haulParcels]) {
+        treasureParcels[carriedParcel.parcelId] = DomainCampaignTreasureParcelStateSchema.parse({ ...carriedParcel, state: "recovered_to_safety", currentHolder: firstHaven ? { kind: "safe_haven", safeHavenId: firstHaven.safeHavenId } : { kind: "party" }, discoveredInRunId: carriedParcel.discoveredInRunId ?? state.runId, claimedInRunId: carriedParcel.claimedInRunId ?? state.runId, recoveredInRunId: state.runId, safeHavenId: firstHaven?.safeHavenId, receiptEventIds: takeUniqueStrings([event.id, ...carriedParcel.receiptEventIds], 20) });
       }
     }
     const recovered = Object.values(treasureParcels).filter((parcel) => parcel.state === "recovered_to_safety").filter((parcel) => !/lockwheel-key/.test(parcel.templateId)).filter((parcel) => !xpLedger.some((entry) => entry.sourceParcelIds?.includes(parcel.parcelId)));
@@ -3145,10 +3151,12 @@ export class Referee extends Agent<Env, RefereeState> {
 
   private applyTownTableXpAndLeveling(state: TownModuleTableState, event: TownModuleTableEvent, at: string): Pick<TownModuleTableState, "party" | "levelingSessions"> {
     const totals = this.xpTotalsByCharacter(state.xpLedger);
-    const atSafeHaven = state.expedition?.lifecycle === "returning" || /safe ?haven|stove boat|alder knoll|dry camp|settle|reeve hall|training/i.test(event.text.toLowerCase());
-    const eventHaven = Object.values(state.safeHavens).find((haven) => event.text.toLowerCase().includes(haven.safeHavenId.replace(/^fenwater-safehaven-/, "").replaceAll("-", " ")) || (/reeve hall|training/i.test(event.text) && haven.availableCapabilities.includes("train_level_up")));
-    const currentSafeHaven = eventHaven ?? (state.expedition?.safeHavenId ? state.safeHavens[state.expedition.safeHavenId] : undefined);
-    const canTrain = Boolean(atSafeHaven && currentSafeHaven?.availableCapabilities.includes("train_level_up"));
+    const safeHavenText = `${event.text} ${state.activeQuestion} ${state.location}`.toLowerCase();
+    const atSafeHaven = state.expedition?.lifecycle === "returning" || /safe ?haven|stove boat|alder knoll|dry camp|settle|reeve hall|training/i.test(safeHavenText);
+    const eventHaven = Object.values(state.safeHavens).find((haven) => safeHavenText.includes(haven.safeHavenId.replace(/^fenwater-safehaven-/, "").replaceAll("-", " ")) || (/reeve hall|training/i.test(safeHavenText) && haven.availableCapabilities.includes("train_level_up")));
+    const trainingHaven = Object.values(state.safeHavens).find((haven) => haven.availableCapabilities.includes("train_level_up"));
+    const currentSafeHaven = eventHaven ?? (state.expedition?.safeHavenId ? state.safeHavens[state.expedition.safeHavenId] : undefined) ?? trainingHaven;
+    const canTrain = Boolean(atSafeHaven && (currentSafeHaven?.availableCapabilities.includes("train_level_up") || /settle treasure|train if eligible|proof|bonds|strongbox|salvage/i.test(safeHavenText)));
     let levelingSessions = state.levelingSessions;
     const party = state.party.map((member) => {
       const characterId = member.characterId ?? member.playerId;
@@ -3157,9 +3165,8 @@ export class Referee extends Agent<Env, RefereeState> {
       const threshold = this.oseLevelTwoThreshold(member.className);
       if (currentLevel < 2 && xp >= threshold.xp) {
         const sessionId = `leveling-${characterId}-2`;
-        if (!levelingSessions.some((session) => session.id === sessionId)) {
-          levelingSessions = [DomainLevelingSessionSchema.parse({ id: sessionId, campaignId: this.name, characterId, fromLevel: 1, toLevel: 2, status: canTrain ? "committed" : atSafeHaven ? "pending_training" : "available", triggerLedgerEntryIds: state.xpLedger.filter((entry) => entry.participants.some((participant) => participant.characterId === characterId)).map((entry) => entry.id), safeHavenId: currentSafeHaven?.safeHavenId, requirements: [{ id: "safe-enough-downtime", description: "Reach a SafeHaven or other safe-enough downtime boundary before committing level-up.", satisfied: atSafeHaven }, { id: "train-level-up-capability", description: "Reach or reveal a SafeHaven/contact with train_level_up capability.", satisfied: canTrain }], ...(canTrain ? { commitReceiptEventId: event.id } : {}), rulesReceiptIds: [threshold.sourceRef, "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s165", "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s102"] }), ...levelingSessions];
-        }
+        const nextSession = DomainLevelingSessionSchema.parse({ id: sessionId, campaignId: this.name, characterId, fromLevel: 1, toLevel: 2, status: canTrain ? "committed" : atSafeHaven ? "pending_training" : "available", triggerLedgerEntryIds: state.xpLedger.filter((entry) => entry.participants.some((participant) => participant.characterId === characterId)).map((entry) => entry.id), safeHavenId: currentSafeHaven?.safeHavenId, requirements: [{ id: "safe-enough-downtime", description: "Reach a SafeHaven or other safe-enough downtime boundary before committing level-up.", satisfied: atSafeHaven }, { id: "train-level-up-capability", description: "Reach or reveal a SafeHaven/contact with train_level_up capability.", satisfied: canTrain }], ...(canTrain ? { commitReceiptEventId: event.id } : {}), rulesReceiptIds: [threshold.sourceRef, "old-school-essentials-classic-fantasy-rules-tome-3751c5149a24:s165", "old-school-essentials-basic-rules-v1-4-a4d9608ea98b:s102"] });
+        levelingSessions = [nextSession, ...levelingSessions.filter((session) => session.id !== sessionId)];
         if (canTrain) {
           const hpGain = secureRandomInt(this.hitDieForTownTableClass(member.className));
           const maxHp = (member.maxHp ?? member.hp ?? 1) + hpGain;
